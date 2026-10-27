@@ -108,7 +108,6 @@ pub const SUBRS: &[Subr] = &[
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
-    lisp.defvar(sym::DEACTIVATE_MARK, Value::NIL);
     lisp.defvar(sym::TEXT_QUOTING_STYLE, Value::NIL);
     lisp.defvar(sym::TEXT_PROPERTY_DEFAULT_NONSTICKY, Value::NIL);
     let alist = lisp.list(&[]);

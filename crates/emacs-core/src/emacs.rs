@@ -21,7 +21,6 @@ pub const SUBRS: &[Subr] = &[
 
 pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::COMMAND_LINE_ARGS, Value::NIL);
-    lisp.defvar(sym::TOP_LEVEL, Value::NIL);
     let system_type = if cfg!(windows) {
         "windows-nt"
     } else if cfg!(target_os = "macos") {

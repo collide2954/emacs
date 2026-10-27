@@ -82,6 +82,9 @@ pub struct Lisp {
     pub charsets: crate::charset::Charsets,
     pub codings: crate::coding::Codings,
     pub ccl: crate::ccl::CclState,
+    pub kboards: Vec<crate::keyboard::Kboard>,
+    pub current_kboard: usize,
+    pub initial_kboard: usize,
 }
 
 impl Default for Lisp {
@@ -208,6 +211,9 @@ impl Lisp {
             charsets: crate::charset::Charsets::default(),
             codings: crate::coding::Codings::default(),
             ccl: crate::ccl::CclState::default(),
+            kboards: Vec::new(),
+            current_kboard: 0,
+            initial_kboard: 0,
         };
         lisp.init_symbols();
         lisp.empty_unibyte = lisp.heap.string(LispString::unibyte(Vec::new()));
@@ -308,6 +314,12 @@ impl Lisp {
     pub fn defvar_bool(&mut self, symbol: Value, value: bool) {
         let s = self.heap.symbol_mut(symbol);
         s.value = SymbolValue::Forwarded(Forward::Bool(value));
+        s.special = true;
+    }
+
+    pub fn defvar_kboard(&mut self, symbol: Value, slot: crate::keyboard::Kvar) {
+        let s = self.heap.symbol_mut(symbol);
+        s.value = SymbolValue::Forwarded(Forward::Kboard(slot as usize));
         s.special = true;
     }
 
@@ -742,6 +754,7 @@ impl Lisp {
                     Value::NIL
                 }
             }
+            SymbolValue::Forwarded(Forward::Kboard(slot)) => self.kboard_slot(*slot),
             SymbolValue::Localized(l) => l.default,
             SymbolValue::Alias(target) => self.plain_value(*target),
         }
@@ -835,6 +848,9 @@ impl Lisp {
         self.charsets.roots(&mut roots);
         self.codings.roots(&mut roots);
         self.ccl.roots(&mut roots);
+        for kboard in &self.kboards {
+            roots.extend_from_slice(&kboard.vars);
+        }
         for entry in &self.regexp_cache {
             roots.push(entry.regexp);
             roots.push(entry.whitespace);

@@ -79,6 +79,7 @@ pub struct Localized {
 pub enum Forward {
     Int(i64),
     Bool(bool),
+    Kboard(usize),
 }
 
 #[derive(Clone, Debug)]

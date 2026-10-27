@@ -264,6 +264,7 @@ impl Lisp {
                 SymbolValue::Plain(v) => return *v,
                 SymbolValue::Forwarded(Forward::Int(n)) => return Value::fixnum(*n),
                 SymbolValue::Forwarded(Forward::Bool(b)) => return bool_value(*b),
+                SymbolValue::Forwarded(Forward::Kboard(slot)) => return self.kboard_slot(*slot),
                 SymbolValue::Localized(l) => {
                     let default = l.default;
                     let buffer = self.current_buffer_value();
@@ -375,6 +376,10 @@ impl Lisp {
                 }
                 Ok(())
             }
+            SymbolValue::Forwarded(Forward::Kboard(slot)) => {
+                self.set_kboard_slot(slot, newval);
+                Ok(())
+            }
         }
     }
 
@@ -473,6 +478,7 @@ impl Lisp {
             SymbolValue::Localized(l) => l.default,
             SymbolValue::Forwarded(Forward::Int(n)) => Value::fixnum(*n),
             SymbolValue::Forwarded(Forward::Bool(b)) => bool_value(*b),
+            SymbolValue::Forwarded(Forward::Kboard(slot)) => self.kboard_slot(*slot),
             SymbolValue::Alias(_) => unreachable!(),
         }
     }
