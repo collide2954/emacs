@@ -427,8 +427,7 @@ fn f_line_end_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_save_excursion(lisp: &mut Lisp, args: Value) -> LispResult {
     let count = lisp.specpdl.len();
-    let marker = lisp.save_excursion_save();
-    lisp.record_unwind(restore_excursion, marker);
+    lisp.record_unwind_protect_excursion();
     let r = lisp.progn(args);
     lisp.unbind_to_value(count, r)
 }
@@ -871,19 +870,38 @@ fn f_labeled_widen(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
+impl Lisp {
+    pub fn record_unwind_protect_excursion(&mut self) {
+        let marker = self.save_excursion_save();
+        self.record_unwind(restore_excursion, marker);
+    }
+
+    pub fn record_unwind_restriction(&mut self) {
+        let b = self.cur();
+        let buffer = self.current_buffer;
+        let data = if b.begv == 1 && b.zv == b.z() {
+            buffer
+        } else {
+            let (begv, zv) = (b.begv, b.zv);
+            let beg = self.make_marker_at(begv, buffer, false);
+            self.stack.push(beg);
+            let end = self.make_marker_at(zv, buffer, true);
+            self.stack.pop();
+            self.cons(beg, end)
+        };
+        self.record_unwind(restore_restriction, data);
+    }
+
+    pub fn temp_set_point(&mut self, buffer: Value, pos: usize) {
+        let b = self.buffer_mut(buffer);
+        b.pt = pos;
+        b.pt_byte = b.text.char_to_byte(pos);
+    }
+}
+
 fn f_save_restriction(lisp: &mut Lisp, body: Value) -> LispResult {
     let count = lisp.specpdl.len();
-    let b = lisp.cur();
-    let buffer = lisp.current_buffer;
-    let data = if b.begv == 1 && b.zv == b.z() {
-        buffer
-    } else {
-        let (begv, zv) = (b.begv, b.zv);
-        let beg = lisp.make_marker_at(begv, buffer, false);
-        let end = lisp.make_marker_at(zv, buffer, true);
-        lisp.cons(beg, end)
-    };
-    lisp.record_unwind(restore_restriction, data);
+    lisp.record_unwind_restriction();
     let r = lisp.progn(body);
     lisp.unbind_to_value(count, r)
 }

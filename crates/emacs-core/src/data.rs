@@ -29,6 +29,10 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("stringp", 1, 1, f_stringp),
     Subr::fixed("multibyte-string-p", 1, 1, f_multibyte_string_p),
     Subr::fixed("char-table-p", 1, 1, f_char_table_p),
+    Subr::fixed("vector-or-char-table-p", 1, 1, f_vector_or_char_table_p),
+    Subr::fixed("closurep", 1, 1, f_closurep),
+    Subr::fixed("byte-code-function-p", 1, 1, f_byte_code_function_p),
+    Subr::fixed("interpreted-function-p", 1, 1, f_interpreted_function_p),
     Subr::fixed("bool-vector-p", 1, 1, f_bool_vector_p),
     Subr::fixed("arrayp", 1, 1, f_arrayp),
     Subr::fixed("sequencep", 1, 1, f_sequencep),
@@ -978,6 +982,38 @@ fn f_char_table_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_bool_vector_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(lisp.is_bool_vector(args[0])))
+}
+
+fn f_vector_or_char_table_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    Ok(bool_value(
+        lisp.is_vector(args[0]) || lisp.is_char_table(args[0]),
+    ))
+}
+
+fn closure_code(lisp: &Lisp, object: Value) -> Option<Value> {
+    if !lisp.is_closure(object) {
+        return None;
+    }
+    match lisp.heap.vectorlike_ref(object) {
+        Vectorlike::Closure(items) => items.get(1).copied(),
+        _ => None,
+    }
+}
+
+fn f_closurep(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    Ok(bool_value(lisp.is_closure(args[0])))
+}
+
+fn f_byte_code_function_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    Ok(bool_value(
+        closure_code(lisp, args[0]).is_some_and(|c| c.is_string()),
+    ))
+}
+
+fn f_interpreted_function_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    Ok(bool_value(
+        closure_code(lisp, args[0]).is_some_and(|c| c.is_cons()),
+    ))
 }
 
 impl Lisp {

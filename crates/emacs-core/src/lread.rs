@@ -30,6 +30,8 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("obarray-clear", 1, 1, f_obarray_clear),
     Subr::fixed("mapatoms", 1, 2, f_mapatoms),
     Subr::fixed("load", 1, 5, f_load),
+    Subr::fixed("eval-buffer", 0, 5, f_eval_buffer),
+    Subr::fixed("eval-region", 2, 4, f_eval_region),
     Subr::fixed("get-load-suffixes", 0, 0, f_get_load_suffixes),
     Subr::fixed("locate-file-internal", 2, 4, f_locate_file_internal),
     Subr::fixed("get-file-char", 0, 0, f_get_file_char),
@@ -1833,14 +1835,15 @@ fn read_internal(lisp: &mut Lisp, stream: Value, locate_syms: bool) -> LispResul
         lisp.stack.pop();
         return r.map(|(v, _)| v);
     }
-    if lisp.is_buffer(stream) || lisp.is_marker(stream) {
-        let source = lisp.buffer_source(stream)?;
+    if lisp.is_buffer(stream) || lisp.is_marker(stream) || is_file_stream(stream) {
+        let source = stream_source(lisp, stream)?;
         lisp.stack.push(stream);
-        let r = lisp.read_from_source(source, locate_syms);
+        let mut reader = Reader::new(lisp, source);
+        let r = reader.read0(locate_syms);
+        let source = reader.source;
         lisp.stack.pop();
-        let (value, source) = r?;
-        lisp.buffer_source_finish(stream, &source);
-        return Ok(value);
+        stream_source_done(lisp, stream, source);
+        return r;
     }
     let source = Source {
         kind: SourceKind::Function(stream),
@@ -2056,8 +2059,77 @@ fn f_locate_file_internal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     }
 }
 
-fn f_get_file_char(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    Ok(Value::fixnum(-1))
+fn f_get_file_char(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let Some(source) = lisp.infile.as_mut() else {
+        return Err(lisp.error("get-file-char misused"));
+    };
+    let byte = match &source.kind {
+        SourceKind::Bytes { data, .. } if source.pos < data.len() => {
+            let b = data[source.pos] as i64;
+            source.pos += 1;
+            b
+        }
+        _ => -1,
+    };
+    Ok(Value::fixnum(byte))
+}
+
+fn is_file_stream(stream: Value) -> bool {
+    stream == sym::GET_FILE_CHAR || stream == sym::GET_EMACS_MULE_FILE_CHAR
+}
+
+fn stream_source(lisp: &mut Lisp, stream: Value) -> LispResult<Source> {
+    if is_file_stream(stream) {
+        return match lisp.infile.take() {
+            Some(source) => Ok(source),
+            None => Err(lisp.error("get-file-char misused")),
+        };
+    }
+    if lisp.is_buffer(stream) || lisp.is_marker(stream) {
+        return lisp.buffer_source(stream);
+    }
+    Ok(Source {
+        kind: SourceKind::Function(stream),
+        pos: 0,
+        chars_read: 0,
+        unread: Vec::new(),
+        from_file: false,
+    })
+}
+
+fn stream_source_done(lisp: &mut Lisp, stream: Value, source: Source) {
+    if is_file_stream(stream) {
+        lisp.infile = Some(source);
+    } else if lisp.is_buffer(stream) || lisp.is_marker(stream) {
+        lisp.buffer_source_finish(stream, &source);
+    }
+}
+
+fn skip_to_form(lisp: &mut Lisp, stream: Value) -> LispResult<i64> {
+    let source = stream_source(lisp, stream)?;
+    let mut reader = Reader::new(lisp, source);
+    let result = (|| loop {
+        let c = reader.readchar()?;
+        if c == b';' as i64 {
+            loop {
+                let d = reader.readchar()?;
+                if d < 0 || d == b'\n' as i64 {
+                    break;
+                }
+            }
+            continue;
+        }
+        if matches!(c, 32 | 9 | 10 | 12 | 13) || c == NO_BREAK_SPACE as i64 {
+            continue;
+        }
+        if c >= 0 {
+            reader.unreadchar(c)?;
+        }
+        return Ok(c);
+    })();
+    let source = reader.source;
+    stream_source_done(lisp, stream, source);
+    result
 }
 
 fn f_load(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -2160,7 +2232,17 @@ fn f_load(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (data, _) = decode_utf8_emacs(&bytes);
     let mut source = Source::from_bytes(data, true);
     source.from_file = true;
-    let r = readevalloop(lisp, source, found_value, is_elc);
+    let previous = lisp.infile.replace(source);
+    let r = readevalloop(
+        lisp,
+        sym::GET_FILE_CHAR,
+        found_value,
+        false,
+        Value::NIL,
+        Value::NIL,
+        Value::NIL,
+    );
+    lisp.infile = previous;
     lisp.stack.pop();
     lisp.unbind_to_value(count, r)?;
     let after = sym::DO_AFTER_LOAD_EVALUATION;
@@ -2172,13 +2254,69 @@ fn f_load(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 pub fn readevalloop(
     lisp: &mut Lisp,
-    source: Source,
+    readcharfun: Value,
     sourcename: Value,
-    is_elc: bool,
+    printflag: bool,
+    readfun: Value,
+    start: Value,
+    end: Value,
 ) -> LispResult {
+    if !sourcename.is_nil() {
+        lisp.check_string(sourcename)?;
+    }
     let count = lisp.specpdl.len();
+    let base = lisp.stack.len();
+    lisp.stack
+        .extend_from_slice(&[readcharfun, sourcename, readfun, start, end]);
+    let r = readevalloop_1(
+        lisp,
+        readcharfun,
+        sourcename,
+        printflag,
+        readfun,
+        start,
+        end,
+    );
+    lisp.stack.truncate(base);
+    let u = lisp.unbind_to(count);
+    r?;
+    u?;
+    Ok(Value::NIL)
+}
+
+fn call_named(lisp: &mut Lisp, name: &str, args: &[Value]) -> LispResult {
+    let f = lisp.intern(name);
+    lisp.funcall(f, args)
+}
+
+fn readevalloop_1(
+    lisp: &mut Lisp,
+    readcharfun: Value,
+    sourcename: Value,
+    printflag: bool,
+    readfun: Value,
+    start: Value,
+    end: Value,
+) -> LispResult<()> {
+    let is_elc = sourcename.is_string() && lisp.string_to_rust(sourcename).ends_with(".elc");
     let macroexpand = sym::INTERNAL_MACROEXPAND_FOR_LOAD;
     let use_macroexpand = !lisp.heap.symbol_ref(macroexpand).function.is_nil() && !is_elc;
+    let mut start = start;
+    let mut end = end;
+    if lisp.is_marker(readcharfun) && start.is_nil() {
+        start = readcharfun;
+    }
+    let b = if lisp.is_buffer(readcharfun) {
+        Some(readcharfun)
+    } else if lisp.is_marker(readcharfun) {
+        Some(lisp.marker(readcharfun).buffer)
+    } else {
+        None
+    };
+    if !start.is_nil() && b.is_none() {
+        return Err(lisp.error("Reading a region requires a buffer"));
+    }
+    lisp.specbind(sym::STANDARD_INPUT, readcharfun)?;
     if is_elc {
         lisp.specbind(sym::READ_SYMBOL_SHORTHANDS, Value::NIL)?;
     }
@@ -2191,44 +2329,204 @@ pub fn readevalloop(
     lisp.specbind(sym::INTERNAL_INTERPRETER_ENVIRONMENT, env)?;
     let dynvars = lisp.plain_value(sym::MACROEXP__DYNVARS);
     lisp.specbind(sym::MACROEXP__DYNVARS, dynvars)?;
+    let mut sourcename = sourcename;
+    if sourcename.is_string()
+        && crate::fileio::file_name_absolute_p(&lisp.string_to_rust(sourcename))
+    {
+        sourcename = lisp.expand_file_name(sourcename, Value::NIL)?;
+        lisp.stack.push(sourcename);
+    }
     lisp.loadhist_initialize(sourcename)?;
-    let mut source = source;
-    loop {
-        let mut reader = Reader::new(lisp, source);
-        let c = loop {
-            let c = reader.readchar()?;
-            if c == b';' as i64 {
-                loop {
-                    let d = reader.readchar()?;
-                    if d < 0 || d == b'\n' as i64 {
-                        break;
-                    }
-                }
-                continue;
+    let mut whole_buffer = false;
+    let mut first_sexp = true;
+    let mut continue_reading = true;
+    while continue_reading {
+        let count1 = lisp.specpdl.len();
+        if let Some(buffer) = b
+            && !lisp.buffer_live_p(buffer)
+        {
+            return Err(lisp.error("Reading from killed buffer"));
+        }
+        if let (false, Some(buffer)) = (start.is_nil(), b) {
+            lisp.record_unwind_protect_excursion();
+            lisp.set_buffer_internal(buffer);
+            lisp.record_unwind_protect_excursion();
+            lisp.record_unwind_restriction();
+            call_named(lisp, "goto-char", &[start])?;
+            if !end.is_nil() {
+                let begv = Value::fixnum(lisp.cur().begv as i64);
+                call_named(lisp, "narrow-to-region", &[begv, end])?;
             }
-            if matches!(c, 32 | 9 | 10 | 12 | 13) || c == NO_BREAK_SPACE as i64 {
-                continue;
+            if end.is_fixnum() {
+                end = call_named(lisp, "point-max-marker", &[])?;
+                lisp.stack.push(end);
             }
-            break c;
-        };
+        }
+        if let Some(buffer) = b
+            && first_sexp
+        {
+            let bb = lisp.buffer(buffer);
+            whole_buffer = bb.pt == 1 && bb.zv == bb.z();
+        }
+        let c = skip_to_form(lisp, readcharfun)?;
         if c < 0 {
+            lisp.unbind_to(count1)?;
             break;
         }
-        reader.unreadchar(c)?;
-        let form = reader.read0(false)?;
-        source = reader.source;
-        lisp.stack.push(form);
-        let r = if use_macroexpand {
-            eager_expand_eval(lisp, form, macroexpand)
+        let purifying = !lisp.plain_value(sym::PURIFY_FLAG).is_nil();
+        let val = if purifying && c == b'(' as i64 {
+            read_internal(lisp, readcharfun, false)?
+        } else if !readfun.is_nil() {
+            let v = lisp.funcall(readfun, &[readcharfun])?;
+            if lisp.is_buffer(readcharfun) {
+                let bb = lisp.buffer(readcharfun);
+                if bb.pt == bb.zv {
+                    continue_reading = false;
+                }
+            }
+            v
         } else {
-            lisp.eval(form)
+            let load_read = lisp.bound_var(sym::LOAD_READ_FUNCTION);
+            if load_read.is_nil() || load_read == sym::READ {
+                read_internal(lisp, readcharfun, false)?
+            } else {
+                lisp.funcall(load_read, &[readcharfun])?
+            }
         };
-        lisp.stack.pop();
-        r?;
+        lisp.stack.push(val);
+        if !start.is_nil() && continue_reading {
+            start = call_named(lisp, "point-marker", &[])?;
+            lisp.stack.push(start);
+        }
+        lisp.unbind_to(count1)?;
+        let val = if use_macroexpand {
+            eager_expand_eval(lisp, val, macroexpand)?
+        } else {
+            lisp.eval(val)?
+        };
+        if printflag {
+            lisp.stack.push(val);
+            let values = lisp.bound_var(sym::VALUES);
+            let values = lisp.cons(val, values);
+            lisp.set(sym::VALUES, values)?;
+            if lisp.bound_var(sym::STANDARD_OUTPUT) == sym::T {
+                call_named(lisp, "prin1", &[val])?;
+            } else {
+                call_named(lisp, "print", &[val])?;
+            }
+        }
+        first_sexp = false;
     }
-    build_load_history(lisp, sourcename, true)?;
-    lisp.unbind_to(count)?;
-    Ok(Value::NIL)
+    build_load_history(
+        lisp,
+        sourcename,
+        is_file_stream(readcharfun) || whole_buffer,
+    )
+}
+
+fn buffer_lexical_cookie(lisp: &Lisp, buffer: Value) -> Option<bool> {
+    let b = lisp.buffer(buffer);
+    let from = b.pt_byte;
+    let to = b.zv_byte;
+    let head = b.text.slice(from - 1, (to - 1).min(from - 1 + 4096));
+    lexical_cookie(&head)
+}
+
+fn get_lexical_binding(lisp: &mut Lisp, stream: Value, from: Value) -> LispResult {
+    match buffer_lexical_cookie(lisp, stream) {
+        Some(true) => Ok(sym::T),
+        Some(false) => Ok(Value::NIL),
+        None => {
+            let function = lisp.bound_var(sym::INTERNAL__GET_DEFAULT_LEXICAL_BINDING_FUNCTION);
+            if from.is_nil() || function.is_nil() {
+                call_named(lisp, "default-toplevel-value", &[sym::LEXICAL_BINDING])
+            } else {
+                lisp.funcall(function, &[from])
+            }
+        }
+    }
+}
+
+fn f_eval_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (buffer, printflag, filename, do_allow_print) = (args[0], args[1], args[2], args[4]);
+    let count = lisp.specpdl.len();
+    let buf = if buffer.is_nil() {
+        lisp.current_buffer
+    } else {
+        call_named(lisp, "get-buffer", &[buffer])?
+    };
+    if buf.is_nil() {
+        return Err(lisp.error("No such buffer"));
+    }
+    let tem = if printflag.is_nil() && do_allow_print.is_nil() {
+        sym::SYMBOLP
+    } else {
+        printflag
+    };
+    let filename = if filename.is_nil() {
+        lisp.buffer_local_get(buf, sym::BUFFER_FILE_NAME)
+            .unwrap_or(Value::NIL)
+    } else {
+        filename
+    };
+    lisp.stack.push(filename);
+    let list = lisp.bound_var(sym::EVAL_BUFFER_LIST);
+    let list = lisp.cons(buf, list);
+    let r = (|| {
+        lisp.specbind(sym::EVAL_BUFFER_LIST, list)?;
+        lisp.specbind(sym::STANDARD_OUTPUT, tem)?;
+        lisp.record_unwind_protect_excursion();
+        let begv = lisp.buffer(buf).begv;
+        lisp.temp_set_point(buf, begv);
+        let local = call_named(lisp, "local-variable-p", &[sym::LEXICAL_BINDING, buf])?;
+        if local.is_nil() {
+            let lexical = get_lexical_binding(lisp, buf, buf)?;
+            lisp.specbind(sym::LEXICAL_BINDING, lexical)?;
+        }
+        let begv = lisp.buffer(buf).begv;
+        lisp.temp_set_point(buf, begv);
+        readevalloop(
+            lisp,
+            buf,
+            filename,
+            !printflag.is_nil(),
+            Value::NIL,
+            Value::NIL,
+            Value::NIL,
+        )
+    })();
+    lisp.stack.pop();
+    lisp.unbind_to_value(count, r.map(|_| Value::NIL))
+}
+
+fn f_eval_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (start, end, printflag, read_function) = (args[0], args[1], args[2], args[3]);
+    let count = lisp.specpdl.len();
+    let cbuf = lisp.current_buffer;
+    let tem = if printflag.is_nil() {
+        sym::SYMBOLP
+    } else {
+        printflag
+    };
+    let r = (|| {
+        lisp.specbind(sym::STANDARD_OUTPUT, tem)?;
+        let list = lisp.bound_var(sym::EVAL_BUFFER_LIST);
+        let list = lisp.cons(cbuf, list);
+        lisp.specbind(sym::EVAL_BUFFER_LIST, list)?;
+        let filename = lisp
+            .buffer_local_get(cbuf, sym::BUFFER_FILE_NAME)
+            .unwrap_or(Value::NIL);
+        readevalloop(
+            lisp,
+            cbuf,
+            filename,
+            !printflag.is_nil(),
+            read_function,
+            start,
+            end,
+        )
+    })();
+    lisp.unbind_to_value(count, r.map(|_| Value::NIL))
 }
 
 fn eager_expand_eval(lisp: &mut Lisp, form: Value, macroexpand: Value) -> LispResult {
