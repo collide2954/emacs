@@ -112,12 +112,12 @@ impl Lisp {
 
     pub fn prin1_to_string(&mut self, value: Value) -> String {
         let chars = self.print_to_chars(value, true).unwrap_or_default();
-        chars.iter().filter_map(|&c| char::from_u32(c)).collect()
+        chars_to_display_string(&chars)
     }
 
     pub fn princ_to_string(&mut self, value: Value) -> String {
         let chars = self.print_to_chars(value, false).unwrap_or_default();
-        chars.iter().filter_map(|&c| char::from_u32(c)).collect()
+        chars_to_display_string(&chars)
     }
 
     pub fn print_to_chars(&mut self, value: Value, escape: bool) -> LispResult<Vec<u32>> {
@@ -743,6 +743,17 @@ impl Lisp {
         }
         Ok(out)
     }
+}
+
+pub fn chars_to_display_string(chars: &[u32]) -> String {
+    let mut out = String::with_capacity(chars.len());
+    for &c in chars {
+        match char::from_u32(c) {
+            Some(ch) if !character::char_byte8_p(c) => out.push(ch),
+            _ => out.push_str(&format!("\\{:o}", character::char_to_byte8(c))),
+        }
+    }
+    out
 }
 
 fn octal_out(p: &mut Printer, c: u32, next: Option<u8>) {

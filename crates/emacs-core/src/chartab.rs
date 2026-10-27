@@ -160,7 +160,7 @@ impl Lisp {
         if !self.is_sub_char_table(sub) {
             return sub;
         }
-        sub
+        self.sub_table(sub).contents[0]
     }
 
     pub fn copy_sub_char_table(&mut self, table: Value) -> Value {
