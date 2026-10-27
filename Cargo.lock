@@ -877,15 +877,16 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "emacs"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "emacs-charsets",
  "emacs-core",
+ "emacs-unidata",
 ]
 
 [[package]]
 name = "emacs-charsets"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "flate2",
  "regex",
@@ -893,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "emacs-core"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "jiff",
  "num-bigint",
@@ -903,13 +904,20 @@ dependencies = [
 
 [[package]]
 name = "emacs-gui"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "cosmic-text",
  "emacs-core",
  "iced",
  "swash",
  "tiny-skia",
+]
+
+[[package]]
+name = "emacs-unidata"
+version = "0.1.36"
+dependencies = [
+ "regex",
 ]
 
 [[package]]

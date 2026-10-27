@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.35"
+version = "0.1.36"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
@@ -12,6 +12,7 @@ publish = false
 [workspace.dependencies]
 emacs-core = { path = "crates/emacs-core" }
 emacs-charsets = { path = "crates/emacs-charsets" }
+emacs-unidata = { path = "crates/emacs-unidata" }
 flate2 = "1"
 regex = "1"
 iced = { version = "0.14", features = ["canvas", "image", "tokio"] }

@@ -11,6 +11,7 @@ emacs-core.workspace = true
 
 [build-dependencies]
 emacs-charsets.workspace = true
+emacs-unidata.workspace = true
 
 [lints]
 workspace = true
