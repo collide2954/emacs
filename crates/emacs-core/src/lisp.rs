@@ -68,6 +68,14 @@ pub struct Lisp {
     pub prin1_to_string_buffer: Value,
     pub pending_boundary: Value,
     pub current_global_map: Value,
+    pub search_regs: crate::regex::Registers,
+    pub last_thing_searched: Value,
+    pub regexp_cache: Vec<crate::search::RegexpCacheEntry>,
+    pub syntax_code_objects: Value,
+    pub ascii_downcase_table: Value,
+    pub ascii_upcase_table: Value,
+    pub ascii_canon_table: Value,
+    pub ascii_eqv_table: Value,
 }
 
 impl Default for Lisp {
@@ -97,6 +105,10 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::emacs::SUBRS,
     crate::keyboard::SUBRS,
     crate::keymap::SUBRS,
+    crate::syntax::SUBRS,
+    crate::category::SUBRS,
+    crate::casetab::SUBRS,
+    crate::search::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -118,6 +130,10 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::emacs::init_vars,
     crate::keyboard::init_vars,
     crate::keymap::init_vars,
+    crate::syntax::init_vars,
+    crate::category::init_vars,
+    crate::casetab::init_vars,
+    crate::search::init_vars,
     init_first_buffers,
 ];
 
@@ -164,6 +180,14 @@ impl Lisp {
             prin1_to_string_buffer: Value::NIL,
             pending_boundary: Value::NIL,
             current_global_map: Value::NIL,
+            search_regs: crate::regex::Registers::default(),
+            last_thing_searched: Value::NIL,
+            regexp_cache: Vec::new(),
+            syntax_code_objects: Value::NIL,
+            ascii_downcase_table: Value::NIL,
+            ascii_upcase_table: Value::NIL,
+            ascii_canon_table: Value::NIL,
+            ascii_eqv_table: Value::NIL,
         };
         lisp.init_symbols();
         lisp.empty_unibyte = lisp.heap.string(LispString::unibyte(Vec::new()));
@@ -782,6 +806,18 @@ impl Lisp {
         roots.push(self.prin1_to_string_buffer);
         roots.push(self.pending_boundary);
         roots.push(self.current_global_map);
+        roots.push(self.last_thing_searched);
+        roots.push(self.syntax_code_objects);
+        roots.push(self.ascii_downcase_table);
+        roots.push(self.ascii_upcase_table);
+        roots.push(self.ascii_canon_table);
+        roots.push(self.ascii_eqv_table);
+        for entry in &self.regexp_cache {
+            roots.push(entry.regexp);
+            roots.push(entry.whitespace);
+            roots.push(entry.syntax_table);
+            roots.push(entry.pattern.translate);
+        }
         roots.extend_from_slice(&self.stack);
         for binding in &self.specpdl {
             match *binding {

@@ -240,6 +240,13 @@ impl BufferText {
     pub fn all_bytes(&self) -> Vec<u8> {
         self.slice(0, self.bytes())
     }
+
+    pub fn parts(&self) -> (&[u8], &[u8]) {
+        (
+            &self.data[..self.gap_start],
+            &self.data[self.gap_start + self.gap_len..],
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -701,10 +708,10 @@ impl Lisp {
             keymap: Value::NIL,
             syntax_table: self.plain_value(sym::STANDARD_SYNTAX_TABLE_INTERNAL),
             category_table: self.plain_value(sym::STANDARD_CATEGORY_TABLE_INTERNAL),
-            downcase_table: Value::NIL,
-            upcase_table: Value::NIL,
-            case_canon_table: Value::NIL,
-            case_eqv_table: Value::NIL,
+            downcase_table: self.ascii_downcase_table,
+            upcase_table: self.ascii_upcase_table,
+            case_canon_table: self.ascii_canon_table,
+            case_eqv_table: self.ascii_eqv_table,
             base_buffer: Value::NIL,
             inhibit_hooks,
             last_window_start: 1,
@@ -1145,9 +1152,29 @@ impl Lisp {
                 }
             }
         }
+        let down = self.ascii_downcase_table;
+        let extras_ok = self.is_char_table(down)
+            && self.char_table(down).extras[..3]
+                .iter()
+                .all(|&e| self.is_char_table(e));
+        if !extras_ok {
+            self.set_case_table(down, true)?;
+        }
+        let (up, canon, eqv) = {
+            let e = &self.char_table(down).extras;
+            (e[0], e[1], e[2])
+        };
+        let syntax = self.standard_syntax_table();
+        let category = self.standard_category_table();
         let b = self.buffer_mut(buffer);
         b.local_vars = kept;
         b.keymap = Value::NIL;
+        b.syntax_table = syntax;
+        b.category_table = category;
+        b.downcase_table = down;
+        b.upcase_table = up;
+        b.case_canon_table = canon;
+        b.case_eqv_table = eqv;
         Ok(())
     }
 

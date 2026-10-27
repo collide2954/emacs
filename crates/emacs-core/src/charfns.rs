@@ -35,7 +35,15 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::CHAR_WIDTH_TABLE, Value::NIL);
     lisp.defvar(sym::AMBIGUOUS_WIDTH_CHARS, Value::NIL);
     lisp.defvar(sym::PRINTABLE_CHARS, Value::NIL);
-    lisp.defvar(sym::CHAR_SCRIPT_TABLE, Value::NIL);
+    lisp.put(
+        sym::CHAR_SCRIPT_TABLE,
+        sym::CHAR_TABLE_EXTRA_SLOTS,
+        Value::fixnum(1),
+    );
+    let script_table = lisp
+        .make_char_table(sym::CHAR_SCRIPT_TABLE, Value::NIL)
+        .expect("char-script-table");
+    lisp.defvar(sym::CHAR_SCRIPT_TABLE, script_table);
     lisp.defvar(sym::SCRIPT_REPRESENTATIVE_CHARS, Value::NIL);
     lisp.defvar(sym::UNICODE_CATEGORY_TABLE, Value::NIL);
 }

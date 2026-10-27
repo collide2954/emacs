@@ -772,6 +772,12 @@ impl Lisp {
         Ok(None)
     }
 
+    pub fn hash_lookup_key(&mut self, table: Value, key: Value) -> LispResult<Option<Value>> {
+        Ok(self
+            .hash_lookup(table, key)?
+            .and_then(|slot| self.hash_table(table).entries[slot].map(|(k, _)| k)))
+    }
+
     pub fn gethash(&mut self, key: Value, table: Value, default: Value) -> LispResult {
         self.hash_table_ref(table)?;
         match self.hash_lookup(table, key)? {
