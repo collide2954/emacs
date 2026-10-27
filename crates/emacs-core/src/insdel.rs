@@ -22,7 +22,7 @@ impl Lisp {
             .unwrap_or(Value::NIL)
     }
 
-    fn set_undo_list(&mut self, list: Value) {
+    pub fn set_undo_list(&mut self, list: Value) {
         let b = self.current_buffer;
         self.buffer_local_set(b, sym::BUFFER_UNDO_LIST, list);
     }
@@ -304,6 +304,70 @@ impl Lisp {
             }
         }
         self.signal_after_change(pt, 0, nchars)
+    }
+
+    pub fn insert_from_gap(
+        &mut self,
+        pos: usize,
+        pos_byte: usize,
+        bytes: &[u8],
+        nchars: usize,
+        before_markers: bool,
+    ) {
+        let buffer = self.current_buffer;
+        let nchars = if self.cur().text.multibyte {
+            nchars
+        } else {
+            bytes.len()
+        };
+        self.record_insert(pos, nchars);
+        {
+            let t = &mut self.cur_mut().text;
+            t.modiff += nchars as i64;
+            t.chars_modiff = t.modiff;
+        }
+        {
+            let b = self.buffer_mut(buffer);
+            b.text.insert_bytes(pos_byte, bytes, nchars);
+            b.zv += nchars;
+            b.zv_byte += bytes.len();
+        }
+        self.adjust_overlays_for_insert(buffer, pos, nchars, before_markers);
+        self.adjust_markers_for_insert(buffer, pos, nchars, before_markers);
+        self.props_adjust_for_insert(buffer, pos, nchars, &[], false);
+        let b = self.buffer_mut(buffer);
+        if pos < b.pt {
+            b.pt += nchars;
+            b.pt_byte += bytes.len();
+        }
+    }
+
+    pub fn del_range_2(&mut self, from: usize, to: usize) -> Value {
+        let buffer = self.current_buffer;
+        let deleted = self.buffer_substring_value(from, to, true);
+        self.stack.push(deleted);
+        self.record_delete(from, deleted, true);
+        self.modify_text();
+        self.adjust_markers_for_delete(buffer, from, to);
+        self.adjust_overlays_for_delete(buffer, from, to);
+        self.props_adjust_for_delete(buffer, from, to);
+        let n = to - from;
+        let b = self.buffer_mut(buffer);
+        let from_byte = b.text.char_to_byte(from);
+        let to_byte = b.text.char_to_byte(to);
+        let nbytes = to_byte - from_byte;
+        b.text.delete_bytes(from_byte, to_byte, n);
+        if b.pt > to {
+            b.pt -= n;
+        } else if b.pt > from {
+            b.pt = from;
+        }
+        b.zv -= n;
+        b.zv_byte -= nbytes;
+        b.pt_byte = b.text.char_to_byte(b.pt);
+        b.begv_byte = b.text.char_to_byte(b.begv);
+        self.stack.pop();
+        deleted
     }
 
     pub fn buffer_substring_value(&mut self, from: usize, to: usize, props: bool) -> Value {

@@ -169,8 +169,86 @@ pub enum Bom {
     With,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CodingResult {
+    Success,
+    InsufficientSrc,
+    InsufficientDst,
+    InvalidSrc,
+    Interrupt,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ComposingState {
+    No,
+    Char,
+    Rule,
+    ComponentChar,
+    ComponentRule,
+}
+
+pub const COMPOSITION_RELATIVE: i32 = 0;
+pub const COMPOSITION_WITH_RULE: i32 = 1;
+pub const COMPOSITION_WITH_ALTCHARS: i32 = 2;
+pub const COMPOSITION_WITH_RULE_ALTCHARS: i32 = 3;
+pub const COMPOSITION_NO: i32 = 4;
+pub const MAX_COMPOSITION_COMPONENTS: usize = 16;
+pub const CMP_CARRYOVER_LEN: usize =
+    4 + MAX_COMPOSITION_COMPONENTS * 3 - 2 + 2 + MAX_COMPOSITION_COMPONENTS;
+
+#[derive(Clone, Debug)]
+pub struct CompositionStatus {
+    pub state: ComposingState,
+    pub method: i32,
+    pub old_form: bool,
+    pub length: i32,
+    pub nchars: i32,
+    pub ncomps: i32,
+    pub carryover: [i32; CMP_CARRYOVER_LEN],
+}
+
+impl Default for CompositionStatus {
+    fn default() -> Self {
+        CompositionStatus {
+            state: ComposingState::No,
+            method: COMPOSITION_NO,
+            old_form: false,
+            length: 0,
+            nchars: 0,
+            ncomps: 0,
+            carryover: [0; CMP_CARRYOVER_LEN],
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CodingSystem {
+    pub chars_at_source: bool,
+    pub raw_destination: bool,
+    pub annotated: bool,
+    pub insert_before_markers: bool,
+    pub result: CodingResult,
+    pub detected_utf8_bytes: i64,
+    pub detected_utf8_chars: i64,
+    pub produced: usize,
+    pub produced_char: usize,
+    pub consumed: usize,
+    pub consumed_char: usize,
+    pub src_pos: i64,
+    pub src_pos_byte: i64,
+    pub src_chars: usize,
+    pub src_bytes: usize,
+    pub src_object: Value,
+    pub source: Vec<u8>,
+    pub dst_pos: usize,
+    pub dst_pos_byte: usize,
+    pub dst_object: Value,
+    pub destination: Vec<u8>,
+    pub charbuf: Vec<i32>,
+    pub charbuf_size: usize,
+    pub carryover: Vec<u8>,
+    pub ccl: Option<Box<crate::ccl::CclProgram>>,
+    pub cmp_status: CompositionStatus,
     pub id: i64,
     pub name: Value,
     pub kind: CodingType,
@@ -203,6 +281,32 @@ pub struct CodingSystem {
 impl CodingSystem {
     pub fn unset() -> CodingSystem {
         CodingSystem {
+            chars_at_source: false,
+            raw_destination: false,
+            annotated: false,
+            insert_before_markers: false,
+            result: CodingResult::Success,
+            detected_utf8_bytes: -1,
+            detected_utf8_chars: -1,
+            produced: 0,
+            produced_char: 0,
+            consumed: 0,
+            consumed_char: 0,
+            src_pos: 0,
+            src_pos_byte: 0,
+            src_chars: 0,
+            src_bytes: 0,
+            src_object: Value::NIL,
+            source: Vec::new(),
+            dst_pos: 0,
+            dst_pos_byte: 0,
+            dst_object: Value::NIL,
+            destination: Vec::new(),
+            charbuf: Vec::new(),
+            charbuf_size: 0,
+            carryover: Vec::new(),
+            ccl: None,
+            cmp_status: CompositionStatus::default(),
             id: -1,
             name: Value::NIL,
             kind: CodingType::RawText,
@@ -258,6 +362,9 @@ pub struct Codings {
     pub safe_terminal: CodingSystem,
     pub terminal: CodingSystem,
     pub keyboard: CodingSystem,
+    pub workbuf_name: Value,
+    pub reused_workbuf: Value,
+    pub reused_workbuf_in_use: bool,
 }
 
 impl Default for Codings {
@@ -276,6 +383,9 @@ impl Default for Codings {
             safe_terminal: CodingSystem::unset(),
             terminal: CodingSystem::unset(),
             keyboard: CodingSystem::unset(),
+            workbuf_name: Value::NIL,
+            reused_workbuf: Value::NIL,
+            reused_workbuf_in_use: false,
         }
     }
 }
@@ -286,6 +396,8 @@ impl Codings {
         out.push(self.category_table);
         out.push(self.sjis_coding_system);
         out.push(self.big5_coding_system);
+        out.push(self.workbuf_name);
+        out.push(self.reused_workbuf);
         for c in self
             .categories
             .iter()
@@ -358,6 +470,7 @@ pub const SUBRS: &[Subr] = &[
 
 pub fn init_vars(lisp: &mut Lisp) {
     lisp.codings.hash_table = lisp.make_hash_table_with(sym::EQ, Weakness::None);
+    lisp.codings.workbuf_name = lisp.string(" *code-conversion-work*");
     let names: Vec<Value> = CATEGORY_NAMES.iter().map(|n| lisp.intern(n)).collect();
     lisp.codings.category_table = lisp.vector(names);
     let message = lisp.string("Invalid coding system");

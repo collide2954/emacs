@@ -59,6 +59,19 @@ impl BufferText {
         }
     }
 
+    pub fn byte_at(&self, byte_pos: usize) -> u8 {
+        self.byte_at_offset(byte_pos - 1)
+    }
+
+    pub fn set_byte(&mut self, byte_pos: usize, value: u8) {
+        let offset = byte_pos - 1;
+        if offset < self.gap_start {
+            self.data[offset] = value;
+        } else {
+            self.data[offset + self.gap_len] = value;
+        }
+    }
+
     pub fn slice(&self, from: usize, to: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(to - from);
         if to <= self.gap_start {

@@ -89,7 +89,7 @@ const MAX_MAP_SET_LEVEL: usize = 30;
 const PROG_STACK_DEPTH: i32 = 256;
 const EXECUTE_BUF_SIZE: usize = 1024;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CclProgram {
     pub idx: i64,
     pub size: i32,

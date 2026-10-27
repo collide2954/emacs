@@ -878,7 +878,7 @@ fn f_text_properties_at(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.props_at(obj, pos))
 }
 
-fn f_get_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_get_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let plist = f_text_properties_at(lisp, &[args[0], args[2]])?;
     Ok(lisp.lookup_char_property(plist, args[1]))
 }
@@ -926,7 +926,7 @@ fn f_next_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.property_change(args[0], args[1], args[2], None, true)
 }
 
-fn f_next_single_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_next_single_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.property_change(args[0], args[2], args[3], Some(args[1]), true)
 }
 
@@ -1068,7 +1068,7 @@ fn f_add_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.bool(changed))
 }
 
-fn f_put_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_put_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let plist = lisp.list(&[args[2], args[3]]);
     lisp.add_text_properties(args[0], args[1], plist, args[4], true)?;
     Ok(Value::NIL)
