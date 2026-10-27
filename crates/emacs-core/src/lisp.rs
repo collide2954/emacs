@@ -94,6 +94,7 @@ pub struct Lisp {
     pub fonts: crate::font::Fonts,
     pub fontsets: crate::fontset::Fontsets,
     pub xdisp: crate::xdisp::Xdisp,
+    pub subr_docs: std::collections::HashMap<usize, i64>,
     pub pending_funcalls: Value,
 }
 
@@ -139,6 +140,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::font::SUBRS,
     crate::fontset::SUBRS,
     crate::xfaces::SUBRS,
+    crate::doc::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -156,9 +158,11 @@ pub const ALL_INITS: &[InitFn] = &[
     init_emacs_vars,
     crate::buffer::init_vars,
     crate::editfns::init_vars,
+    crate::doc::init_vars,
     crate::fileio::init_vars,
     crate::emacs::init_vars,
     crate::keyboard::init_vars,
+    crate::dispnew::init_vars,
     crate::window::init_vars,
     crate::keymap::init_vars,
     crate::syntax::init_vars,
@@ -250,6 +254,7 @@ impl Lisp {
             fonts: crate::font::Fonts::default(),
             fontsets: crate::fontset::Fontsets::default(),
             xdisp: crate::xdisp::Xdisp::default(),
+            subr_docs: std::collections::HashMap::new(),
             pending_funcalls: Value::NIL,
         };
         lisp.init_symbols();

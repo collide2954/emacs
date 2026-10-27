@@ -11,6 +11,8 @@ pub mod charset;
 pub mod chartab;
 pub mod coding;
 pub mod data;
+pub mod dispnew;
+pub mod doc;
 pub mod editfns;
 pub mod emacs;
 pub mod error;

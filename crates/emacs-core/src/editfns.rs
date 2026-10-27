@@ -104,11 +104,9 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("beginning-of-line", 0, 1, f_beginning_of_line).interactive("^p"),
     Subr::fixed("end-of-line", 0, 1, f_end_of_line).interactive("^p"),
     Subr::fixed("delete-char", 1, 2, f_delete_char).interactive("p\nP"),
-    Subr::fixed("text-quoting-style", 0, 0, f_text_quoting_style),
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
-    lisp.defvar(sym::TEXT_QUOTING_STYLE, Value::NIL);
     lisp.defvar(sym::TEXT_PROPERTY_DEFAULT_NONSTICKY, Value::NIL);
     let alist = lisp.list(&[]);
     let pair1 = lisp.cons(sym::SYNTAX_TABLE, sym::T);
@@ -252,14 +250,6 @@ impl Lisp {
         }
         self.set_plain_value(sym::CURRENT_MESSAGE_INTERNAL, s);
         Ok(())
-    }
-
-    pub fn text_quoting_style(&self) -> Value {
-        let v = self.plain_value(sym::TEXT_QUOTING_STYLE);
-        if v.is_nil() || v == sym::UNBOUND {
-            return sym::CURVE;
-        }
-        v
     }
 
     pub fn format_string(&mut self, args: &[Value], message: bool) -> LispResult {
@@ -914,7 +904,7 @@ fn f_ngettext(_lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-fn f_message(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_message(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if args[0].is_nil()
         || (args[0].is_string() && lisp.string_chars(args[0]) == 0 && args.len() == 1)
     {
@@ -962,10 +952,6 @@ fn f_format(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_format_message(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.format_string(args, true)
-}
-
-fn f_text_quoting_style(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    Ok(lisp.text_quoting_style())
 }
 
 fn f_char_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
