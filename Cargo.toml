@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.12"
+version = "0.1.13"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
@@ -11,6 +11,9 @@ publish = false
 
 [workspace.dependencies]
 emacs-core = { path = "crates/emacs-core" }
+emacs-charsets = { path = "crates/emacs-charsets" }
+flate2 = "1"
+regex = "1"
 num-bigint = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"

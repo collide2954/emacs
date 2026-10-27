@@ -436,7 +436,7 @@ impl Lisp {
         self.last_thing_searched = self.current_buffer;
     }
 
-    fn translate_char(&self, trt: Value, c: u32) -> u32 {
+    fn char_table_translate(&self, trt: Value, c: u32) -> u32 {
         if trt.is_nil() || !self.is_char_table(trt) {
             return c;
         }
@@ -617,7 +617,7 @@ impl Lisp {
                     break;
                 }
             }
-            let translated = self.translate_char(trt, raw[i]);
+            let translated = self.char_table_translate(trt, raw[i]);
             if multibyte {
                 character::push_char(&mut pat, translated);
             } else {
@@ -661,7 +661,7 @@ impl Lisp {
                         let text = &self.cur().text;
                         let buf_ch = text.char_at_byte(this_pos_byte);
                         let buf_len = text.char_len_at_byte(this_pos_byte);
-                        if self.translate_char(trt, buf_ch) != pat_ch {
+                        if self.char_table_translate(trt, buf_ch) != pat_ch {
                             break;
                         }
                         this_len -= 1;
@@ -694,7 +694,7 @@ impl Lisp {
                     let mut p = 0;
                     while this_len > 0 {
                         let buf_ch = self.cur().text.char_at_byte(this_pos);
-                        if self.translate_char(trt, buf_ch) != pat[p] as u32 {
+                        if self.char_table_translate(trt, buf_ch) != pat[p] as u32 {
                             break;
                         }
                         p += 1;
@@ -736,7 +736,7 @@ impl Lisp {
                         p = q;
                         let pat_ch = character::string_char(&pat[p..]).0;
                         let buf_ch = self.cur().text.char_at_byte(this_pos_byte);
-                        if self.translate_char(trt, buf_ch) != pat_ch {
+                        if self.char_table_translate(trt, buf_ch) != pat_ch {
                             break;
                         }
                         this_len -= 1;
@@ -767,7 +767,7 @@ impl Lisp {
                     let mut p = 0;
                     while this_len > 0 {
                         let buf_ch = self.cur().text.char_at_byte(this_pos);
-                        if self.translate_char(trt, buf_ch) != pat[p] as u32 {
+                        if self.char_table_translate(trt, buf_ch) != pat[p] as u32 {
                             break;
                         }
                         p += 1;

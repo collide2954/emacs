@@ -709,7 +709,7 @@ impl Lisp {
         }
     }
 
-    fn hash_table(&self, table: Value) -> &HashTable {
+    pub fn hash_table(&self, table: Value) -> &HashTable {
         match self.heap.vectorlike_ref(table) {
             Vectorlike::HashTable(h) => h,
             _ => unreachable!(),

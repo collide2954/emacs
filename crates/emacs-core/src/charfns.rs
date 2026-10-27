@@ -30,11 +30,35 @@ pub const SUBRS: &[Subr] = &[
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
-    lisp.defvar(sym::TRANSLATION_TABLE_FOR_INPUT, Value::NIL);
-    lisp.defvar(sym::AUTO_FILL_CHARS, Value::NIL);
-    lisp.defvar(sym::CHAR_WIDTH_TABLE, Value::NIL);
-    lisp.defvar(sym::AMBIGUOUS_WIDTH_CHARS, Value::NIL);
-    lisp.defvar(sym::PRINTABLE_CHARS, Value::NIL);
+    let vector = lisp.vector(vec![Value::NIL; 16]);
+    lisp.defvar(sym::TRANSLATION_TABLE_VECTOR, vector);
+    let auto_fill = lisp
+        .make_char_table(sym::AUTO_FILL_CHARS, Value::NIL)
+        .expect("auto-fill-chars");
+    lisp.char_table_set(auto_fill, b' ' as u32, sym::T);
+    lisp.char_table_set(auto_fill, b'\n' as u32, sym::T);
+    lisp.defvar(sym::AUTO_FILL_CHARS, auto_fill);
+    let width = lisp
+        .make_char_table(Value::NIL, Value::fixnum(1))
+        .expect("char-width-table");
+    lisp.char_table_set_range(width, 0x80, 0x9F, Value::fixnum(4));
+    lisp.char_table_set_range(
+        width,
+        character::MAX_5_BYTE_CHAR + 1,
+        MAX_CHAR,
+        Value::fixnum(4),
+    );
+    lisp.defvar(sym::CHAR_WIDTH_TABLE, width);
+    let ambiguous = lisp
+        .make_char_table(Value::NIL, Value::NIL)
+        .expect("ambiguous-width-chars");
+    lisp.defvar(sym::AMBIGUOUS_WIDTH_CHARS, ambiguous);
+    let printable = lisp
+        .make_char_table(Value::NIL, Value::NIL)
+        .expect("printable-chars");
+    lisp.char_table_set_range(printable, 32, 126, sym::T);
+    lisp.char_table_set_range(printable, 160, character::MAX_5_BYTE_CHAR, sym::T);
+    lisp.defvar(sym::PRINTABLE_CHARS, printable);
     lisp.put(
         sym::CHAR_SCRIPT_TABLE,
         sym::CHAR_TABLE_EXTRA_SLOTS,
@@ -91,45 +115,44 @@ fn f_multibyte_char_to_unibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(-1))
 }
 
-pub fn char_width(c: u32) -> usize {
-    if c == 9 {
-        return 8;
+fn sanitize_width(width: i64) -> usize {
+    if (0..=1000).contains(&width) {
+        width as usize
+    } else {
+        1000
     }
-    if c < 0x20 || c == 0x7F {
-        return 2;
-    }
-    if c < 0x7F {
-        return 1;
-    }
-    if character::char_byte8_p(c) {
-        return 4;
-    }
-    if (0x0300..=0x036F).contains(&c) || c == 0x200B || (0x200C..=0x200F).contains(&c) {
-        return 0;
-    }
-    let wide = (0x1100..=0x115F).contains(&c)
-        || (0x2E80..=0xA4CF).contains(&c)
-        || (0xAC00..=0xD7A3).contains(&c)
-        || (0xF900..=0xFAFF).contains(&c)
-        || (0xFE30..=0xFE4F).contains(&c)
-        || (0xFF00..=0xFF60).contains(&c)
-        || (0xFFE0..=0xFFE6).contains(&c)
-        || (0x1F300..=0x1F64F).contains(&c)
-        || (0x1F900..=0x1F9FF).contains(&c)
-        || (0x20000..=0x3FFFD).contains(&c);
-    if wide { 2 } else { 1 }
 }
 
 impl Lisp {
+    pub fn sane_tab_width(&self) -> usize {
+        match self.bound_var(sym::TAB_WIDTH).as_fixnum() {
+            Some(n) if 0 < n && n <= 1000 => n as usize,
+            _ => 8,
+        }
+    }
+
     pub fn char_width_of(&self, c: u32) -> usize {
-        let table = self.plain_value(sym::CHAR_WIDTH_TABLE);
+        if c < 0x80 {
+            let ctl = if self.bound_var(sym::CTL_ARROW).is_nil() {
+                4
+            } else {
+                2
+            };
+            return match c {
+                9 => self.sane_tab_width(),
+                10 => 0,
+                0..0x20 | 0x7F => ctl,
+                _ => 1,
+            };
+        }
+        let table = self.bound_var(sym::CHAR_WIDTH_TABLE);
         if self.is_char_table(table) {
             let w = self.char_table_ref(table, c);
             if let Some(n) = w.as_fixnum() {
-                return n.max(0) as usize;
+                return sanitize_width(n);
             }
         }
-        char_width(c)
+        1
     }
 }
 

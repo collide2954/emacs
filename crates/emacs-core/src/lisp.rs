@@ -79,6 +79,9 @@ pub struct Lisp {
     pub local_tz: Option<crate::timefns::Zone>,
     pub system_tz: Option<jiff::tz::TimeZone>,
     pub start_instant: std::time::Instant,
+    pub charsets: crate::charset::Charsets,
+    pub codings: crate::coding::Codings,
+    pub ccl: crate::ccl::CclState,
 }
 
 impl Default for Lisp {
@@ -113,6 +116,9 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::casetab::SUBRS,
     crate::search::SUBRS,
     crate::timefns::SUBRS,
+    crate::charset::SUBRS,
+    crate::ccl::SUBRS,
+    crate::coding::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -139,6 +145,9 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::casetab::init_vars,
     crate::search::init_vars,
     crate::timefns::init_vars,
+    crate::charset::init_vars,
+    crate::ccl::init_vars,
+    crate::coding::init_vars,
     init_first_buffers,
 ];
 
@@ -196,6 +205,9 @@ impl Lisp {
             local_tz: None,
             system_tz: None,
             start_instant: std::time::Instant::now(),
+            charsets: crate::charset::Charsets::default(),
+            codings: crate::coding::Codings::default(),
+            ccl: crate::ccl::CclState::default(),
         };
         lisp.init_symbols();
         lisp.empty_unibyte = lisp.heap.string(LispString::unibyte(Vec::new()));
@@ -820,6 +832,9 @@ impl Lisp {
         roots.push(self.ascii_upcase_table);
         roots.push(self.ascii_canon_table);
         roots.push(self.ascii_eqv_table);
+        self.charsets.roots(&mut roots);
+        self.codings.roots(&mut roots);
+        self.ccl.roots(&mut roots);
         for entry in &self.regexp_cache {
             roots.push(entry.regexp);
             roots.push(entry.whitespace);

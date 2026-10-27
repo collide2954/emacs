@@ -9,5 +9,8 @@ publish.workspace = true
 [dependencies]
 emacs-core.workspace = true
 
+[build-dependencies]
+emacs-charsets.workspace = true
+
 [lints]
 workspace = true
