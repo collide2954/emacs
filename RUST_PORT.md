@@ -45,9 +45,21 @@ Ported but not yet complete (C kept):
 | `casefiddle.c` | `casefiddle.rs` | a real port; the current version is a placeholder using Rust's Unicode tables |
 | `coding.c` | `coding.rs`, `coding/` | `encode_string_utf_8`/`decode_string_utf_8` (for `json.c`), file-name encoding |
 | `bytecode.c` | `bytecode.rs` | the VM (stub) |
+| `terminal.c` | `terminal.rs` | `delete-terminal` (needs `delete-frame`) |
+| `frame.c` | `frame.rs` | `delete-frame`, `adjust_frame_size`, `x-create-frame` |
+| `window.c` | `window.rs` | splitting, resizing, `window-list` |
+| `minibuf.c` | `minibuf.rs` | reading from the minibuffer |
+| `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface` |
+| `fontset.c` | `fontset.rs` | `new-fontset`, `set-fontset-font`, `fontset-info`, `fontset-font` |
+| `xfaces.c` | `xfaces.rs` | realized faces (face cache, `realize_basic_faces`), `face-font`, `clear-face-cache`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource` |
+| `xdisp.c` | `xdisp.rs` | everything except the redisplay flags, `add_to_log` and `message_dolog` |
+
+Window-system frames don't exist yet, so `xfaces.rs` stops with `unreachable!` on the
+branches that need them (`font_load_for_lface`, `xw-display-color-p`). A `reset` face
+attribute signals "Cannot realize default face" until realized faces are ported.
 
 `emacs --batch` loads `loadup.el` through `bindings`, `window`, `files`, `macroexp` and
-`cus-face`, and stops in `faces.el` on `internal-set-font-selection-order` (`xfaces.c`).
+`cus-face`, and stops in `faces.el` on `documentation-stringp` (`doc.c`).
 
 ## Coding
 
