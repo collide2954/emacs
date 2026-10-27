@@ -90,9 +90,18 @@ stands in for GTK, tiny-skia for cairo, and cosmic-text for FreeType and HarfBuz
 - The frame primitives (`x-create-frame` and friends, as in `pgtkfns.c`) live in the GUI
   crate and are registered into the interpreter at startup.
 
-Done: the input event model (`termhooks.rs`) and key translation (`keysym.rs`).
+Done:
 
-Next: the pixmap surface and its drawing primitives, the iced shell with the Lisp-thread
-bridge, and the cosmic-text font driver. Showing a real frame also needs the display engine
-in emacs-core (`frame.c`, `window.c`, `dispnew.c`, `xdisp.c`, `xfaces.c`, `font.c`,
+- `termhooks.rs` (emacs-core): the input event model.
+- `keysym.rs`: key translation.
+- `surface.rs`: the frame surface with the cairo operations pgtk uses (fill, clear,
+  copy-bits for scrolling, clip rectangles, glyph masks, RGBA images, alpha background).
+- `protocol.rs`, `display.rs`, `shell.rs`: the iced daemon (one window per frame, HiDPI
+  aware) and the Lisp-thread side that owns the surfaces and receives input.
+
+`cargo run -p emacs-gui --example shell` opens a frame from the Lisp thread, paints a test
+pattern and prints the events it receives.
+
+Next: the cosmic-text font driver. Showing a real Emacs frame needs the display engine in
+emacs-core (`frame.c`, `window.c`, `dispnew.c`, `xdisp.c`, `xfaces.c`, `font.c`,
 `fontset.c`) and the command loop in `keyboard.c`.
