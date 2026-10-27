@@ -47,14 +47,14 @@ dependencies = [
 
 [[package]]
 name = "emacs"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "emacs-core",
 ]
 
 [[package]]
 name = "emacs-core"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "jiff",
  "num-bigint",

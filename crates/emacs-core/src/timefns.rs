@@ -812,12 +812,12 @@ pub const SUBRS: &[Subr] = &[
 
 pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar_bool(sym::CURRENT_TIME_LIST, false);
-    let zone = match std::env::var("TZ") {
-        Ok(tz) => lisp.string(&tz),
-        Err(_) => sym::WALL,
-    };
-    if let Ok(z) = lisp.tzlookup(zone) {
-        lisp.local_tz = z;
+    lisp.local_tz = None;
+    if let Ok(tz) = std::env::var("TZ") {
+        let zone = lisp.string(&tz);
+        if let Ok(z) = lisp.tzlookup(zone) {
+            lisp.local_tz = Some(z);
+        }
     }
 }
 
@@ -1172,15 +1172,25 @@ impl Lisp {
         Ok((&ta.ticks * &tb.hz).cmp(&(&tb.ticks * &ta.hz)))
     }
 
+    fn system_zone(&mut self) -> Zone {
+        if self.system_tz.is_none() {
+            self.system_tz = Some(TimeZone::system());
+        }
+        Zone::Tz(self.system_tz.clone().unwrap_or(TimeZone::UTC))
+    }
+
     pub fn tzlookup(&mut self, zone: Value) -> LispResult<Zone> {
         if zone.is_nil() {
-            return Ok(self.local_tz.clone());
+            return Ok(match &self.local_tz {
+                Some(z) => z.clone(),
+                None => self.system_zone(),
+            });
         }
         if zone == Value::fixnum(0) || zone == sym::T {
             return Ok(Zone::Utc);
         }
         if zone == sym::WALL {
-            return Ok(Zone::Tz(TimeZone::system()));
+            return Ok(self.system_zone());
         }
         if zone.is_string() {
             let name = self.string_to_rust(zone);
@@ -1525,6 +1535,6 @@ fn f_current_time_zone(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_set_time_zone_rule(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let tz = if args[0].is_nil() { sym::WALL } else { args[0] };
     let zone = lisp.tzlookup(tz)?;
-    lisp.local_tz = zone;
+    lisp.local_tz = Some(zone);
     Ok(Value::NIL)
 }

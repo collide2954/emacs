@@ -76,7 +76,8 @@ pub struct Lisp {
     pub ascii_upcase_table: Value,
     pub ascii_canon_table: Value,
     pub ascii_eqv_table: Value,
-    pub local_tz: crate::timefns::Zone,
+    pub local_tz: Option<crate::timefns::Zone>,
+    pub system_tz: Option<jiff::tz::TimeZone>,
     pub start_instant: std::time::Instant,
 }
 
@@ -192,7 +193,8 @@ impl Lisp {
             ascii_upcase_table: Value::NIL,
             ascii_canon_table: Value::NIL,
             ascii_eqv_table: Value::NIL,
-            local_tz: crate::timefns::Zone::Utc,
+            local_tz: None,
+            system_tz: None,
             start_instant: std::time::Instant::now(),
         };
         lisp.init_symbols();
