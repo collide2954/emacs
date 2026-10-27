@@ -43,30 +43,27 @@ Ported but not yet complete (C kept):
 | `keyboard.c` | `keyboard.rs` | everything except event modifier parsing |
 | `syntax.c` | `syntax.rs` | scanning (`forward-word`, `skip-chars-*`, `scan-lists`, `parse-partial-sexp`, ...) |
 | `casefiddle.c` | `casefiddle.rs` | a real port; the current version is a placeholder using Rust's Unicode tables |
-| `coding.c` | `coding.rs` | the conversion engine (see below) |
+| `coding.c` | `coding.rs`, `coding/` | `encode_string_utf_8`/`decode_string_utf_8` (for `json.c`), file-name encoding |
 | `bytecode.c` | `bytecode.rs` | the VM (stub) |
 
-`emacs --batch` loads `loadup.el` through `subr`, `keymap`, `custom`, `mule`, `mule-conf`,
-`env` and `format`, and stops in `bindings.el` on `function-key-map` (a `keyboard.c` variable).
+`emacs --batch` loads `loadup.el` through `bindings`, `window`, `files`, `macroexp` and
+`cus-face`, and stops in `faces.el` on `internal-set-font-selection-order` (`xfaces.c`).
 
-## Where the coding work stopped
+## Coding
 
-Done: the coding-system registry (`define-coding-system-internal` and friends), the
-conversion state fields on `CodingSystem`, and the buffer primitives the engine needs
-(`insert_from_gap`, `del_range_2`).
+The conversion engine is in place: `coding/engine.rs` (detection, EOL handling,
+produce/consume, the decode and encode drivers, `decode_coding_object`,
+`encode_coding_object`, `decode_coding_gap`), and one module per codec family:
+`utf.rs`, `simple.rs` (raw-text, charset), `cjk.rs` (Shift-JIS, Big5, CCL), `mule.rs`
+(emacs-mule) and `iso2022.rs`. `coding/api.rs` holds the Lisp API (`decode-coding-*`,
+`encode-coding-*`, `detect-coding-*`, the encodability queries,
+`find-operation-coding-system`, the SJIS/Big5 character functions).
 
-In progress, kept out of the tree in a local git stash (`coding engine WIP`):
-`coding/engine.rs` (detection, EOL handling, produce/consume, the decode and encode
-drivers, `decode_coding_object`/`encode_coding_object`, the conversion work buffer) and
-`coding/utf.rs` (UTF-8 and UTF-16 codecs).
-
-To resume: `git stash pop`, add `mod engine; mod utf;` to `coding.rs`, then port the
-remaining codecs from `coding.c`: raw-text and charset (lines 5264-5656), SJIS and Big5
-(4575-5068), CCL (5068-5264), emacs-mule (1829-2848), ISO-2022 (2848-4575). After that,
-the Lisp API (8634-10720): `decode-coding-string`/`region`, `encode-coding-*`,
-`detect-coding-*`, `find-coding-systems-region-internal`, `unencodable-char-position`,
-`check-coding-systems-region`, `find-operation-coding-system`, and the SJIS/Big5 character
-functions. `update_compositions` waits for `composite.c`.
+`insert-file-contents` is a port of `fileio.c`: it decides the coding system with
+`set-auto-coding-function` and `find-operation-coding-system`, decodes through
+`decode_coding_gap`, sets `last-coding-system-used`, and handles REPLACE. `fileio.c` itself
+is still mostly unported (modtime checks, `write-region` encoding, file locking), and
+`update_compositions` waits for `composite.c`.
 
 ## Removed legacy
 

@@ -306,6 +306,8 @@ pub struct Buffer {
     pub last_window_start: usize,
     pub window_count: usize,
     pub point_marker: Value,
+    pub modtime: (i64, i64),
+    pub modtime_size: i64,
 }
 
 impl Buffer {
@@ -730,6 +732,8 @@ impl Lisp {
             last_window_start: 1,
             window_count: 0,
             point_marker: Value::NIL,
+            modtime: (0, 0),
+            modtime_size: -1,
         };
         let value = self.heap.vectorlike(Vectorlike::Buffer(Box::new(buffer)));
         self.stack.push(value);
@@ -1504,14 +1508,14 @@ fn f_barf_if_buffer_read_only(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_erase_buffer(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_erase_buffer(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     lisp.widen();
     let (beg, end) = (1, lisp.cur().z());
     lisp.del_range(beg, end)?;
     Ok(Value::NIL)
 }
 
-fn f_set_buffer_multibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_set_buffer_multibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let flag = !args[0].is_nil();
     let buffer = lisp.current_buffer;
     if lisp.buffer(buffer).text.multibyte == flag {

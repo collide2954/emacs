@@ -179,7 +179,7 @@ fn f_string_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(width as i64))
 }
 
-fn f_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let mut chars = Vec::with_capacity(args.len());
     for &a in args {
         chars.push(lisp.check_character(a)?);

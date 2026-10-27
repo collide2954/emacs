@@ -802,7 +802,7 @@ impl Lisp {
         }
     }
 
-    fn fix_position(&mut self, pos: Value) -> LispResult<i64> {
+    pub(crate) fn fix_position(&mut self, pos: Value) -> LispResult<i64> {
         if let Some(n) = pos.as_fixnum() {
             return Ok(n);
         }

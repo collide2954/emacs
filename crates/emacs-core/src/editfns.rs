@@ -333,7 +333,7 @@ fn f_point(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.cur().pt as i64))
 }
 
-fn f_point_marker(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_point_marker(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let (pt, b) = (lisp.cur().pt, lisp.current_buffer);
     Ok(lisp.make_marker_at(pt, b, false))
 }
@@ -706,7 +706,7 @@ fn f_buffer_string(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.buffer_substring_value(s, e, true))
 }
 
-fn f_insert_buffer_substring(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_insert_buffer_substring(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = f_get_buffer_arg(lisp, args[0])?;
     let count = lisp.specpdl.len();
     let current = lisp.current_buffer;

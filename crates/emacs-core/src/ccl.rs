@@ -184,7 +184,7 @@ fn int_fixnum(v: Value) -> Option<i32> {
     v.as_fixnum().and_then(|n| i32::try_from(n).ok())
 }
 
-fn sjis_to_jis(code: i32) -> i32 {
+pub(crate) fn sjis_to_jis(code: i32) -> i32 {
     let s1 = code >> 8;
     let s2 = code & 0xFF;
     let (j1, j2) = if s2 >= 0x9F {
@@ -198,7 +198,7 @@ fn sjis_to_jis(code: i32) -> i32 {
     (j1 << 8) | j2
 }
 
-fn jis_to_sjis(code: i32) -> i32 {
+pub(crate) fn jis_to_sjis(code: i32) -> i32 {
     let j1 = code >> 8;
     let j2 = code & 0xFF;
     let (s1, s2) = if j1 & 1 != 0 {

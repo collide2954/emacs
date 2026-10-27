@@ -1,5 +1,8 @@
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use crate::coding::{CodingSystem, FOR_UNIBYTE_MASK, REQUIRE_FLUSHING_MASK};
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::subr::Subr;
@@ -507,6 +510,7 @@ impl Lisp {
             std::io::ErrorKind::NotFound => "No such file or directory".to_string(),
             std::io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
             std::io::ErrorKind::AlreadyExists => "File exists".to_string(),
+            std::io::ErrorKind::IsADirectory => "Is a directory".to_string(),
             _ => err.to_string(),
         };
         let detail = self.string(&text);
@@ -934,84 +938,1089 @@ fn f_file_newer_than_file_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-fn f_insert_file_contents(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let (filename, visit, beg, end, replace) = (args[0], args[1], args[2], args[3], args[4]);
-    let filename = lisp.check_string(filename)?;
-    if let Some(r) = lisp.handled(sym::INSERT_FILE_CONTENTS, args)? {
-        return Ok(r);
-    }
-    let expanded = lisp.expand_file_name(filename, Value::NIL)?;
-    lisp.stack.push(expanded);
-    let path = PathBuf::from(lisp.string_to_rust(expanded));
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(e) => {
-            lisp.stack.pop();
-            if !visit.is_nil() && e.kind() == std::io::ErrorKind::NotFound {
-                let b = lisp.current_buffer;
-                lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, expanded);
-            }
-            return Err(lisp.file_error("Opening input file", &e, expanded));
+const READ_BUF_SIZE: usize = 16 * 1024;
+const INSERT_READ_SIZE_MAX: usize = 1024 * 1024;
+const NONEXISTENT_MODTIME_NSECS: i64 = -1;
+const UNKNOWN_MODTIME_NSECS: i64 = -2;
+
+struct InsertFile {
+    filename: Value,
+    orig_filename: Value,
+    visit: Value,
+    beg: Value,
+    end: Value,
+    replace: Value,
+    handler: Value,
+    val: Value,
+    inserted: usize,
+    total: i64,
+    save_errno: Option<std::io::Error>,
+    set_coding_system: bool,
+    coding_system: Value,
+    coding: CodingSystem,
+    window_markers: Value,
+    same_at_start: usize,
+    same_at_end_charpos: usize,
+    mtime: (i64, i64),
+    st_size: i64,
+    old_deactivate_mark: Value,
+}
+
+fn file_offset(lisp: &mut Lisp, val: Value) -> LispResult<i64> {
+    if let Some(n) = val.as_fixnum() {
+        if n >= 0 {
+            return Ok(n);
         }
+    } else if lisp.is_bignum(val) {
+        if let Some(n) = lisp.bignum_ref(val).and_then(|b| i64::try_from(b).ok())
+            && n >= 0
+        {
+            return Ok(n);
+        }
+    } else if val.is_float() {
+        let v = lisp.heap.float_value(val);
+        if (0.0..9.223_372_036_854_776e18).contains(&v) && v.fract() == 0.0 {
+            return Ok(v as i64);
+        }
+    }
+    Err(lisp.wrong_type(sym::FILE_OFFSET, val))
+}
+
+fn time_error_value(err: &std::io::Error) -> (i64, i64) {
+    let ns = match err.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
+            NONEXISTENT_MODTIME_NSECS
+        }
+        _ => UNKNOWN_MODTIME_NSECS,
     };
-    let start = if beg.is_nil() {
+    (0, ns)
+}
+
+fn stat_mtime(meta: &std::fs::Metadata) -> (i64, i64) {
+    match meta.modified() {
+        Ok(t) => match t.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => (d.as_secs() as i64, d.subsec_nanos() as i64),
+            Err(e) => {
+                let d = e.duration();
+                (-(d.as_secs() as i64), -(d.subsec_nanos() as i64))
+            }
+        },
+        Err(_) => (0, UNKNOWN_MODTIME_NSECS),
+    }
+}
+
+fn full_read(file: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut done = 0;
+    while done < buf.len() {
+        match file.read(&mut buf[done..]) {
+            Ok(0) => break,
+            Ok(n) => done += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) if done == 0 => return Err(e),
+            Err(_) => break,
+        }
+    }
+    Ok(done)
+}
+
+fn read_some(file: &mut File, buf: &mut [u8]) -> std::io::Result<usize> {
+    loop {
+        match file.read(buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            r => return r,
+        }
+    }
+}
+
+fn char_head_p(byte: u8) -> bool {
+    byte & 0xC0 != 0x80
+}
+
+impl Lisp {
+    fn xlseek(&mut self, file: &mut File, pos: SeekFrom, filename: Value) -> LispResult<i64> {
+        match file.seek(pos) {
+            Ok(p) => Ok(p as i64),
+            Err(e) => Err(self.file_error("Setting file position", &e, filename)),
+        }
+    }
+
+    fn fetch_byte(&self, pos: usize) -> u8 {
+        let t = &self.cur().text;
+        if pos > t.bytes() { 0 } else { t.byte_at(pos) }
+    }
+
+    fn set_pt_both(&mut self, charpos: usize, bytepos: usize) {
+        let b = self.cur_mut();
+        b.pt = charpos;
+        b.pt_byte = bytepos;
+    }
+
+    fn del_range_byte(&mut self, from_byte: usize, to_byte: usize) -> LispResult<()> {
+        let b = self.cur();
+        let from_byte = from_byte.max(b.begv_byte);
+        let to_byte = to_byte.min(b.zv_byte);
+        if to_byte <= from_byte {
+            return Ok(());
+        }
+        let from = b.text.byte_to_char(from_byte);
+        let to = b.text.byte_to_char(to_byte);
+        self.del_range(from, to)
+    }
+
+    fn set_multibyte_flag(&mut self, buffer: Value, flag: bool) {
+        self.buffer_mut(buffer).text.multibyte = flag;
+        let v = self.bool(flag);
+        self.buffer_local_set(buffer, sym::ENABLE_MULTIBYTE_CHARACTERS, v);
+    }
+
+    fn fboundp(&self, symbol: Value) -> bool {
+        !self.heap.symbol_ref(symbol).function.is_nil()
+    }
+
+    fn unlock_file_if_supported(&mut self, file: Value) -> LispResult<()> {
+        if self.fboundp(sym::UNLOCK_FILE) {
+            self.funcall(sym::UNLOCK_FILE, &[file])?;
+        }
+        Ok(())
+    }
+
+    fn check_inserted(&mut self, insval: Value) -> LispResult<usize> {
+        let b = self.cur();
+        let limit = (b.zv - b.pt) as i64;
+        match insval.as_fixnum() {
+            Some(n) if (0..=limit).contains(&n) => Ok(n as usize),
+            _ => Err(self.wrong_type(sym::INSERTED_CHARS, insval)),
+        }
+    }
+
+    fn get_window_points_and_markers(&mut self) -> LispResult {
+        let pt_marker = crate::editfns::f_point_marker(self, &[])?;
+        self.stack.push(pt_marker);
+        let buffer = self.current_buffer;
+        let windows = self.funcall(sym::GET_BUFFER_WINDOW_LIST, &[buffer, Value::NIL, sym::T])?;
+        self.stack.push(windows);
+        let pt = Value::fixnum(self.cur().pt as i64);
+        let head = self.cons(pt_marker, pt);
+        Ok(self.cons(head, windows))
+    }
+
+    fn restore_window_points(
+        &mut self,
+        mut window_markers: Value,
+        inserted: usize,
+        same_at_start: usize,
+        same_at_end: usize,
+    ) -> LispResult<()> {
+        while window_markers.is_cons() {
+            let car = self.xcar(window_markers);
+            if car.is_cons() {
+                let marker = self.xcar(car);
+                let oldpos = self.xcdr(car);
+                if let Some(old) = oldpos.as_fixnum()
+                    && self.is_marker(marker)
+                    && old > same_at_start as i64
+                    && old <= same_at_end as i64
+                {
+                    let oldsize = (same_at_end - same_at_start) as f64;
+                    let growth = inserted as f64 / oldsize;
+                    let newpos = same_at_start as i64
+                        + (growth * (old - same_at_start as i64) as f64) as i64;
+                    self.set_marker(marker, Value::fixnum(newpos), Value::NIL, false)?;
+                }
+            }
+            window_markers = self.xcdr(window_markers);
+        }
+        Ok(())
+    }
+
+    fn decode_coding_c_string(
+        &mut self,
+        coding: &mut CodingSystem,
+        bytes: Vec<u8>,
+        dst_object: Value,
+    ) -> LispResult<()> {
+        let n = bytes.len();
+        coding.source = bytes;
+        coding.src_chars = n;
+        coding.src_bytes = n;
+        self.decode_coding_object(coding, Value::NIL, (0, 0, n, n), dst_object)
+    }
+}
+
+fn restore_point_unwind(lisp: &mut Lisp, location: Value) -> LispResult<()> {
+    let pos = lisp.marker_position_checked(location)?;
+    lisp.goto_char_internal(pos);
+    lisp.unchain_marker(location);
+    Ok(())
+}
+
+fn decide_coding_unwind(lisp: &mut Lisp, unwind_data: Value) -> LispResult<()> {
+    let multibyte = lisp.xcar(unwind_data);
+    let tmp = lisp.xcdr(unwind_data);
+    let undo_list = lisp.xcar(tmp);
+    let buffer = lisp.xcdr(tmp);
+    lisp.set_buffer_internal(buffer);
+    let z = lisp.cur().z();
+    lisp.adjust_markers_for_delete(buffer, 1, z);
+    lisp.adjust_overlays_for_delete(buffer, 1, z);
+    let b = lisp.cur_mut();
+    b.text.props.clear();
+    b.pt = 1;
+    b.pt_byte = 1;
+    let bytes = b.text.slice(0, b.text.bytes());
+    let z_byte = b.z_byte();
+    let chars = b.text.chars;
+    b.text.delete_bytes(1, z_byte, chars);
+    b.zv = 1;
+    b.zv_byte = 1;
+    let s = lisp.unibyte_string(&bytes);
+    lisp.heap.set_car(unwind_data, s);
+    lisp.set_multibyte_flag(buffer, !multibyte.is_nil());
+    lisp.set_undo_list(undo_list);
+    Ok(())
+}
+
+fn f_insert_file_contents(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let count = lisp.specpdl.len();
+    let base = lisp.stack.len();
+    let r = insert_file_contents(lisp, args);
+    if let Ok(v) = r {
+        lisp.stack.push(v);
+    }
+    let u = lisp.unbind_to(count);
+    lisp.stack.truncate(base);
+    let v = r?;
+    u?;
+    Ok(v)
+}
+
+fn insert_file_contents(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let arg = |i: usize| args.get(i).copied().unwrap_or(Value::NIL);
+    let (visit, beg, end, replace) = (arg(1), arg(2), arg(3), arg(4));
+    let empty_undo_list_p = !visit.is_nil() && lisp.undo_list().is_nil() && lisp.cur().z() == 1;
+    let old_deactivate_mark = lisp.bound_var(sym::DEACTIVATE_MARK);
+    lisp.stack.push(old_deactivate_mark);
+    if !lisp.cur().base_buffer.is_nil() && !visit.is_nil() {
+        return Err(lisp.error("Cannot do file visiting in an indirect buffer"));
+    }
+    if !lisp.find_symbol_value(sym::BUFFER_READ_ONLY).is_nil() {
+        let pt = lisp.cur().pt;
+        lisp.barf_if_buffer_read_only(pt)?;
+    }
+    let filename = lisp.check_string(arg(0))?;
+    let filename = lisp.expand_file_name(filename, Value::NIL)?;
+    lisp.stack.push(filename);
+    let handler = lisp
+        .find_file_name_handler(filename, sym::INSERT_FILE_CONTENTS)?
+        .unwrap_or(Value::NIL);
+    let b = lisp.cur();
+    let mut s = InsertFile {
+        filename,
+        orig_filename: filename,
+        visit,
+        beg,
+        end,
+        replace,
+        handler,
+        val: Value::NIL,
+        inserted: 0,
+        total: 0,
+        save_errno: None,
+        set_coding_system: false,
+        coding_system: Value::NIL,
+        coding: CodingSystem::unset(),
+        window_markers: Value::NIL,
+        same_at_start: b.begv_byte,
+        same_at_end_charpos: b.zv,
+        mtime: (0, 0),
+        st_size: -1,
+        old_deactivate_mark,
+    };
+    if !handler.is_nil() {
+        let val = lisp.funcall(
+            handler,
+            &[
+                sym::INSERT_FILE_CONTENTS,
+                filename,
+                visit,
+                beg,
+                end,
+                replace,
+            ],
+        )?;
+        lisp.stack.push(val);
+        s.val = val;
+        if val.is_cons() && lisp.xcdr(val).is_cons() {
+            let n = lisp.xcar(lisp.xcdr(val));
+            let b = lisp.cur();
+            if let Some(n) = n.as_fixnum()
+                && (0..=(b.zv - b.pt) as i64).contains(&n)
+            {
+                s.inserted = n as usize;
+            }
+        }
+    } else {
+        insert_file_contents_body(lisp, &mut s)?;
+    }
+    insert_file_contents_handled(lisp, &mut s, empty_undo_list_p)
+}
+
+fn insert_file_contents_body(lisp: &mut Lisp, s: &mut InsertFile) -> LispResult<()> {
+    if !s.visit.is_nil() {
+        if !s.beg.is_nil() || !s.end.is_nil() {
+            return Err(lisp.error("Attempt to visit less than an entire file"));
+        }
+        if lisp.cur().z() > 1 && s.replace.is_nil() {
+            return Err(lisp.error("Cannot do file visiting in a non-empty buffer"));
+        }
+    }
+    let mut beg_offset = if s.beg.is_nil() {
         0
     } else {
-        lisp.check_fixnat(beg)? as usize
+        file_offset(lisp, s.beg)?
     };
-    let stop = if end.is_nil() {
-        bytes.len()
+    let mut end_offset = if s.end.is_nil() {
+        i64::MAX
     } else {
-        (lisp.check_fixnat(end)? as usize).min(bytes.len())
+        file_offset(lisp, s.end)?
     };
-    let slice = &bytes[start.min(stop)..stop];
-    if !replace.is_nil() {
+    end_offset = end_offset.max(beg_offset);
+    let path = PathBuf::from(lisp.string_to_rust(s.filename));
+    let mut file = match File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            if s.visit.is_nil() {
+                return Err(lisp.file_error("Opening input file", &e, s.orig_filename));
+            }
+            s.mtime = time_error_value(&e);
+            s.save_errno = Some(e);
+            let csr = lisp.bound_var(sym::CODING_SYSTEM_FOR_READ);
+            if !csr.is_nil() {
+                lisp.check_coding_system_arg(csr)?;
+                lisp.set(sym::BUFFER_FILE_CODING_SYSTEM, csr)?;
+            }
+            return insert_file_contents_notfound(lisp, s, Vec::new());
+        }
+    };
+    if !s.replace.is_nil() {
+        s.window_markers = lisp.get_window_points_and_markers()?;
+        lisp.stack.push(s.window_markers);
+        let head = lisp.xcar(s.window_markers);
+        let marker = lisp.xcar(head);
+        lisp.record_unwind(restore_point_unwind, marker);
+    }
+    let meta = match file.metadata() {
+        Ok(m) => m,
+        Err(e) => return Err(lisp.file_error("Input file status", &e, s.orig_filename)),
+    };
+    if meta.is_dir() {
+        let e = std::io::Error::from(std::io::ErrorKind::IsADirectory);
+        return Err(lisp.file_error("Read error", &e, s.orig_filename));
+    }
+    let regular = meta.is_file();
+    if regular {
+        s.st_size = meta.len() as i64;
+    }
+    s.mtime = stat_mtime(&meta);
+    if !regular {
+        if !s.visit.is_nil() || !s.replace.is_nil() {
+            if !s.visit.is_nil() || s.replace != sym::IF_REGULAR {
+                let msg = lisp.string("not a regular file");
+                return Err(lisp.signal_list(sym::FILE_ERROR, &[msg, s.orig_filename]));
+            }
+            s.replace = sym::UNBOUND;
+        }
+        if !s.beg.is_nil() {
+            let msg = lisp.string("can use a start position only in a regular file");
+            return Err(lisp.signal_list(sym::FILE_ERROR, &[msg, s.orig_filename]));
+        }
+    }
+    let likely_end = end_offset.min(s.st_size);
+    let mut curpos: i64 = -1;
+    let mut read_buf = vec![0u8; READ_BUF_SIZE];
+    let csr = lisp.bound_var(sym::CODING_SYSTEM_FOR_READ);
+    if csr == sym::AUTO_SAVE_CODING {
+        s.coding_system = lisp.coding_inherit_eol_type(sym::UTF_8_EMACS, sym::UNIX)?;
+        s.coding = lisp.setup_coding_system(s.coding_system)?;
+        s.set_coding_system = true;
+    } else if lisp.cur().z() > 1 {
+        if !csr.is_nil() {
+            s.coding_system = csr;
+        } else {
+            let sacf = lisp.bound_var(sym::SET_AUTO_CODING_FUNCTION);
+            if regular && !sacf.is_nil() {
+                if !s.beg.is_nil() {
+                    curpos = lisp.xlseek(
+                        &mut file,
+                        SeekFrom::Start(beg_offset as u64),
+                        s.orig_filename,
+                    )?;
+                } else {
+                    curpos = lisp.xlseek(&mut file, SeekFrom::Current(0), s.orig_filename)?;
+                    beg_offset = curpos;
+                    end_offset = end_offset.max(beg_offset);
+                }
+                let trial = (end_offset - beg_offset).min(4 * 1024) as usize;
+                let mut nread: i64 = if trial > 0 {
+                    full_read(&mut file, &mut read_buf[..trial]).map_or(-1, |n| n as i64)
+                } else {
+                    0
+                };
+                curpos += nread;
+                if nread == 4 * 1024 && curpos < end_offset {
+                    curpos = file.seek(SeekFrom::End(-3 * 1024)).map_or(-1, |p| p as i64);
+                    if curpos < 0 {
+                        curpos = beg_offset + nread;
+                    } else {
+                        let tailbeg = if curpos <= beg_offset + nread {
+                            beg_offset + nread
+                        } else {
+                            curpos.min(end_offset - 3 * 1024)
+                        };
+                        if tailbeg != curpos {
+                            curpos = lisp.xlseek(
+                                &mut file,
+                                SeekFrom::Start(tailbeg as u64),
+                                s.orig_filename,
+                            )?;
+                        }
+                    }
+                    let trial = (end_offset - curpos).min((READ_BUF_SIZE - 1024) as i64) as usize;
+                    match full_read(&mut file, &mut read_buf[1024..1024 + trial]) {
+                        Ok(n) => {
+                            curpos += n as i64;
+                            nread = n as i64 + 1024;
+                        }
+                        Err(_) => nread = -1,
+                    }
+                }
+                if nread < 0 {
+                    let e = std::io::Error::last_os_error();
+                    return Err(lisp.file_error("Read error", &e, s.orig_filename));
+                } else if nread > 0 {
+                    let prev = lisp.current_buffer;
+                    lisp.record_unwind_current_buffer();
+                    let name = lisp.string(" *code-converting-work*");
+                    let workbuf = lisp.get_buffer_create(name, true)?;
+                    lisp.stack.push(workbuf);
+                    crate::overlay::f_delete_all_overlays(lisp, &[workbuf])?;
+                    let dir = lisp
+                        .buffer_local_get(prev, sym::DEFAULT_DIRECTORY)
+                        .unwrap_or(Value::NIL);
+                    lisp.buffer_local_set(workbuf, sym::DEFAULT_DIRECTORY, dir);
+                    lisp.buffer_local_set(workbuf, sym::BUFFER_READ_ONLY, Value::NIL);
+                    lisp.buffer_local_set(workbuf, sym::BUFFER_FILE_NAME, Value::NIL);
+                    lisp.buffer_local_set(workbuf, sym::BUFFER_UNDO_LIST, sym::T);
+                    lisp.set_buffer_internal(workbuf);
+                    crate::buffer::f_erase_buffer(lisp, &[])?;
+                    lisp.set_multibyte_flag(workbuf, false);
+                    let n = nread as usize;
+                    let (pt, pt_byte) = (lisp.cur().pt, lisp.cur().pt_byte);
+                    lisp.insert_from_gap(pt, pt_byte, &read_buf[..n], n, false);
+                    lisp.set_pt_both(1, 1);
+                    s.coding_system = lisp.funcall(sacf, &[s.filename, Value::fixnum(nread)])?;
+                    lisp.stack.push(s.coding_system);
+                    lisp.set_buffer_internal(prev);
+                    lisp.specpdl.pop();
+                }
+            }
+            if s.coding_system.is_nil() {
+                let r = crate::coding::f_find_operation_coding_system(
+                    lisp,
+                    &[
+                        sym::INSERT_FILE_CONTENTS,
+                        s.orig_filename,
+                        s.visit,
+                        s.beg,
+                        s.end,
+                        s.replace,
+                    ],
+                )?;
+                s.coding_system = if r.is_cons() { lisp.xcar(r) } else { r };
+                lisp.stack.push(s.coding_system);
+            }
+        }
+        if s.coding_system.is_nil() {
+            s.coding_system = sym::UNDECIDED;
+        } else {
+            lisp.check_coding_system_arg(s.coding_system)?;
+        }
+        if !lisp.cur().text.multibyte {
+            s.coding_system = lisp.raw_text_coding_system(s.coding_system)?;
+        }
+        s.coding = lisp.setup_coding_system(s.coding_system)?;
+        s.set_coding_system = true;
+    }
+    let mut same_at_start = s.same_at_start;
+    let mut same_at_end = lisp.cur().zv_byte;
+    let mut replace_handled = false;
+    let (begv, zv) = (lisp.cur().begv, lisp.cur().zv);
+    if !s.replace.is_nil()
+        && s.replace != sym::UNBOUND
+        && begv < zv
+        && (s.coding_system.is_nil() || !s.coding.require_decoding())
+    {
+        let mut giveup_match_end = false;
+        let begv_byte = lisp.cur().begv_byte;
+        let zv_byte = lisp.cur().zv_byte;
+        if beg_offset != curpos {
+            if !s.beg.is_nil() || 0 <= curpos {
+                curpos = lisp.xlseek(
+                    &mut file,
+                    SeekFrom::Start(beg_offset as u64),
+                    s.orig_filename,
+                )?;
+            } else {
+                curpos = lisp.xlseek(&mut file, SeekFrom::Current(0), s.orig_filename)?;
+                beg_offset = curpos;
+                end_offset = end_offset.max(beg_offset);
+            }
+        }
+        loop {
+            let trial = (end_offset - curpos).min(READ_BUF_SIZE as i64) as usize;
+            let nread = if trial > 0 {
+                match read_some(&mut file, &mut read_buf[..trial]) {
+                    Ok(n) => n,
+                    Err(e) => return Err(lisp.file_error("Read error", &e, s.orig_filename)),
+                }
+            } else {
+                0
+            };
+            if nread == 0 {
+                drop(file);
+                lisp.del_range_byte(same_at_start, same_at_end)?;
+                s.same_at_start = same_at_start;
+                return Ok(());
+            }
+            curpos += nread as i64;
+            if s.coding.require_detection() {
+                s.coding_system = lisp.detect_coding_system(
+                    read_buf[..nread].to_vec(),
+                    nread,
+                    true,
+                    false,
+                    s.coding_system,
+                )?;
+                s.coding = lisp.setup_coding_system(s.coding_system)?;
+            }
+            if s.coding.require_decoding() {
+                giveup_match_end = true;
+                break;
+            }
+            let mut bufpos = 0;
+            let bufposlim = nread.min(same_at_end - same_at_start);
+            while bufpos < bufposlim && lisp.fetch_byte(same_at_start) == read_buf[bufpos] {
+                same_at_start += 1;
+                bufpos += 1;
+            }
+            if bufpos != nread {
+                break;
+            }
+        }
+        let mut endpos = 0i64;
+        if !giveup_match_end {
+            endpos = end_offset;
+            if endpos == i64::MAX {
+                endpos = file.seek(SeekFrom::End(0)).map_or(-1, |p| p as i64);
+                if endpos < 0 {
+                    endpos = curpos;
+                }
+                let n = match full_read(&mut file, &mut read_buf) {
+                    Ok(n) => n,
+                    Err(e) => return Err(lisp.file_error("Read error", &e, s.orig_filename)),
+                };
+                endpos += n as i64;
+                curpos = endpos;
+                giveup_match_end = n == READ_BUF_SIZE;
+                if !giveup_match_end {
+                    let offset_from_beg = endpos - beg_offset;
+                    if offset_from_beg < (same_at_start - begv_byte) as i64 {
+                        giveup_match_end = offset_from_beg < 0;
+                        if !giveup_match_end {
+                            same_at_start = offset_from_beg as usize + begv_byte;
+                        }
+                    }
+                }
+            }
+        }
+        while !giveup_match_end {
+            let same_at_start_pos = beg_offset + (same_at_start - begv_byte) as i64;
+            let file_overlap_pos = endpos - (same_at_end - same_at_start) as i64;
+            let poslim = same_at_start_pos.max(file_overlap_pos);
+            let trial = (curpos - poslim).min(READ_BUF_SIZE as i64);
+            if trial == 0 {
+                break;
+            }
+            curpos = lisp.xlseek(&mut file, SeekFrom::Current(-trial), s.orig_filename)?;
+            let trial = trial as usize;
+            let nread = match full_read(&mut file, &mut read_buf[..trial]) {
+                Ok(n) => n,
+                Err(e) => return Err(lisp.file_error("Read error", &e, s.orig_filename)),
+            };
+            curpos += nread as i64;
+            if nread < trial {
+                giveup_match_end = true;
+                break;
+            }
+            let mut bufpos = nread;
+            while bufpos > 0 && lisp.fetch_byte(same_at_end - 1) == read_buf[bufpos - 1] {
+                same_at_end -= 1;
+                bufpos -= 1;
+            }
+            if bufpos != 0 {
+                if same_at_end > same_at_start
+                    && lisp.fetch_byte(same_at_end - 1) >= 0x80
+                    && lisp.cur().text.multibyte
+                    && (s.coding.require_decoding() || s.coding.require_detection())
+                {
+                    giveup_match_end = true;
+                }
+                break;
+            }
+        }
+        if !giveup_match_end {
+            let multibyte = lisp.cur().text.multibyte;
+            if multibyte {
+                while same_at_start > begv_byte && !char_head_p(lisp.fetch_byte(same_at_start)) {
+                    same_at_start -= 1;
+                }
+                while same_at_end < zv_byte && !char_head_p(lisp.fetch_byte(same_at_end)) {
+                    same_at_end += 1;
+                }
+            }
+            s.same_at_end_charpos = lisp.cur().text.byte_to_char(same_at_end);
+            beg_offset += (same_at_start - begv_byte) as i64;
+            end_offset = endpos - (zv_byte - same_at_end) as i64;
+            let this_count = lisp.specpdl.len();
+            let b = lisp.cur();
+            if !s.visit.is_nil() && b.begv == 1 && b.z() == b.zv {
+                lisp.specbind(sym::BUFFER_FILE_NAME, Value::NIL)?;
+            }
+            lisp.del_range_byte(same_at_start, same_at_end)?;
+            let temp = lisp.cur().text.byte_to_char(same_at_start);
+            lisp.set_pt_both(temp, same_at_start);
+            lisp.unbind_to(this_count)?;
+            replace_handled = true;
+        }
+    }
+    s.same_at_start = same_at_start;
+    let (begv, zv) = (lisp.cur().begv, lisp.cur().zv);
+    if !s.replace.is_nil() && s.replace != sym::UNBOUND && !replace_handled && begv < zv {
+        let this_count = lisp.specpdl.len();
+        let multibyte = lisp.cur().text.multibyte;
+        let conversion_buffer = lisp.code_conversion_save(true, multibyte)?;
+        lisp.stack.push(conversion_buffer);
+        if beg_offset != curpos {
+            if !s.beg.is_nil() || 0 <= curpos {
+                curpos = lisp.xlseek(
+                    &mut file,
+                    SeekFrom::Start(beg_offset as u64),
+                    s.orig_filename,
+                )?;
+            } else {
+                curpos = lisp.xlseek(&mut file, SeekFrom::Current(0), s.orig_filename)?;
+                end_offset = end_offset.max(curpos);
+            }
+        }
+        let mut unprocessed: Vec<u8> = Vec::new();
+        loop {
+            let trial =
+                (end_offset - curpos).min((READ_BUF_SIZE - unprocessed.len()) as i64) as usize;
+            let this = if trial > 0 {
+                match read_some(&mut file, &mut read_buf[..trial]) {
+                    Ok(n) => n,
+                    Err(e) => return Err(lisp.file_error("Read error", &e, s.orig_filename)),
+                }
+            } else {
+                0
+            };
+            if this == 0 {
+                break;
+            }
+            curpos += this as i64;
+            let cb = lisp.buffer_mut(conversion_buffer);
+            cb.pt = cb.z();
+            cb.pt_byte = cb.z_byte();
+            let mut chunk = std::mem::take(&mut unprocessed);
+            chunk.extend_from_slice(&read_buf[..this]);
+            lisp.decode_coding_c_string(&mut s.coding, chunk, conversion_buffer)?;
+            unprocessed = std::mem::take(&mut s.coding.carryover);
+        }
+        drop(file);
+        if !unprocessed.is_empty() {
+            let cb = lisp.buffer_mut(conversion_buffer);
+            cb.pt = cb.z();
+            cb.pt_byte = cb.z_byte();
+            s.coding.mode |= crate::coding::MODE_LAST_BLOCK;
+            lisp.decode_coding_c_string(&mut s.coding, unprocessed, conversion_buffer)?;
+            s.coding.mode &= !crate::coding::MODE_LAST_BLOCK;
+        }
+        s.coding_system = lisp.coding_id_name(s.coding.id);
+        s.set_coding_system = true;
+        let decoded = {
+            let t = &lisp.buffer(conversion_buffer).text;
+            t.slice(0, t.bytes())
+        };
+        let mut inserted = decoded.len();
+        let begv_byte = lisp.cur().begv_byte;
+        let zv_byte = lisp.cur().zv_byte;
+        let mut bufpos = 0;
+        let bufposlim = inserted.min(same_at_end - same_at_start);
+        while bufpos < bufposlim && lisp.fetch_byte(same_at_start) == decoded[bufpos] {
+            same_at_start += 1;
+            bufpos += 1;
+        }
+        if bufpos == inserted {
+            if same_at_start != same_at_end {
+                let b = lisp.cur();
+                if !s.visit.is_nil() && b.begv == 1 && b.z() == b.zv {
+                    lisp.specbind(sym::BUFFER_FILE_NAME, Value::NIL)?;
+                }
+                lisp.del_range_byte(same_at_start, same_at_end)?;
+            }
+            s.inserted = 0;
+            lisp.unbind_to(this_count)?;
+            s.same_at_start = same_at_start;
+            return Ok(());
+        }
+        let current_multibyte = lisp.cur().text.multibyte;
+        if current_multibyte {
+            while same_at_start > begv_byte && !char_head_p(lisp.fetch_byte(same_at_start)) {
+                same_at_start -= 1;
+            }
+        }
+        let bufposlim = ((same_at_start - begv_byte) as i64)
+            .max(inserted as i64 - (same_at_end - same_at_start) as i64);
+        let mut bufpos = inserted as i64;
+        while bufposlim < bufpos && lisp.fetch_byte(same_at_end - 1) == decoded[bufpos as usize - 1]
+        {
+            same_at_end -= 1;
+            bufpos -= 1;
+        }
+        if current_multibyte {
+            while same_at_end < zv_byte && !char_head_p(lisp.fetch_byte(same_at_end)) {
+                same_at_end += 1;
+            }
+        }
+        s.same_at_end_charpos = lisp.cur().text.byte_to_char(same_at_end);
+        inserted -= (zv_byte - same_at_end) + (same_at_start - begv_byte);
+        let b = lisp.cur();
+        if !s.visit.is_nil() && b.begv == 1 && b.z() == b.zv {
+            lisp.specbind(sym::BUFFER_FILE_NAME, Value::NIL)?;
+        }
+        let temp = if same_at_end != same_at_start {
+            lisp.del_range_byte(same_at_start, same_at_end)?;
+            lisp.cur().text.byte_to_char(same_at_start)
+        } else {
+            s.same_at_end_charpos
+        };
+        lisp.set_pt_both(temp, same_at_start);
+        let (start_charpos, end_charpos) = {
+            let t = &lisp.buffer(conversion_buffer).text;
+            (
+                t.byte_to_char(same_at_start - begv_byte + 1),
+                t.byte_to_char(same_at_start + inserted - begv_byte + 1),
+            )
+        };
+        crate::editfns::f_insert_buffer_substring(
+            lisp,
+            &[
+                conversion_buffer,
+                Value::fixnum(start_charpos as i64),
+                Value::fixnum(end_charpos as i64),
+            ],
+        )?;
+        s.inserted = lisp.cur().pt - temp;
+        lisp.set_pt_both(temp, same_at_start);
+        lisp.unbind_to(this_count)?;
+        s.same_at_start = same_at_start;
+        return Ok(());
+    }
+    if beg_offset != curpos {
+        if !s.beg.is_nil() || 0 <= curpos {
+            lisp.xlseek(
+                &mut file,
+                SeekFrom::Start(beg_offset as u64),
+                s.orig_filename,
+            )?;
+        } else if end_offset != i64::MAX {
+            curpos = file.stream_position().map_or(-1, |p| p as i64);
+            beg_offset = curpos.max(0);
+            end_offset = end_offset.max(beg_offset);
+        }
+    }
+    s.total = end_offset - beg_offset;
+    let mut we_locked_file = false;
+    if s.visit.is_nil() && s.total > 0 {
+        let truename = lisp.find_symbol_value(sym::BUFFER_FILE_TRUENAME);
+        let fname = lisp.find_symbol_value(sym::BUFFER_FILE_NAME);
+        let t = &lisp.cur().text;
+        if !truename.is_nil() && !fname.is_nil() && t.save_modiff >= t.modiff {
+            we_locked_file = true;
+        }
+        let pt = lisp.cur().pt;
+        lisp.prepare_to_modify_buffer(pt, pt)?;
+    }
+    if s.replace == sym::UNBOUND {
         let (begv, zv) = (lisp.cur().begv, lisp.cur().zv);
         lisp.del_range(begv, zv)?;
     }
-    let pt = lisp.cur().pt;
-    let multibyte = lisp.cur().text.multibyte;
-    let (data, chars) = if multibyte {
-        let normalized = normalize_eol(slice);
-        crate::lread::decode_utf8_emacs(&normalized)
-    } else {
-        (slice.to_vec(), slice.len())
-    };
-    lisp.insert_internal(&data, chars, &[], false, false)?;
-    lisp.goto_char_internal(pt);
-    if !visit.is_nil() {
-        let b = lisp.current_buffer;
-        lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, expanded);
-        let modiff = lisp.cur().text.modiff;
-        lisp.cur_mut().text.save_modiff = modiff;
-        let utf8 = lisp.intern("utf-8-unix");
-        lisp.buffer_local_set(b, sym::BUFFER_FILE_CODING_SYSTEM, utf8);
-        lisp.buffer_local_set(b, sym::BUFFER_UNDO_LIST, Value::NIL);
+    let estimate = (likely_end - beg_offset).max(0) as usize;
+    let mut raw: Vec<u8> = Vec::with_capacity(estimate.min(1 << 30));
+    let mut read_error = None;
+    while (raw.len() as i64) < s.total {
+        let bufsize = (s.total - raw.len() as i64).min(INSERT_READ_SIZE_MAX as i64) as usize;
+        let old = raw.len();
+        raw.resize(old + bufsize, 0);
+        match read_some(&mut file, &mut raw[old..]) {
+            Ok(0) => {
+                raw.truncate(old);
+                break;
+            }
+            Ok(n) => raw.truncate(old + n),
+            Err(e) => {
+                raw.truncate(old);
+                read_error = Some(e);
+                break;
+            }
+        }
     }
-    lisp.stack.pop();
-    let count = Value::fixnum(chars as i64);
-    Ok(lisp.list(&[expanded, count]))
+    if raw.is_empty() {
+        if we_locked_file {
+            let truename = lisp.find_symbol_value(sym::BUFFER_FILE_TRUENAME);
+            lisp.unlock_file_if_supported(truename)?;
+        }
+        lisp.set_plain_value(sym::DEACTIVATE_MARK, s.old_deactivate_mark);
+    } else {
+        lisp.set(sym::DEACTIVATE_MARK, sym::T)?;
+    }
+    drop(file);
+    if let Some(e) = read_error {
+        return Err(lisp.file_error("Read error", &e, s.orig_filename));
+    }
+    s.inserted = raw.len();
+    insert_file_contents_notfound(lisp, s, raw)
 }
 
-fn normalize_eol(bytes: &[u8]) -> Vec<u8> {
-    if !bytes.contains(&b'\r') {
-        return bytes.to_vec();
-    }
-    let crlf = bytes.windows(2).any(|w| w == b"\r\n");
-    if !crlf {
-        return bytes.to_vec();
-    }
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') {
-            i += 1;
-            continue;
+fn insert_file_contents_notfound(
+    lisp: &mut Lisp,
+    s: &mut InsertFile,
+    mut raw: Vec<u8>,
+) -> LispResult<()> {
+    if s.coding_system.is_nil() {
+        let csr = lisp.bound_var(sym::CODING_SYSTEM_FOR_READ);
+        if !csr.is_nil() {
+            s.coding_system = csr;
+        } else {
+            let buffer = lisp.current_buffer;
+            let multibyte = lisp.bool(lisp.cur().text.multibyte);
+            let undo_list = lisp.undo_list();
+            let tail = lisp.cons(undo_list, buffer);
+            let unwind_data = lisp.cons(multibyte, tail);
+            lisp.stack.push(unwind_data);
+            let count1 = lisp.specpdl.len();
+            lisp.set_multibyte_flag(buffer, false);
+            lisp.set_undo_list(sym::T);
+            lisp.record_unwind(decide_coding_unwind, unwind_data);
+            {
+                let n = raw.len();
+                let b = lisp.cur_mut();
+                b.text.insert_bytes(1, &raw, n);
+                b.zv += n;
+                b.zv_byte += n;
+            }
+            let sacf = lisp.bound_var(sym::SET_AUTO_CODING_FUNCTION);
+            if s.inserted > 0 && !sacf.is_nil() {
+                let n = Value::fixnum(s.inserted as i64);
+                s.coding_system = lisp.funcall(sacf, &[s.filename, n])?;
+                lisp.stack.push(s.coding_system);
+            }
+            if s.coding_system.is_nil() {
+                let r = crate::coding::f_find_operation_coding_system(
+                    lisp,
+                    &[
+                        sym::INSERT_FILE_CONTENTS,
+                        s.orig_filename,
+                        s.visit,
+                        s.beg,
+                        s.end,
+                        Value::NIL,
+                    ],
+                )?;
+                s.coding_system = if r.is_cons() { lisp.xcar(r) } else { r };
+                lisp.stack.push(s.coding_system);
+            }
+            lisp.unbind_to(count1)?;
+            let text = lisp.xcar(unwind_data);
+            raw = lisp.string_bytes(text).to_vec();
+            s.inserted = raw.len();
         }
-        out.push(bytes[i]);
-        i += 1;
+        if s.coding_system.is_nil() {
+            s.coding_system = sym::UNDECIDED;
+        } else {
+            lisp.check_coding_system_arg(s.coding_system)?;
+        }
+        if !lisp.cur().text.multibyte {
+            s.coding_system = lisp.raw_text_coding_system(s.coding_system)?;
+        }
+        s.coding = lisp.setup_coding_system(s.coding_system)?;
+        s.set_coding_system = true;
     }
-    out
+    if !s.visit.is_nil() && s.coding.common_flags & FOR_UNIBYTE_MASK != 0 && s.replace.is_nil() {
+        if s.inserted > 0 {
+            let buffer = lisp.current_buffer;
+            lisp.set_multibyte_flag(buffer, false);
+        } else {
+            crate::buffer::f_set_buffer_multibyte(lisp, &[Value::NIL])?;
+        }
+    }
+    s.coding.dst_multibyte = lisp.cur().text.multibyte;
+    if (s.coding.require_decoding() || s.coding.require_detection())
+        && (s.inserted > 0 || s.coding.common_flags & REQUIRE_FLUSHING_MASK != 0)
+    {
+        lisp.decode_coding_gap(&mut s.coding, raw)?;
+        s.inserted = s.coding.produced_char;
+        s.coding_system = lisp.coding_id_name(s.coding.id);
+    } else if s.inserted > 0 {
+        let (pt, pt_byte) = (lisp.cur().pt, lisp.cur().pt_byte);
+        lisp.insert_from_gap(pt, pt_byte, &raw, s.inserted, false);
+    }
+    if s.inserted > 0 && s.total > 0 && (s.visit.is_nil() || !s.replace.is_nil()) {
+        let pt = lisp.cur().pt;
+        lisp.signal_after_change(pt, 0, s.inserted)?;
+    }
+    Ok(())
+}
+
+fn insert_file_contents_handled(
+    lisp: &mut Lisp,
+    s: &mut InsertFile,
+    empty_undo_list_p: bool,
+) -> LispResult {
+    if s.inserted > 0 {
+        let start = lisp.cur().text.byte_to_char(s.same_at_start);
+        lisp.restore_window_points(s.window_markers, s.inserted, start, s.same_at_end_charpos)?;
+    }
+    if !s.visit.is_nil() {
+        if empty_undo_list_p {
+            lisp.set_undo_list(Value::NIL);
+        }
+        let buffer = lisp.current_buffer;
+        if s.handler.is_nil() {
+            let b = lisp.cur_mut();
+            b.modtime = s.mtime;
+            b.modtime_size = s.st_size;
+            lisp.buffer_local_set(buffer, sym::BUFFER_FILE_NAME, s.orig_filename);
+        }
+        let t = &mut lisp.cur_mut().text;
+        t.save_modiff = t.modiff;
+        t.autosave_modiff = t.modiff;
+        let size = Value::fixnum(lisp.cur().z() as i64 - 1);
+        lisp.buffer_local_set(buffer, sym::BUFFER_SAVED_SIZE, size);
+        if s.handler.is_nil() {
+            let truename = lisp.find_symbol_value(sym::BUFFER_FILE_TRUENAME);
+            if !truename.is_nil() {
+                lisp.unlock_file_if_supported(truename)?;
+            }
+            lisp.unlock_file_if_supported(s.filename)?;
+        }
+    }
+    if s.set_coding_system {
+        lisp.set_plain_value(sym::LAST_CODING_SYSTEM_USED, s.coding_system);
+    }
+    if lisp.fboundp(sym::AFTER_INSERT_FILE_SET_CODING) {
+        let n = Value::fixnum(s.inserted as i64);
+        let insval = lisp.funcall(sym::AFTER_INSERT_FILE_SET_CODING, &[n, s.visit])?;
+        if !insval.is_nil() {
+            s.inserted = lisp.check_inserted(insval)?;
+        }
+    }
+    if s.inserted > 0 && lisp.fboundp(sym::FORMAT_DECODE) {
+        let count1 = lisp.specpdl.len();
+        let old_inserted = s.inserted;
+        lisp.specbind(sym::INHIBIT_POINT_MOTION_HOOKS, sym::T)?;
+        lisp.specbind(sym::INHIBIT_MODIFICATION_HOOKS, sym::T)?;
+        let old_undo = lisp.undo_list();
+        lisp.stack.push(old_undo);
+        lisp.set_undo_list(sym::T);
+        if s.replace.is_nil() {
+            let n = Value::fixnum(s.inserted as i64);
+            let insval = lisp.funcall(sym::FORMAT_DECODE, &[Value::NIL, n, s.visit])?;
+            s.inserted = lisp.check_inserted(insval)?;
+        } else {
+            let (opoint, opoint_byte) = (lisp.cur().pt, lisp.cur().pt_byte);
+            let b = lisp.cur();
+            let (oinserted, ochars_modiff) = (b.zv - b.begv, b.text.chars_modiff);
+            let (begv, begv_byte) = (b.begv, b.begv_byte);
+            lisp.set_pt_both(begv, begv_byte);
+            let n = Value::fixnum(oinserted as i64);
+            let insval = lisp.funcall(sym::FORMAT_DECODE, &[Value::NIL, n, s.visit])?;
+            let n = lisp.check_inserted(insval)?;
+            if ochars_modiff == lisp.cur().text.chars_modiff {
+                lisp.set_pt_both(opoint, opoint_byte);
+            } else {
+                s.inserted = n;
+            }
+        }
+        let mut p = lisp.bound_var(sym::AFTER_INSERT_FILE_FUNCTIONS);
+        lisp.stack.push(p);
+        while p.is_cons() {
+            let f = lisp.xcar(p);
+            if s.replace.is_nil() {
+                let n = Value::fixnum(s.inserted as i64);
+                let insval = lisp.funcall(f, &[n])?;
+                if !insval.is_nil() {
+                    s.inserted = lisp.check_inserted(insval)?;
+                }
+            } else {
+                let (opoint, opoint_byte) = (lisp.cur().pt, lisp.cur().pt_byte);
+                let b = lisp.cur();
+                let (oinserted, ochars_modiff) = (b.zv - b.begv, b.text.chars_modiff);
+                let (begv, begv_byte) = (b.begv, b.begv_byte);
+                lisp.set_pt_both(begv, begv_byte);
+                let n = Value::fixnum(oinserted as i64);
+                let insval = lisp.funcall(f, &[n])?;
+                if !insval.is_nil() {
+                    let n = lisp.check_inserted(insval)?;
+                    if ochars_modiff == lisp.cur().text.chars_modiff {
+                        lisp.set_pt_both(opoint, opoint_byte);
+                    } else {
+                        s.inserted = n;
+                    }
+                }
+            }
+            p = lisp.xcdr(p);
+        }
+        if !empty_undo_list_p {
+            lisp.set_undo_list(old_undo);
+            if old_undo.is_cons() && s.inserted != old_inserted {
+                let tem = lisp.xcar(old_undo);
+                if tem.is_cons() {
+                    let (a, d) = (lisp.xcar(tem), lisp.xcdr(tem));
+                    let pt = lisp.cur().pt as i64;
+                    if a.is_fixnum() && d.as_fixnum() == Some(pt + old_inserted as i64) {
+                        lisp.heap
+                            .set_cdr(tem, Value::fixnum(pt + s.inserted as i64));
+                    }
+                }
+            }
+        } else {
+            lisp.set_undo_list(if old_undo == sym::T {
+                sym::T
+            } else {
+                Value::NIL
+            });
+        }
+        lisp.unbind_to(count1)?;
+    }
+    if let Some(e) = s.save_errno.take() {
+        return Err(lisp.file_error("Opening input file", &e, s.orig_filename));
+    }
+    if s.val.is_nil() {
+        let n = Value::fixnum(s.inserted as i64);
+        s.val = lisp.list(&[s.orig_filename, n]);
+    }
+    Ok(s.val)
 }
 
 fn f_write_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {

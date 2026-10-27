@@ -1,3 +1,14 @@
+mod api;
+mod cjk;
+mod engine;
+mod iso2022;
+mod mule;
+mod simple;
+mod utf;
+
+pub(crate) use api::f_find_operation_coding_system;
+pub use engine::{DetectionInfo, EOL_SEEN_CR, EOL_SEEN_CRLF, EOL_SEEN_LF, EOL_SEEN_NONE};
+
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::Weakness;
@@ -146,6 +157,7 @@ pub const REQUIRE_DETECTION_MASK: u32 = 0x1000;
 
 pub const MODE_LAST_BLOCK: u32 = 0x01;
 pub const MODE_SELECTIVE_DISPLAY: u32 = 0x02;
+pub const MODE_DIRECTION: u32 = 0x04;
 pub const MODE_SAFE_ENCODING: u32 = 0x10;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -466,6 +478,39 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("coding-system-plist", 1, 1, f_coding_system_plist),
     Subr::fixed("coding-system-aliases", 1, 1, f_coding_system_aliases),
     Subr::fixed("coding-system-eol-type", 1, 1, f_coding_system_eol_type),
+    Subr::fixed("detect-coding-region", 2, 3, api::f_detect_coding_region),
+    Subr::fixed("detect-coding-string", 1, 2, api::f_detect_coding_string),
+    Subr::fixed(
+        "find-coding-systems-region-internal",
+        2,
+        3,
+        api::f_find_coding_systems_region_internal,
+    ),
+    Subr::fixed(
+        "unencodable-char-position",
+        3,
+        5,
+        api::f_unencodable_char_position,
+    ),
+    Subr::fixed(
+        "check-coding-systems-region",
+        3,
+        3,
+        api::f_check_coding_systems_region,
+    ),
+    Subr::fixed("decode-coding-region", 3, 4, api::f_decode_coding_region),
+    Subr::fixed("encode-coding-region", 3, 4, api::f_encode_coding_region),
+    Subr::fixed("decode-coding-string", 2, 4, api::f_decode_coding_string),
+    Subr::fixed("encode-coding-string", 2, 4, api::f_encode_coding_string),
+    Subr::fixed("decode-sjis-char", 1, 1, api::f_decode_sjis_char),
+    Subr::fixed("encode-sjis-char", 1, 1, api::f_encode_sjis_char),
+    Subr::fixed("decode-big5-char", 1, 1, api::f_decode_big5_char),
+    Subr::fixed("encode-big5-char", 1, 1, api::f_encode_big5_char),
+    Subr::many(
+        "find-operation-coding-system",
+        1,
+        api::f_find_operation_coding_system,
+    ),
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
@@ -482,6 +527,16 @@ pub fn init_vars(lisp: &mut Lisp) {
         sym::CHAR_TABLE_EXTRA_SLOTS,
         Value::fixnum(2),
     );
+    for (operation, idx) in [
+        (sym::INSERT_FILE_CONTENTS, 0),
+        (sym::WRITE_REGION, 2),
+        (sym::CALL_PROCESS, 0),
+        (sym::CALL_PROCESS_REGION, 2),
+        (sym::START_PROCESS, 2),
+        (sym::OPEN_NETWORK_STREAM, 3),
+    ] {
+        lisp.put(operation, sym::TARGET_IDX, Value::fixnum(idx));
+    }
     for symbol in [
         sym::CODING_SYSTEM_LIST,
         sym::CODING_SYSTEM_ALIST,

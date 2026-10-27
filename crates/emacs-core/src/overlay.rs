@@ -309,7 +309,7 @@ fn f_delete_overlay(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_delete_all_overlays(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_delete_all_overlays(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = lisp.decode_buffer(args[0])?;
     let overlays = std::mem::take(&mut lisp.buffer_mut(buffer).overlays);
     for o in overlays {
