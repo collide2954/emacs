@@ -58,8 +58,16 @@ Window-system frames don't exist yet, so `xfaces.rs` stops with `unreachable!` o
 branches that need them (`font_load_for_lface`, `xw-display-color-p`). A `reset` face
 attribute signals "Cannot realize default face" until realized faces are ported.
 
-`emacs --batch` loads `loadup.el` through `bindings`, `window`, `files`, `macroexp` and
-`cus-face`, and stops in `faces.el` on `documentation-stringp` (`doc.c`).
+`doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables only.
+`minibuf.rs` has the completion primitives but not `read-from-minibuffer` and friends.
+
+`crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
+writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
+`charprop.el` files still need `unidata-gen.el` run by a working Emacs.
+
+`emacs --batch` loads `loadup.el` through `faces`, `ldefs-boot`, `button`, `cl-preloaded`,
+`oclosure`, `abbrev`, `help`, `mule-cmds` and `case-table`, and stops in
+`international/characters.el` on `composition-function-table` (`composite.c`).
 
 ## Coding
 
