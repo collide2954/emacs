@@ -674,7 +674,7 @@ impl Lisp {
             w.base_line_number = 0;
         }
         self.wset_redisplay(window);
-        self.window_mut(window).flags.update_mode_line = true;
+        self.wset_update_mode_line(window);
         self.record_unwind_current_buffer();
         crate::buffer::f_set_buffer(self, &[buffer])?;
         let insertion_type = !self

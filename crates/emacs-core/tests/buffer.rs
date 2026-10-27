@@ -344,3 +344,11 @@ fn files() {
         ("(substitute-in-file-name \"$$x\")", "\"$x\""),
     ]);
 }
+
+#[test]
+fn mode_line_update() {
+    check(&[
+        ("(force-mode-line-update)", "nil"),
+        ("(force-mode-line-update t)", "t"),
+    ]);
+}

@@ -46,6 +46,18 @@ impl Lisp {
         }
     }
 
+    pub fn bset_update_mode_line(&mut self, b: Value) {
+        if self.windows.update_mode_lines == 0 {
+            self.windows.update_mode_lines = REDISPLAY_SOME;
+        }
+        self.buffer_mut(b).text.redisplay = true;
+    }
+
+    pub fn wset_update_mode_line(&mut self, w: Value) {
+        self.window_mut(w).flags.update_mode_line = true;
+        self.wset_redisplay(w);
+    }
+
     pub fn add_to_log(&mut self, format: &str, args: &[Value]) -> LispResult<()> {
         let base = self.stack.len();
         let fmt = self.string(format);

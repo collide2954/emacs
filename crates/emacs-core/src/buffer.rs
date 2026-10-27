@@ -305,6 +305,7 @@ pub struct Buffer {
     pub case_eqv_table: Value,
     pub base_buffer: Value,
     pub inhibit_hooks: bool,
+    pub prevent_redisplay_optimizations_p: bool,
     pub last_window_start: usize,
     pub window_count: usize,
     pub point_marker: Value,
@@ -348,6 +349,7 @@ impl Buffer {
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("buffer-live-p", 1, 1, f_buffer_live_p),
     Subr::fixed("buffer-list", 0, 1, f_buffer_list),
+    Subr::fixed("force-mode-line-update", 0, 1, f_force_mode_line_update),
     Subr::fixed("get-buffer", 1, 1, f_get_buffer),
     Subr::fixed("get-file-buffer", 1, 1, f_get_file_buffer),
     Subr::fixed("get-truename-buffer", 1, 1, f_get_truename_buffer),
@@ -733,6 +735,7 @@ impl Lisp {
             case_eqv_table: self.ascii_eqv_table,
             base_buffer: Value::NIL,
             inhibit_hooks,
+            prevent_redisplay_optimizations_p: false,
             last_window_start: 1,
             window_count: 0,
             point_marker: Value::NIL,
@@ -1314,6 +1317,19 @@ fn f_buffer_live_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_buffer_list(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.buffer_list_value())
+}
+
+fn f_force_mode_line_update(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let all = args.first().copied().unwrap_or(Value::NIL);
+    let cb = lisp.current_buffer;
+    if !all.is_nil() {
+        lisp.windows.update_mode_lines = 10;
+        lisp.buffer_mut(cb).prevent_redisplay_optimizations_p = true;
+    } else if lisp.buffer(cb).window_count > 0 {
+        lisp.bset_update_mode_line(cb);
+        lisp.buffer_mut(cb).prevent_redisplay_optimizations_p = true;
+    }
+    Ok(all)
 }
 
 pub(crate) fn f_get_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
