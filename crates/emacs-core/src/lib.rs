@@ -31,4 +31,5 @@ pub mod subr;
 pub mod symbols;
 pub mod syntax;
 pub mod textprop;
+pub mod timefns;
 pub mod value;

@@ -76,6 +76,8 @@ pub struct Lisp {
     pub ascii_upcase_table: Value,
     pub ascii_canon_table: Value,
     pub ascii_eqv_table: Value,
+    pub local_tz: crate::timefns::Zone,
+    pub start_instant: std::time::Instant,
 }
 
 impl Default for Lisp {
@@ -109,6 +111,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::category::SUBRS,
     crate::casetab::SUBRS,
     crate::search::SUBRS,
+    crate::timefns::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -134,6 +137,7 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::category::init_vars,
     crate::casetab::init_vars,
     crate::search::init_vars,
+    crate::timefns::init_vars,
     init_first_buffers,
 ];
 
@@ -188,6 +192,8 @@ impl Lisp {
             ascii_upcase_table: Value::NIL,
             ascii_canon_table: Value::NIL,
             ascii_eqv_table: Value::NIL,
+            local_tz: crate::timefns::Zone::Utc,
+            start_instant: std::time::Instant::now(),
         };
         lisp.init_symbols();
         lisp.empty_unibyte = lisp.heap.string(LispString::unibyte(Vec::new()));
