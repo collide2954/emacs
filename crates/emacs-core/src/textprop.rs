@@ -884,28 +884,37 @@ fn f_get_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 fn f_get_char_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    Ok(lisp
-        .get_char_property_and_overlay(args[0], args[1], args[2])?
-        .0)
+    lisp.get_char_property(args[0], args[1], args[2])
 }
 
 fn f_get_pos_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let (position, prop, object) = (args[0], args[1], args[2]);
-    let obj = lisp.decode_obj(object)?;
-    let pos = lisp.validate_position(obj, position)?;
-    if let Obj::Buffer(b) = obj
-        && let Some((val, _)) = lisp.overlay_property_at_pos_stickiness(b, pos, prop)
-    {
-        return Ok(val);
+    lisp.get_pos_property(args[0], args[1], args[2])
+}
+
+impl Lisp {
+    pub fn get_char_property(&mut self, position: Value, prop: Value, object: Value) -> LispResult {
+        Ok(self
+            .get_char_property_and_overlay(position, prop, object)?
+            .0)
     }
-    let after = lisp.props_at(obj, pos);
-    let before = if pos > lisp.obj_limits(obj).0 {
-        lisp.props_at(obj, pos - 1)
-    } else {
-        Value::NIL
-    };
-    let sticky = lisp.sticky_plist(before, after);
-    Ok(lisp.plist_get_eq(sticky, prop))
+
+    pub fn get_pos_property(&mut self, position: Value, prop: Value, object: Value) -> LispResult {
+        let obj = self.decode_obj(object)?;
+        let pos = self.validate_position(obj, position)?;
+        if let Obj::Buffer(b) = obj
+            && let Some((val, _)) = self.overlay_property_at_pos_stickiness(b, pos, prop)
+        {
+            return Ok(val);
+        }
+        let after = self.props_at(obj, pos);
+        let before = if pos > self.obj_limits(obj).0 {
+            self.props_at(obj, pos - 1)
+        } else {
+            Value::NIL
+        };
+        let sticky = self.sticky_plist(before, after);
+        Ok(self.plist_get_eq(sticky, prop))
+    }
 }
 
 fn f_get_char_property_and_overlay(lisp: &mut Lisp, args: &[Value]) -> LispResult {

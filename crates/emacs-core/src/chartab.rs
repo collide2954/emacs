@@ -76,6 +76,10 @@ impl Lisp {
         }
     }
 
+    pub fn char_table_default(&self, table: Value) -> Value {
+        self.char_table(table).default
+    }
+
     pub fn is_sub_char_table(&self, v: Value) -> bool {
         v.is_vectorlike() && matches!(self.heap.vectorlike_ref(v), Vectorlike::SubCharTable(_))
     }

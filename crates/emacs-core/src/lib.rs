@@ -15,6 +15,8 @@ pub mod floatfns;
 pub mod fns;
 pub mod heap;
 pub mod insdel;
+pub mod keyboard;
+pub mod keymap;
 pub mod lisp;
 pub mod lread;
 pub mod marker;

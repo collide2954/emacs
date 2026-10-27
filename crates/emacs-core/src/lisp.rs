@@ -67,6 +67,7 @@ pub struct Lisp {
     pub buffer_before_last_command_or_undo: Value,
     pub prin1_to_string_buffer: Value,
     pub pending_boundary: Value,
+    pub current_global_map: Value,
 }
 
 impl Default for Lisp {
@@ -94,6 +95,8 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::overlay::SUBRS,
     crate::fileio::SUBRS,
     crate::emacs::SUBRS,
+    crate::keyboard::SUBRS,
+    crate::keymap::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -113,6 +116,8 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::editfns::init_vars,
     crate::fileio::init_vars,
     crate::emacs::init_vars,
+    crate::keyboard::init_vars,
+    crate::keymap::init_vars,
     init_first_buffers,
 ];
 
@@ -158,6 +163,7 @@ impl Lisp {
             buffer_before_last_command_or_undo: Value::NIL,
             prin1_to_string_buffer: Value::NIL,
             pending_boundary: Value::NIL,
+            current_global_map: Value::NIL,
         };
         lisp.init_symbols();
         lisp.empty_unibyte = lisp.heap.string(LispString::unibyte(Vec::new()));
@@ -775,6 +781,7 @@ impl Lisp {
         roots.push(self.buffer_before_last_command_or_undo);
         roots.push(self.prin1_to_string_buffer);
         roots.push(self.pending_boundary);
+        roots.push(self.current_global_map);
         roots.extend_from_slice(&self.stack);
         for binding in &self.specpdl {
             match *binding {

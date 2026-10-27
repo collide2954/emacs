@@ -1289,7 +1289,7 @@ fn f_vconcat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.vector(items))
 }
 
-fn f_copy_sequence(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_copy_sequence(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let arg = args[0];
     if arg.is_nil() {
         return Ok(Value::NIL);
@@ -1438,7 +1438,7 @@ fn f_copy_alist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.list(&copied))
 }
 
-fn f_substring(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_substring(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (string, from, to) = (args[0], args[1], args[2]);
     if string.is_string() {
         let size = lisp.string_chars(string);
@@ -1670,7 +1670,7 @@ fn f_rassoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_delq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_delq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (elt, list) = (args[0], args[1]);
     let mut prev = Value::NIL;
     let mut head = list;
