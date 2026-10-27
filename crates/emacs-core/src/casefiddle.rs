@@ -131,7 +131,7 @@ fn f_upcase(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.casify_object(CaseOp::Up, args[0])
 }
 
-fn f_downcase(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_downcase(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.casify_object(CaseOp::Down, args[0])
 }
 

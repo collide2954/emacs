@@ -91,6 +91,7 @@ pub struct Lisp {
     pub windows: crate::window::Windows,
     pub minibuf: crate::minibuf::Minibuf,
     pub faces: crate::xfaces::Faces,
+    pub fonts: crate::font::Fonts,
     pub pending_funcalls: Value,
 }
 
@@ -133,6 +134,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::frame::SUBRS,
     crate::window::SUBRS,
     crate::minibuf::SUBRS,
+    crate::font::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -166,6 +168,7 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::terminal::init_vars,
     crate::frame::init_vars,
     crate::minibuf::init_vars,
+    crate::font::init_vars,
     crate::xfaces::init_vars,
     init_first_buffers,
     crate::minibuf::init_minibuf_once,
@@ -238,6 +241,7 @@ impl Lisp {
             windows: crate::window::Windows::default(),
             minibuf: crate::minibuf::Minibuf::default(),
             faces: crate::xfaces::Faces::default(),
+            fonts: crate::font::Fonts::default(),
             pending_funcalls: Value::NIL,
         };
         lisp.init_symbols();
@@ -878,6 +882,7 @@ impl Lisp {
         self.windows.roots(&mut roots);
         self.minibuf.roots(&mut roots);
         self.faces.roots(&mut roots);
+        self.fonts.roots(&mut roots);
         roots.push(self.pending_funcalls);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);

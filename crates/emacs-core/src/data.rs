@@ -881,6 +881,11 @@ pub fn cl_type_of(lisp: &Lisp, object: Value) -> Value {
             Vectorlike::Terminal(_) => sym::TERMINAL,
             Vectorlike::Frame(_) => sym::FRAME,
             Vectorlike::Window(_) => sym::WINDOW,
+            Vectorlike::Font(f) => match f.kind {
+                crate::font::FontKind::Spec => sym::FONT_SPEC,
+                crate::font::FontKind::Entity => sym::FONT_ENTITY,
+                crate::font::FontKind::Object => sym::FONT_OBJECT,
+            },
             Vectorlike::Record(slots) => {
                 let t = slots.first().copied().unwrap_or(Value::NIL);
                 if t.is_vectorlike()
@@ -1556,7 +1561,7 @@ fn f_neq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(!eq))
 }
 
-fn f_number_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_number_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = args[0];
     if n.is_float() {
         let f = lisp.heap.float_value(n);

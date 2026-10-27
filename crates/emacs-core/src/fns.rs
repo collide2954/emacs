@@ -1189,7 +1189,7 @@ fn f_compare_strings(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(sym::T)
 }
 
-fn f_string_lessp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_string_lessp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let a = lisp.string_or_symbol_name(args[0])?;
     let b = lisp.string_or_symbol_name(args[1])?;
     Ok(bool_value(lisp.string_compare(a, b) == Ordering::Less))
@@ -1283,7 +1283,7 @@ fn f_append(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.list_with_tail(&items, last))
 }
 
-fn f_concat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_concat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.concat_to_string(args)
 }
 

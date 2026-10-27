@@ -18,6 +18,7 @@ pub mod eval;
 pub mod fileio;
 pub mod floatfns;
 pub mod fns;
+pub mod font;
 pub mod frame;
 pub mod heap;
 pub mod insdel;

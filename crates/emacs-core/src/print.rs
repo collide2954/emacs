@@ -727,6 +727,37 @@ impl Lisp {
                 p.push_str(&format!(" {:#x}>", obj.bits()));
                 Ok(())
             }
+            Vectorlike::Font(f) => {
+                if f.kind == crate::font::FontKind::Object {
+                    p.push_str("#<font-object ");
+                    let name = f.props[crate::font::FONT_NAME_INDEX];
+                    self.print_object(p, name, escape)?;
+                } else {
+                    let entity = f.kind == crate::font::FontKind::Entity;
+                    p.push_str(if entity {
+                        "#<font-entity"
+                    } else {
+                        "#<font-spec"
+                    });
+                    let props = f.props.clone();
+                    for (i, &v) in props.iter().enumerate().take(crate::font::FONT_SPEC_MAX) {
+                        if i == crate::font::FONT_EXTRA_INDEX && entity {
+                            continue;
+                        }
+                        p.push(' ' as u32);
+                        let v = if (crate::font::FONT_WEIGHT_INDEX..=crate::font::FONT_WIDTH_INDEX)
+                            .contains(&i)
+                        {
+                            self.font_style_symbolic(obj, i, false)
+                        } else {
+                            v
+                        };
+                        self.print_object(p, v, escape)?;
+                    }
+                }
+                p.push('>' as u32);
+                Ok(())
+            }
             Vectorlike::Window(w) => {
                 p.push_str(&format!("#<window {}", w.sequence_number));
                 if self.is_buffer(w.contents) {

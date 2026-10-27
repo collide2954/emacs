@@ -230,6 +230,7 @@ pub enum Vectorlike {
     Terminal(Box<crate::terminal::Terminal>),
     Frame(Box<crate::frame::Frame>),
     Window(Box<crate::window::Window>),
+    Font(Box<crate::font::Font>),
 }
 
 impl Vectorlike {
@@ -325,6 +326,7 @@ impl Trace for Vectorlike {
             Vectorlike::Terminal(t) => t.trace(out),
             Vectorlike::Frame(f) => f.trace(out),
             Vectorlike::Window(w) => w.trace(out),
+            Vectorlike::Font(f) => f.trace(out),
         }
     }
 }
