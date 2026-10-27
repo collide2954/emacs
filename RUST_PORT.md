@@ -68,6 +68,31 @@ the Lisp API (8634-10720): `decode-coding-string`/`region`, `encode-coding-*`,
 `check-coding-systems-region`, `find-operation-coding-system`, and the SJIS/Big5 character
 functions. `update_compositions` waits for `composite.c`.
 
-## Next
+## Removed legacy
 
-The iced GUI (`crates/emacs-gui`).
+`nextstep/`, `msdos/`, `oldXMenu/`, `lwlib/`, `java/`, `cross/` and `exec/` are gone, along
+with the NS, Haiku, Android, MS-DOS, Cygwin, Windows-console and termcap/terminfo sources.
+The X and pgtk sources stay as references until the iced backend covers what they do.
+
+## GUI (iced)
+
+`crates/emacs-gui` replaces the platform frontends. It follows the pgtk design: iced/winit
+stands in for GTK, tiny-skia for cairo, and cosmic-text for FreeType and HarfBuzz.
+
+- The Lisp machine runs on its own thread. iced owns the main thread, opens one window
+  per frame, and forwards input.
+- Input: a key press becomes an X keysym and is classified as `pgtkterm.c`'s
+  `key_press_event` does, then travels to the Lisp thread as a `termhooks::InputEvent`.
+  keyboard.c's keysym tables turn it into a Lisp event. Alt is meta and the logo key is super.
+- Output: redisplay draws each frame into a tiny-skia pixmap on the Lisp thread, as pgtk
+  draws into a cairo image surface. A flush hands the pixels to iced, which shows them.
+- Fonts: a cosmic-text font driver supplies metrics and glyphs, in the role of `ftcrfont.c`.
+- The frame primitives (`x-create-frame` and friends, as in `pgtkfns.c`) live in the GUI
+  crate and are registered into the interpreter at startup.
+
+Done: the input event model (`termhooks.rs`) and key translation (`keysym.rs`).
+
+Next: the pixmap surface and its drawing primitives, the iced shell with the Lisp-thread
+bridge, and the cosmic-text font driver. Showing a real frame also needs the display engine
+in emacs-core (`frame.c`, `window.c`, `dispnew.c`, `xdisp.c`, `xfaces.c`, `font.c`,
+`fontset.c`) and the command loop in `keyboard.c`.
