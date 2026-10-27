@@ -93,6 +93,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::textprop::SUBRS,
     crate::overlay::SUBRS,
     crate::fileio::SUBRS,
+    crate::emacs::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -111,6 +112,7 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::buffer::init_vars,
     crate::editfns::init_vars,
     crate::fileio::init_vars,
+    crate::emacs::init_vars,
     init_first_buffers,
 ];
 

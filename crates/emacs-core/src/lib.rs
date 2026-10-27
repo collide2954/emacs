@@ -7,6 +7,7 @@ pub mod charfns;
 pub mod chartab;
 pub mod data;
 pub mod editfns;
+pub mod emacs;
 pub mod error;
 pub mod eval;
 pub mod fileio;
