@@ -204,12 +204,7 @@ impl Heap {
     }
 
     pub fn vectorlike(&mut self, object: Vectorlike) -> Value {
-        self.bytes_since_gc += 16
-            + match &object {
-                Vectorlike::Vector(v) | Vectorlike::Record(v) | Vectorlike::Closure(v) => {
-                    8 * v.len()
-                }
-            };
+        self.bytes_since_gc += 16 + object.approximate_size();
         let (index, generation) = self.vectors.alloc(object);
         Value::heap(Tag::Vectorlike, index, generation)
     }
