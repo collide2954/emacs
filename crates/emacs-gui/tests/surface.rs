@@ -103,6 +103,13 @@ fn draw_rgba_composites_over() {
 }
 
 #[test]
+fn encodes_png() {
+    let s = Surface::new(3, 2, BG);
+    let png = s.encode_png().expect("png");
+    assert_eq!(&png[1..4], b"PNG");
+}
+
+#[test]
 fn resize_clears_to_background() {
     let mut s = Surface::new(2, 2, BG);
     s.fill_rectangle(RED, Rect::new(0, 0, 2, 2), false);

@@ -132,6 +132,10 @@ impl Surface {
         Some([c.red(), c.green(), c.blue(), c.alpha()])
     }
 
+    pub fn encode_png(&self) -> Option<Vec<u8>> {
+        self.pixmap.encode_png().ok()
+    }
+
     pub fn rgba(&self) -> Vec<u8> {
         self.pixmap
             .pixels()

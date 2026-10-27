@@ -98,10 +98,13 @@ Done:
   copy-bits for scrolling, clip rectangles, glyph masks, RGBA images, alpha background).
 - `protocol.rs`, `display.rs`, `shell.rs`: the iced daemon (one window per frame, HiDPI
   aware) and the Lisp-thread side that owns the surfaces and receives input.
+- `font.rs`: the font driver, after `ftcrfont.c`/`ftfont.c`. It lists and matches faces with
+  fontconfig's numeric weight/slant/width/spacing and its generic family preferences, opens
+  fonts with ftcrfont's metric rules, and provides glyph extents, rasterization (including
+  color glyphs) and drawing onto a surface.
 
 `cargo run -p emacs-gui --example shell` opens a frame from the Lisp thread, paints a test
 pattern and prints the events it receives.
 
-Next: the cosmic-text font driver. Showing a real Emacs frame needs the display engine in
-emacs-core (`frame.c`, `window.c`, `dispnew.c`, `xdisp.c`, `xfaces.c`, `font.c`,
+Next: showing a real Emacs frame needs the display engine in emacs-core (`frame.c`, `window.c`, `dispnew.c`, `xdisp.c`, `xfaces.c`, `font.c`,
 `fontset.c`) and the command loop in `keyboard.c`.

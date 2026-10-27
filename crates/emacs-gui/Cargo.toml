@@ -10,6 +10,8 @@ publish.workspace = true
 emacs-core.workspace = true
 iced.workspace = true
 tiny-skia.workspace = true
+cosmic-text.workspace = true
+swash.workspace = true
 
 [lints]
 workspace = true
