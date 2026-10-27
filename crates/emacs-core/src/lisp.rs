@@ -142,6 +142,7 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::fileio::init_vars,
     crate::emacs::init_vars,
     crate::keyboard::init_vars,
+    crate::window::init_vars,
     crate::keymap::init_vars,
     crate::syntax::init_vars,
     crate::category::init_vars,

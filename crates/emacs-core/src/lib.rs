@@ -37,3 +37,4 @@ pub mod termhooks;
 pub mod textprop;
 pub mod timefns;
 pub mod value;
+pub mod window;
