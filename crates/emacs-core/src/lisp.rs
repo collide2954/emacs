@@ -61,6 +61,12 @@ pub struct Lisp {
     pub stdout: Box<dyn Write>,
     pub stderr: Box<dyn Write>,
     pub rng_state: u64,
+    pub current_buffer: Value,
+    pub buffers: Vec<Value>,
+    pub point_before_last_command_or_undo: usize,
+    pub buffer_before_last_command_or_undo: Value,
+    pub prin1_to_string_buffer: Value,
+    pub pending_boundary: Value,
 }
 
 impl Default for Lisp {
@@ -80,6 +86,13 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::chartab::SUBRS,
     crate::casefiddle::SUBRS,
     crate::charfns::SUBRS,
+    crate::buffer::SUBRS,
+    crate::marker::SUBRS,
+    crate::insdel::SUBRS,
+    crate::editfns::SUBRS,
+    crate::textprop::SUBRS,
+    crate::overlay::SUBRS,
+    crate::fileio::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -95,13 +108,29 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::chartab::init_vars,
     crate::charfns::init_vars,
     init_emacs_vars,
+    crate::buffer::init_vars,
+    crate::editfns::init_vars,
+    crate::fileio::init_vars,
+    init_first_buffers,
 ];
 
 fn init_emacs_vars(lisp: &mut Lisp) {
     lisp.defvar_bool(sym::NONINTERACTIVE, true);
     let version = lisp.string("31.0.50");
     lisp.defvar(sym::EMACS_VERSION, version);
-    lisp.defvar(sym::DEFAULT_DIRECTORY, Value::NIL);
+    lisp.defvar(sym::STANDARD_SYNTAX_TABLE_INTERNAL, Value::NIL);
+    lisp.defvar(sym::STANDARD_CATEGORY_TABLE_INTERNAL, Value::NIL);
+}
+
+fn init_first_buffers(lisp: &mut Lisp) {
+    let prin1 = lisp.string(" prin1");
+    let prin1 = lisp.get_buffer_create(prin1, true).expect("prin1 buffer");
+    lisp.prin1_to_string_buffer = prin1;
+    let scratch = lisp.string("*scratch*");
+    let scratch = lisp
+        .get_buffer_create(scratch, false)
+        .expect("scratch buffer");
+    lisp.set_buffer_internal(scratch);
 }
 
 impl Lisp {
@@ -121,6 +150,12 @@ impl Lisp {
             stdout: Box::new(std::io::stdout()),
             stderr: Box::new(std::io::stderr()),
             rng_state: 0x2545_F491_4F6C_DD1D,
+            current_buffer: Value::NIL,
+            buffers: Vec::new(),
+            point_before_last_command_or_undo: 1,
+            buffer_before_last_command_or_undo: Value::NIL,
+            prin1_to_string_buffer: Value::NIL,
+            pending_boundary: Value::NIL,
         };
         lisp.init_symbols();
         lisp.empty_unibyte = lisp.heap.string(LispString::unibyte(Vec::new()));
@@ -733,6 +768,11 @@ impl Lisp {
         roots.push(self.empty_unibyte);
         roots.push(self.empty_multibyte);
         roots.push(self.list_of_t);
+        roots.push(self.current_buffer);
+        roots.extend_from_slice(&self.buffers);
+        roots.push(self.buffer_before_last_command_or_undo);
+        roots.push(self.prin1_to_string_buffer);
+        roots.push(self.pending_boundary);
         roots.extend_from_slice(&self.stack);
         for binding in &self.specpdl {
             match *binding {

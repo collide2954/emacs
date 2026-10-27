@@ -653,6 +653,53 @@ impl Lisp {
                 p.push_str("#<finalizer>");
                 Ok(())
             }
+            Vectorlike::Buffer(b) => {
+                if b.name.is_nil() {
+                    p.push_str("#<killed buffer>");
+                } else if escape {
+                    p.push_str("#<buffer ");
+                    let chars = self.string_char_vec(b.name);
+                    p.out.extend(chars);
+                    p.push('>' as u32);
+                } else {
+                    let chars = self.string_char_vec(b.name);
+                    p.out.extend(chars);
+                }
+                Ok(())
+            }
+            Vectorlike::Marker(m) => {
+                if m.buffer.is_nil() {
+                    p.push_str("#<marker in no buffer>");
+                } else {
+                    let name = self.buffer(m.buffer).name;
+                    if name.is_nil() {
+                        p.push_str("#<marker in killed buffer>");
+                    } else {
+                        let kind = if m.insertion_type {
+                            "(moves after insertion) "
+                        } else {
+                            ""
+                        };
+                        p.push_str(&format!("#<marker {kind}at {} in ", m.charpos));
+                        let chars = self.string_char_vec(name);
+                        p.out.extend(chars);
+                        p.push('>' as u32);
+                    }
+                }
+                Ok(())
+            }
+            Vectorlike::Overlay(o) => {
+                if o.buffer.is_nil() {
+                    p.push_str("#<overlay in no buffer>");
+                } else {
+                    p.push_str(&format!("#<overlay from {} to {} in ", o.start, o.end));
+                    let name = self.buffer(o.buffer).name;
+                    let chars = self.string_char_vec(name);
+                    p.out.extend(chars);
+                    p.push('>' as u32);
+                }
+                Ok(())
+            }
         }
     }
 

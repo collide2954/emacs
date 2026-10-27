@@ -1,4 +1,4 @@
-use crate::object::{Cons, LispString, Symbol, Trace, Vectorlike};
+use crate::object::{Cons, LispString, Symbol, Trace, Vectorlike, Weakness};
 use crate::value::{GENERATION_MASK, Tag, Value};
 
 struct Slot<T> {
@@ -54,6 +54,14 @@ impl<T: Trace> Arena<T> {
             Some(object) if slot.generation == value.generation() => object,
             _ => panic!("stale {:?} handle", value.tag()),
         }
+    }
+
+    fn marked(&self, value: Value) -> Option<bool> {
+        let slot = self.slots.get(value.index() as usize)?;
+        if slot.object.is_none() || slot.generation != value.generation() {
+            return None;
+        }
+        Some(slot.marked)
     }
 
     fn contains(&self, value: Value) -> bool {
@@ -232,20 +240,131 @@ impl Heap {
         self.conses.live()
     }
 
-    pub fn collect(&mut self, roots: &[Value]) -> usize {
-        let mut work: Vec<Value> = roots.to_vec();
-        self.symbols.mark_pinned(&mut work);
+    fn drain(&mut self, work: &mut Vec<Value>) {
         while let Some(value) = work.pop() {
             match value.tag() {
                 Tag::Fixnum => {}
                 Tag::Symbol if value.is_nil() => {}
-                Tag::Cons => self.conses.mark(value, &mut work),
-                Tag::Float => self.floats.mark(value, &mut work),
-                Tag::String => self.strings.mark(value, &mut work),
-                Tag::Symbol => self.symbols.mark(value, &mut work),
-                Tag::Vectorlike => self.vectors.mark(value, &mut work),
+                Tag::Cons => self.conses.mark(value, work),
+                Tag::Float => self.floats.mark(value, work),
+                Tag::String => self.strings.mark(value, work),
+                Tag::Symbol => self.symbols.mark(value, work),
+                Tag::Vectorlike => self.vectors.mark(value, work),
             }
         }
+    }
+
+    fn is_marked(&self, value: Value) -> bool {
+        let marked = |slots_marked: Option<bool>| slots_marked.unwrap_or(true);
+        match value.tag() {
+            Tag::Fixnum => true,
+            Tag::Symbol if value.is_nil() => true,
+            Tag::Cons => marked(self.conses.marked(value)),
+            Tag::Float => marked(self.floats.marked(value)),
+            Tag::String => marked(self.strings.marked(value)),
+            Tag::Symbol => marked(self.symbols.marked(value)),
+            Tag::Vectorlike => marked(self.vectors.marked(value)),
+        }
+    }
+
+    fn weak_pass(&mut self, work: &mut Vec<Value>) {
+        loop {
+            let mut pending = Vec::new();
+            for index in 0..self.vectors.slots.len() {
+                let slot = &self.vectors.slots[index];
+                if !slot.marked {
+                    continue;
+                }
+                if let Some(Vectorlike::HashTable(h)) = &slot.object {
+                    if h.weakness == Weakness::None {
+                        continue;
+                    }
+                    for (k, v) in h.entries.iter().flatten() {
+                        let (km, vm) = (self.is_marked(*k), self.is_marked(*v));
+                        let keep = match h.weakness {
+                            Weakness::Key => km,
+                            Weakness::Value => vm,
+                            Weakness::KeyOrValue => km || vm,
+                            Weakness::KeyAndValue => km && vm,
+                            Weakness::None => true,
+                        };
+                        if keep {
+                            if !km {
+                                pending.push(*k);
+                            }
+                            if !vm {
+                                pending.push(*v);
+                            }
+                        }
+                    }
+                }
+            }
+            if pending.is_empty() {
+                break;
+            }
+            work.extend(pending);
+            self.drain(work);
+        }
+        for index in 0..self.vectors.slots.len() {
+            if !self.vectors.slots[index].marked {
+                continue;
+            }
+            let removals: Vec<usize> = match &self.vectors.slots[index].object {
+                Some(Vectorlike::HashTable(h)) if h.weakness != Weakness::None => h
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, e)| {
+                        let (k, v) = (*e)?;
+                        let (km, vm) = (self.is_marked(k), self.is_marked(v));
+                        let keep = match h.weakness {
+                            Weakness::Key => km,
+                            Weakness::Value => vm,
+                            Weakness::KeyOrValue => km || vm,
+                            Weakness::KeyAndValue => km && vm,
+                            Weakness::None => true,
+                        };
+                        (!keep).then_some(slot)
+                    })
+                    .collect(),
+                Some(Vectorlike::Buffer(b)) => {
+                    let dead: Vec<usize> = b
+                        .text
+                        .markers
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, m)| !self.is_marked(**m))
+                        .map(|(i, _)| i)
+                        .collect();
+                    if !dead.is_empty()
+                        && let Some(Vectorlike::Buffer(b)) = &mut self.vectors.slots[index].object
+                    {
+                        let mut i = 0;
+                        b.text.markers.retain(|_| {
+                            let keep = !dead.contains(&i);
+                            i += 1;
+                            keep
+                        });
+                    }
+                    Vec::new()
+                }
+                _ => Vec::new(),
+            };
+            if !removals.is_empty()
+                && let Some(Vectorlike::HashTable(h)) = &mut self.vectors.slots[index].object
+            {
+                for slot in removals {
+                    h.remove_slot(slot);
+                }
+            }
+        }
+    }
+
+    pub fn collect(&mut self, roots: &[Value]) -> usize {
+        let mut work: Vec<Value> = roots.to_vec();
+        self.symbols.mark_pinned(&mut work);
+        self.drain(&mut work);
+        self.weak_pass(&mut work);
         let freed = self.conses.sweep()
             + self.floats.sweep()
             + self.strings.sweep()

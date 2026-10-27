@@ -2206,11 +2206,15 @@ symbols! {
     DECLARE "declare"
     MAKE_HASH_TABLE "make-hash-table"
     CLOSURE "closure"
+    STRING_MATCH "string-match"
     AUTOLOAD_QUEUE "autoload-queue"
     LOADS_IN_PROGRESS "loads-in-progress"
     REQUIRE_NESTING_LIST "require-nesting-list"
     SIGNALING_FUNCTION "signaling-function"
     RUN_HOOKS_ENABLED "run-hooks-enabled"
+    CURRENT_MESSAGE_INTERNAL "current-message-internal"
+    STANDARD_SYNTAX_TABLE_INTERNAL "standard-syntax-table-internal"
+    STANDARD_CATEGORY_TABLE_INTERNAL "standard-category-table-internal"
 }
 
-pub const FIRST_INTERNAL: usize = 2194;
+pub const FIRST_INTERNAL: usize = 2195;

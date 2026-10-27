@@ -61,10 +61,18 @@ pub enum TrappedWrite {
     Trapped,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct PerBuffer {
+    pub always_local: bool,
+    pub permanent: bool,
+    pub predicate: Value,
+}
+
 #[derive(Clone, Debug)]
 pub struct Localized {
     pub local_if_set: bool,
     pub default: Value,
+    pub per_buffer: Option<PerBuffer>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -215,6 +223,9 @@ pub enum Vectorlike {
     SubCharTable(Box<SubCharTable>),
     SymbolWithPos { symbol: Value, position: Value },
     Finalizer { function: Value },
+    Buffer(Box<crate::buffer::Buffer>),
+    Marker(crate::buffer::Marker),
+    Overlay(Box<crate::buffer::Overlay>),
 }
 
 impl Vectorlike {
@@ -259,7 +270,12 @@ impl Trace for Symbol {
         out.push(self.plist);
         match &self.value {
             SymbolValue::Plain(v) | SymbolValue::Alias(v) => out.push(*v),
-            SymbolValue::Localized(l) => out.push(l.default),
+            SymbolValue::Localized(l) => {
+                out.push(l.default);
+                if let Some(p) = l.per_buffer {
+                    out.push(p.predicate);
+                }
+            }
             SymbolValue::Forwarded(_) => {}
         }
     }
@@ -296,6 +312,12 @@ impl Trace for Vectorlike {
                 out.push(*position);
             }
             Vectorlike::Finalizer { function } => out.push(*function),
+            Vectorlike::Buffer(b) => b.trace(out),
+            Vectorlike::Marker(m) => out.push(m.buffer),
+            Vectorlike::Overlay(o) => {
+                out.push(o.buffer);
+                out.push(o.plist);
+            }
         }
     }
 }

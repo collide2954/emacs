@@ -203,10 +203,6 @@ impl Lisp {
         v
     }
 
-    pub fn marker_position_value(&self, _v: Value) -> Option<Value> {
-        None
-    }
-
     pub fn number(&mut self, v: Value) -> LispResult<Num> {
         let v = self.coerce_marker(v);
         if let Some(n) = v.as_fixnum() {
@@ -335,6 +331,11 @@ impl Lisp {
             }
             SymbolValue::Alias(_) => unreachable!(),
             SymbolValue::Localized(l) => {
+                if let Some(per_buffer) = l.per_buffer
+                    && !voide
+                {
+                    self.check_per_buffer_value(per_buffer.predicate, newval)?;
+                }
                 let buffer = if where_.is_nil() {
                     self.current_buffer_value()
                 } else {
@@ -375,6 +376,54 @@ impl Lisp {
                 Ok(())
             }
         }
+    }
+
+    fn check_per_buffer_value(&mut self, predicate: Value, newval: Value) -> LispResult<()> {
+        if newval.is_nil() || predicate.is_nil() {
+            return Ok(());
+        }
+        let choice_key = self.intern("choice");
+        let choice = self.get(predicate, choice_key);
+        if !choice.is_nil() {
+            if self.memq(newval, choice).is_nil() {
+                let names = self.list_to_vec(choice)?;
+                let mut text = String::from("One of ");
+                for (i, name) in names.iter().enumerate() {
+                    text.push_str(&self.symbol_name_string(*name));
+                    text.push_str(if i + 1 == names.len() {
+                        " should be specified"
+                    } else if i + 2 == names.len() {
+                        " or "
+                    } else {
+                        ", "
+                    });
+                }
+                let message = self.string(&text);
+                return Err(self.signal_list(sym::ERROR, &[message, newval]));
+            }
+            return Ok(());
+        }
+        let range_key = self.intern("range");
+        let range = self.get(predicate, range_key);
+        if range.is_cons() {
+            let (min, max) = (self.xcar(range), self.xcdr(range));
+            let ok = self.is_number(newval) && {
+                let (lt1, eq1, _) = self.arithcompare(min, newval)?;
+                let (lt2, eq2, _) = self.arithcompare(newval, max)?;
+                (lt1 || eq1) && (lt2 || eq2)
+            };
+            if !ok {
+                let lo = self.prin1_to_string(min);
+                let hi = self.prin1_to_string(max);
+                let message = self.string(&format!("Value should be from {lo} to {hi}"));
+                return Err(self.signal_list(sym::ERROR, &[message, newval]));
+            }
+            return Ok(());
+        }
+        if self.functionp(predicate) && self.funcall(predicate, &[newval])?.is_nil() {
+            return Err(self.wrong_type(predicate, newval));
+        }
+        Ok(())
     }
 
     fn let_shadows_global_binding_p(&self, symbol: Value) -> bool {
@@ -568,6 +617,7 @@ impl Lisp {
                 self.heap.symbol_mut(target).value = SymbolValue::Localized(Box::new(Localized {
                     local_if_set,
                     default,
+                    per_buffer: None,
                 }));
             }
             SymbolValue::Localized(_) => {
@@ -582,6 +632,7 @@ impl Lisp {
                 self.heap.symbol_mut(target).value = SymbolValue::Localized(Box::new(Localized {
                     local_if_set,
                     default: v,
+                    per_buffer: None,
                 }));
             }
             SymbolValue::Alias(_) => unreachable!(),
@@ -814,6 +865,9 @@ pub fn cl_type_of(lisp: &Lisp, object: Value) -> Value {
             Vectorlike::BoolVector(_) => sym::BOOL_VECTOR,
             Vectorlike::HashTable(_) => sym::HASH_TABLE,
             Vectorlike::Obarray(_) => sym::OBARRAY,
+            Vectorlike::Buffer(_) => sym::BUFFER,
+            Vectorlike::Marker(_) => sym::MARKER,
+            Vectorlike::Overlay(_) => sym::OVERLAY,
             Vectorlike::Record(slots) => {
                 let t = slots.first().copied().unwrap_or(Value::NIL);
                 if t.is_vectorlike()
