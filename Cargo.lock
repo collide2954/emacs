@@ -77,7 +77,7 @@ dependencies = [
 
 [[package]]
 name = "emacs"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "emacs-charsets",
  "emacs-core",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "emacs-charsets"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "flate2",
  "regex",
@@ -93,7 +93,7 @@ dependencies = [
 
 [[package]]
 name = "emacs-core"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "jiff",
  "num-bigint",
