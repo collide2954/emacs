@@ -1578,7 +1578,7 @@ pub(crate) fn f_number_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult 
     Err(lisp.wrong_type(sym::NUMBERP, n))
 }
 
-fn f_string_to_number(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_string_to_number(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let string = lisp.check_string(args[0])?;
     let base = if args[1].is_nil() {
         10

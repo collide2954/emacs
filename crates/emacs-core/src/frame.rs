@@ -127,6 +127,7 @@ pub struct Frame {
     pub foreground_pixel: i64,
     pub alpha: [f64; 2],
     pub alpha_background: f64,
+    pub face_cache: Option<Box<crate::xfaces::FaceCache>>,
 }
 
 impl Frame {
@@ -176,6 +177,7 @@ impl Frame {
             foreground_pixel: 0,
             alpha: [0.0; 2],
             alpha_background: 0.0,
+            face_cache: None,
         }
     }
 
@@ -506,6 +508,28 @@ impl Lisp {
             frame
         };
         self.check_frame(frame)
+    }
+
+    pub fn window_system_available(&self, f: Option<Value>) -> bool {
+        match f {
+            Some(f) => self.frame(f).window_p(),
+            None => self
+                .terminals
+                .list
+                .iter()
+                .any(|&t| self.terminal(t).kind != OutputMethod::Initial),
+        }
+    }
+
+    pub fn check_window_system(&mut self, f: Option<Value>) -> LispResult<()> {
+        if self.window_system_available(f) {
+            return Ok(());
+        }
+        Err(self.error(if f.is_some() {
+            "Window system frame should be used"
+        } else {
+            "Window system is not in use or not initialized"
+        }))
     }
 
     pub fn frame_list_vec(&self) -> Vec<Value> {
@@ -1353,7 +1377,7 @@ fn f_frame_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-fn f_modify_frame_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_modify_frame_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(args[0])?;
     let mut parms = Vec::new();
     let mut tail = args[1];

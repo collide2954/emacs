@@ -92,6 +92,8 @@ pub struct Lisp {
     pub minibuf: crate::minibuf::Minibuf,
     pub faces: crate::xfaces::Faces,
     pub fonts: crate::font::Fonts,
+    pub fontsets: crate::fontset::Fontsets,
+    pub xdisp: crate::xdisp::Xdisp,
     pub pending_funcalls: Value,
 }
 
@@ -135,6 +137,8 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::window::SUBRS,
     crate::minibuf::SUBRS,
     crate::font::SUBRS,
+    crate::fontset::SUBRS,
+    crate::xfaces::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -169,7 +173,9 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::frame::init_vars,
     crate::minibuf::init_vars,
     crate::font::init_vars,
+    crate::fontset::init_vars,
     crate::xfaces::init_vars,
+    crate::xdisp::init_vars,
     init_first_buffers,
     crate::minibuf::init_minibuf_once,
     crate::window::init_window_once,
@@ -242,6 +248,8 @@ impl Lisp {
             minibuf: crate::minibuf::Minibuf::default(),
             faces: crate::xfaces::Faces::default(),
             fonts: crate::font::Fonts::default(),
+            fontsets: crate::fontset::Fontsets::default(),
+            xdisp: crate::xdisp::Xdisp::default(),
             pending_funcalls: Value::NIL,
         };
         lisp.init_symbols();
@@ -407,6 +415,16 @@ impl Lisp {
             self.heap.string(LispString::multibyte(bytes, chars))
         } else {
             self.heap.string(LispString::unibyte(bytes))
+        }
+    }
+
+    pub fn make_string(&mut self, bytes: &[u8]) -> Value {
+        let (nchars, multibyte_nbytes) = character::parse_str_as_multibyte(bytes);
+        if bytes.len() == nchars || bytes.len() != multibyte_nbytes {
+            self.heap.string(LispString::unibyte(bytes.to_vec()))
+        } else {
+            self.heap
+                .string(LispString::multibyte(bytes.to_vec(), nchars))
         }
     }
 
@@ -883,6 +901,7 @@ impl Lisp {
         self.minibuf.roots(&mut roots);
         self.faces.roots(&mut roots);
         self.fonts.roots(&mut roots);
+        self.fontsets.roots(&mut roots);
         roots.push(self.pending_funcalls);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);

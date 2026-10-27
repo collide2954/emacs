@@ -23,6 +23,7 @@ pub struct BufferText {
     pub save_modiff: i64,
     pub overlay_modiff: i64,
     pub autosave_modiff: i64,
+    pub redisplay: bool,
     cache: Cell<(usize, usize)>,
 }
 
@@ -41,6 +42,7 @@ impl Default for BufferText {
             save_modiff: 1,
             overlay_modiff: 1,
             autosave_modiff: 1,
+            redisplay: false,
             cache: Cell::new((1, 1)),
         }
     }

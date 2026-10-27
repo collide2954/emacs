@@ -1,8 +1,14 @@
 use crate::error::LispResult;
+use crate::font::{
+    FONT_ADSTYLE_INDEX, FONT_FAMILY_INDEX, FONT_FOUNDRY_INDEX, FONT_SIZE_INDEX, FONT_SLANT_INDEX,
+    FONT_WEIGHT_INDEX, FONT_WIDTH_INDEX,
+};
 use crate::frame::{FACE_TTY_DEFAULT_BG_COLOR, FACE_TTY_DEFAULT_FG_COLOR};
 use crate::lisp::Lisp;
-use crate::object::Weakness;
+use crate::object::{Vectorlike, Weakness};
+use crate::subr::Subr;
 use crate::symbols as sym;
+use crate::terminal::OutputMethod;
 use crate::value::Value;
 
 pub const LFACE_FAMILY_INDEX: usize = 1;
@@ -25,6 +31,8 @@ pub const LFACE_FONTSET_INDEX: usize = 17;
 pub const LFACE_DISTANT_FOREGROUND_INDEX: usize = 18;
 pub const LFACE_EXTEND_INDEX: usize = 19;
 pub const LFACE_VECTOR_SIZE: usize = 20;
+
+const N: usize = LFACE_VECTOR_SIZE;
 
 pub const FACE_ATTR_SYM: [Value; LFACE_VECTOR_SIZE] = [
     sym::FACE,
@@ -49,9 +57,22 @@ pub const FACE_ATTR_SYM: [Value; LFACE_VECTOR_SIZE] = [
     sym::K_EXTEND,
 ];
 
+const XLFD_WEIGHT: i32 = 2;
+const XLFD_SLANT: i32 = 3;
+const XLFD_SWIDTH: i32 = 4;
+const XLFD_POINT_SIZE: i32 = 7;
+
+const FACE_TTY_DEFAULT_COLOR: i64 = -1;
+
+#[derive(Clone, Debug)]
+pub struct FaceCache {
+    pub menu_face_changed_p: bool,
+}
+
 pub struct Faces {
     pub lface_id_to_name: Vec<Value>,
     pub face_change: bool,
+    pub menu_face_changed_default: bool,
     pub alternative_font_family_alist: Value,
     pub alternative_font_registry_alist: Value,
     pub font_sort_order: [i32; 4],
@@ -63,6 +84,7 @@ impl Default for Faces {
         Faces {
             lface_id_to_name: Vec::new(),
             face_change: false,
+            menu_face_changed_default: false,
             alternative_font_family_alist: Value::NIL,
             alternative_font_registry_alist: Value::NIL,
             font_sort_order: [0; 4],
@@ -78,6 +100,125 @@ impl Faces {
         out.push(self.alternative_font_registry_alist);
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NamedMergePointKind {
+    Normal,
+    Remap,
+}
+
+type MergePoints = Vec<(Value, NamedMergePointKind)>;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EmacsColor {
+    pub pixel: i64,
+    pub red: u16,
+    pub green: u16,
+    pub blue: u16,
+}
+
+pub const SUBRS: &[Subr] = &[
+    Subr::fixed("internal-make-lisp-face", 1, 2, f_internal_make_lisp_face),
+    Subr::fixed("internal-lisp-face-p", 1, 2, f_internal_lisp_face_p),
+    Subr::fixed(
+        "internal-set-lisp-face-attribute",
+        3,
+        4,
+        f_internal_set_lisp_face_attribute,
+    ),
+    Subr::fixed(
+        "internal-set-lisp-face-attribute-from-resource",
+        3,
+        4,
+        f_internal_set_lisp_face_attribute_from_resource,
+    ),
+    Subr::fixed("color-gray-p", 1, 2, f_color_gray_p),
+    Subr::fixed("color-supported-p", 1, 3, f_color_supported_p),
+    Subr::fixed("x-load-color-file", 1, 1, f_x_load_color_file),
+    Subr::fixed(
+        "face-attribute-relative-p",
+        2,
+        2,
+        f_face_attribute_relative_p,
+    ),
+    Subr::fixed("merge-face-attribute", 3, 3, f_merge_face_attribute),
+    Subr::fixed(
+        "internal-get-lisp-face-attribute",
+        2,
+        3,
+        f_internal_get_lisp_face_attribute,
+    ),
+    Subr::fixed(
+        "internal-lisp-face-attribute-values",
+        1,
+        1,
+        f_internal_lisp_face_attribute_values,
+    ),
+    Subr::fixed(
+        "internal-lisp-face-equal-p",
+        2,
+        4,
+        f_internal_lisp_face_equal_p,
+    ),
+    Subr::fixed(
+        "internal-lisp-face-empty-p",
+        1,
+        2,
+        f_internal_lisp_face_empty_p,
+    ),
+    Subr::fixed("internal-copy-lisp-face", 4, 4, f_internal_copy_lisp_face),
+    Subr::fixed(
+        "internal-merge-in-global-face",
+        2,
+        2,
+        f_internal_merge_in_global_face,
+    ),
+    Subr::fixed("frame--face-hash-table", 0, 1, f_frame_face_hash_table),
+    Subr::fixed(
+        "display-supports-face-attributes-p",
+        1,
+        2,
+        f_display_supports_face_attributes_p,
+    ),
+    Subr::fixed("color-distance", 2, 4, f_color_distance),
+    Subr::fixed(
+        "internal-set-font-selection-order",
+        1,
+        1,
+        f_internal_set_font_selection_order,
+    ),
+    Subr::fixed(
+        "internal-set-alternative-font-family-alist",
+        1,
+        1,
+        f_internal_set_alternative_font_family_alist,
+    ),
+    Subr::fixed(
+        "internal-set-alternative-font-registry-alist",
+        1,
+        1,
+        f_internal_set_alternative_font_registry_alist,
+    ),
+    Subr::fixed(
+        "face-attributes-as-vector",
+        1,
+        1,
+        f_face_attributes_as_vector,
+    ),
+    Subr::fixed(
+        "tty-suppress-bold-inverse-default-colors",
+        1,
+        1,
+        f_tty_suppress_bold_inverse_default_colors,
+    ),
+    Subr::fixed("bitmap-spec-p", 1, 1, f_bitmap_spec_p),
+    Subr::fixed(
+        "color-values-from-color-spec",
+        1,
+        1,
+        f_color_values_from_color_spec,
+    ),
+];
 
 pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar_bool(sym::FACE_FILTERS_ALWAYS_MATCH, false);
@@ -95,6 +236,146 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::FACE_FONT_LAX_MATCHED_ATTRIBUTES, sym::T);
 }
 
+fn arg(args: &[Value], i: usize) -> Value {
+    args.get(i).copied().unwrap_or(Value::NIL)
+}
+
+fn unspecifiedp(v: Value) -> bool {
+    v == sym::UNSPECIFIED
+}
+
+fn ignore_deffacep(v: Value) -> bool {
+    v == sym::K_IGNORE_DEFFACE
+}
+
+fn resetp(v: Value) -> bool {
+    v == sym::RESET
+}
+
+fn make_fixnum_wrapping(n: i64) -> Value {
+    Value::fixnum((n << 2) >> 2)
+}
+
+fn push_named_merge_point(
+    points: &mut MergePoints,
+    face_name: Value,
+    kind: NamedMergePointKind,
+) -> bool {
+    for &(name, prev_kind) in points.iter().rev() {
+        if name == face_name {
+            if prev_kind == kind {
+                return false;
+            } else if prev_kind == NamedMergePointKind::Remap {
+                break;
+            }
+        }
+    }
+    points.push((face_name, kind));
+    true
+}
+
+fn lface_font_prop(i: usize) -> usize {
+    match i {
+        LFACE_FAMILY_INDEX => FONT_FAMILY_INDEX,
+        LFACE_FOUNDRY_INDEX => FONT_FOUNDRY_INDEX,
+        LFACE_SWIDTH_INDEX => FONT_WIDTH_INDEX,
+        LFACE_HEIGHT_INDEX => FONT_SIZE_INDEX,
+        LFACE_WEIGHT_INDEX => FONT_WEIGHT_INDEX,
+        _ => FONT_SLANT_INDEX,
+    }
+}
+
+fn lface_fully_specified_p(attrs: &[Value]) -> bool {
+    (1..N).all(|i| {
+        i == LFACE_FONT_INDEX
+            || i == LFACE_INHERIT_INDEX
+            || i == LFACE_DISTANT_FOREGROUND_INDEX
+            || !(unspecifiedp(attrs[i]) || ignore_deffacep(attrs[i]))
+    })
+}
+
+fn parse_hex_color_comp(s: &[u8]) -> Option<u16> {
+    let n = s.len();
+    if n == 0 || n > 4 {
+        return None;
+    }
+    let mut val: u32 = 0;
+    for &c in s {
+        let digit = match c {
+            b'0'..=b'9' => c - b'0',
+            b'A'..=b'F' => c - b'A' + 10,
+            b'a'..=b'f' => c - b'a' + 10,
+            _ => return None,
+        };
+        val = (val << 4) | u32::from(digit);
+    }
+    let maxval = (1u32 << (n * 4)) - 1;
+    Some((val * 65535 / maxval) as u16)
+}
+
+fn parse_float_color_comp(s: &[u8]) -> Option<u16> {
+    if !s
+        .iter()
+        .all(|&c| c.is_ascii_digit() || matches!(c, b'.' | b'+' | b'-' | b'e' | b'E'))
+    {
+        return None;
+    }
+    let x = if s.is_empty() {
+        0.0
+    } else {
+        std::str::from_utf8(s).ok()?.parse::<f64>().ok()?
+    };
+    if (0.0..=1.0).contains(&x) {
+        Some((x * 65535.0).round_ties_even() as u16)
+    } else {
+        None
+    }
+}
+
+fn find_byte(s: &[u8], c: u8) -> Option<usize> {
+    s.iter().position(|&b| b == c)
+}
+
+pub fn parse_color_spec(spec: &[u8]) -> Option<(u16, u16, u16)> {
+    let spec = crate::fontset::c_bytes(spec);
+    let len = spec.len();
+    if spec.first() == Some(&b'#') {
+        if (len - 1).is_multiple_of(3) {
+            let n = (len - 1) / 3;
+            let r = parse_hex_color_comp(&spec[1..1 + n])?;
+            let g = parse_hex_color_comp(&spec[1 + n..1 + 2 * n])?;
+            let b = parse_hex_color_comp(&spec[1 + 2 * n..1 + 3 * n])?;
+            return Some((r, g, b));
+        }
+    } else if let Some(rest) = spec.strip_prefix(b"rgb:") {
+        let sep1 = find_byte(rest, b'/')?;
+        let sep2 = sep1 + 1 + find_byte(&rest[sep1 + 1..], b'/')?;
+        let r = parse_hex_color_comp(&rest[..sep1])?;
+        let g = parse_hex_color_comp(&rest[sep1 + 1..sep2])?;
+        let b = parse_hex_color_comp(&rest[sep2 + 1..])?;
+        return Some((r, g, b));
+    } else if let Some(rest) = spec.strip_prefix(b"rgbi:") {
+        let sep1 = find_byte(rest, b'/')?;
+        let sep2 = sep1 + 1 + find_byte(&rest[sep1 + 1..], b'/')?;
+        let r = parse_float_color_comp(&rest[..sep1])?;
+        let g = parse_float_color_comp(&rest[sep1 + 1..sep2])?;
+        let b = parse_float_color_comp(&rest[sep2 + 1..])?;
+        return Some((r, g, b));
+    }
+    None
+}
+
+fn color_distance(x: &EmacsColor, y: &EmacsColor) -> i64 {
+    let r = i64::from(x.red) - i64::from(y.red);
+    let g = i64::from(x.green) - i64::from(y.green);
+    let b = i64::from(x.blue) - i64::from(y.blue);
+    let r_mean = (i64::from(x.red) + i64::from(y.red)) >> 1;
+    ((((2 * 65536 + r_mean) * r * r) >> 16)
+        + 4 * g * g
+        + (((2 * 65536 + 65535 - r_mean) * b * b) >> 16))
+        >> 16
+}
+
 impl Lisp {
     pub fn face_new_frame_defaults(&self) -> Value {
         self.find_symbol_value(sym::FACE__NEW_FRAME_DEFAULTS)
@@ -104,6 +385,70 @@ impl Lisp {
         self.is_vector(lface)
             && self.vector_items(lface).len() == LFACE_VECTOR_SIZE
             && self.vector_items(lface)[0] == sym::FACE
+    }
+
+    fn lface_aref(&self, lface: Value, i: usize) -> Value {
+        self.vector_items(lface)[i]
+    }
+
+    fn lface_aset(&mut self, lface: Value, i: usize, v: Value) {
+        if let Vectorlike::Vector(items) = self.heap.vectorlike_mut(lface) {
+            items[i] = v;
+        }
+    }
+
+    fn lface_contents(&self, lface: Value) -> [Value; N] {
+        let mut out = [Value::NIL; N];
+        out.copy_from_slice(&self.vector_items(lface)[..N]);
+        out
+    }
+
+    fn make_lface_vector(&mut self) -> Value {
+        let mut items = vec![sym::UNSPECIFIED; N];
+        items[0] = sym::FACE;
+        self.vector(items)
+    }
+
+    fn attrs_push(&mut self, fill: Value) -> usize {
+        let base = self.stack.len();
+        self.stack.extend(std::iter::repeat_n(fill, N));
+        base
+    }
+
+    fn attrs_push_from(&mut self, src: &[Value]) -> usize {
+        let base = self.stack.len();
+        self.stack.extend_from_slice(&src[..N]);
+        base
+    }
+
+    fn at(&self, a: usize, i: usize) -> Value {
+        self.stack[a + i]
+    }
+
+    fn set_at(&mut self, a: usize, i: usize, v: Value) {
+        self.stack[a + i] = v;
+    }
+
+    fn attrs_snapshot(&self, a: usize) -> [Value; N] {
+        let mut out = [Value::NIL; N];
+        out.copy_from_slice(&self.stack[a..a + N]);
+        out
+    }
+
+    fn attrs_font_clear_prop(&mut self, a: usize, prop: usize) -> LispResult<()> {
+        let mut attrs = self.attrs_snapshot(a);
+        self.font_clear_prop(&mut attrs, prop)?;
+        self.stack[a..a + N].copy_from_slice(&attrs);
+        Ok(())
+    }
+
+    fn lface_font_clear_prop(&mut self, lface: Value, prop: usize) -> LispResult<()> {
+        let mut attrs = self.lface_contents(lface);
+        self.font_clear_prop(&mut attrs, prop)?;
+        if let Vectorlike::Vector(items) = self.heap.vectorlike_mut(lface) {
+            items[..N].copy_from_slice(&attrs);
+        }
+        Ok(())
     }
 
     pub fn resolve_face_name(&mut self, face_name: Value, signal_p: bool) -> LispResult {
@@ -155,12 +500,11 @@ impl Lisp {
             None => {
                 let table = self.face_new_frame_defaults();
                 let entry = self.gethash(face_name, table, Value::NIL)?;
-                self.cdr_safe(entry)
+                self.cdr(entry)?
             }
         };
         if signal_p && lface.is_nil() {
-            let msg = self.string("Invalid face");
-            return Err(self.signal_list(sym::ERROR, &[msg, face_name]));
+            return Err(self.signal_error("Invalid face", face_name));
         }
         Ok(lface)
     }
@@ -175,6 +519,714 @@ impl Lisp {
         self.lface_from_face_name_no_resolve(f, face_name, signal_p)
     }
 
+    fn get_lface_attributes_no_remap(
+        &mut self,
+        f: Option<Value>,
+        face_name: Value,
+        attrs: usize,
+        signal_p: bool,
+    ) -> LispResult<bool> {
+        let lface = self.lface_from_face_name_no_resolve(f, face_name, signal_p)?;
+        if !lface.is_nil() {
+            let contents = self.lface_contents(lface);
+            self.stack[attrs..attrs + N].copy_from_slice(&contents);
+        }
+        Ok(!lface.is_nil())
+    }
+
+    fn get_lface_attributes(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        face_name: Value,
+        attrs: usize,
+        signal_p: bool,
+        points: &mut MergePoints,
+    ) -> LispResult<bool> {
+        let face_name = self.resolve_face_name(face_name, signal_p)?;
+        if let Some(fr) = f {
+            let alist = self.find_symbol_value(sym::FACE_REMAPPING_ALIST);
+            let face_remapping = self.assq(face_name, alist);
+            if face_remapping.is_cons() {
+                let depth = points.len();
+                if push_named_merge_point(points, face_name, NamedMergePointKind::Remap) {
+                    for i in 1..N {
+                        self.set_at(attrs, i, sym::UNSPECIFIED);
+                    }
+                    let spec = self.xcdr(face_remapping);
+                    let r = self.merge_face_ref(w, Some(fr), spec, attrs, signal_p, points, 0);
+                    points.truncate(depth);
+                    return r;
+                }
+            }
+        }
+        self.get_lface_attributes_no_remap(f, face_name, attrs, signal_p)
+    }
+
+    fn merge_face_heights(&mut self, from: Value, to: Value, invalid: Value) -> LispResult {
+        let mut result = invalid;
+        if from.is_fixnum() {
+            result = from;
+        } else if from.is_float() {
+            let scale = self.heap.float_value(from);
+            if let Some(t) = to.as_fixnum() {
+                result = make_fixnum_wrapping((scale * t as f64) as i64);
+            } else if to.is_float() {
+                let t = self.heap.float_value(to);
+                result = self.float(scale * t);
+            } else if unspecifiedp(to) {
+                result = from;
+            }
+        } else if self.functionp(from) {
+            result = self.safe_calln(from, &[to])?;
+            if to.is_fixnum() && !result.is_fixnum() {
+                result = invalid;
+            }
+        }
+        Ok(result)
+    }
+
+    fn merge_face_vectors(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        from: usize,
+        to: usize,
+        points: &mut MergePoints,
+    ) -> LispResult<()> {
+        let base = self.stack.len();
+        let r = self.merge_face_vectors_1(w, f, from, to, points);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn merge_face_vectors_1(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        from: usize,
+        to: usize,
+        points: &mut MergePoints,
+    ) -> LispResult<()> {
+        let inherit = self.at(from, LFACE_INHERIT_INDEX);
+        if !unspecifiedp(inherit) && !inherit.is_nil() {
+            self.merge_face_ref(w, f, inherit, to, false, points, 0)?;
+        }
+        let mut font = Value::NIL;
+        let from_font = self.at(from, LFACE_FONT_INDEX);
+        if self.font_spec_p(from_font) {
+            let to_font = self.at(to, LFACE_FONT_INDEX);
+            font = if !unspecifiedp(to_font) {
+                self.merge_font_spec(from_font, to_font)?
+            } else {
+                self.copy_font_spec(from_font)?
+            };
+            self.set_at(to, LFACE_FONT_INDEX, font);
+        }
+        self.stack.push(font);
+        for i in 1..N {
+            let fv = self.at(from, i);
+            if unspecifiedp(fv) {
+                continue;
+            }
+            if i == LFACE_HEIGHT_INDEX && !fv.is_fixnum() {
+                let tv = self.at(to, i);
+                let h = self.merge_face_heights(fv, tv, tv)?;
+                self.set_at(to, i, h);
+                self.attrs_font_clear_prop(to, FONT_SIZE_INDEX)?;
+            } else if i != LFACE_FONT_INDEX && self.at(to, i) != fv {
+                self.set_at(to, i, fv);
+                if (LFACE_FAMILY_INDEX..=LFACE_SLANT_INDEX).contains(&i) {
+                    self.attrs_font_clear_prop(to, lface_font_prop(i))?;
+                }
+            }
+        }
+        if !font.is_nil() {
+            let foundry = self.font_aref(font, FONT_FOUNDRY_INDEX);
+            if !foundry.is_nil() {
+                self.check_symbol(foundry)?;
+                let name = self.symbol_name(foundry);
+                self.set_at(to, LFACE_FOUNDRY_INDEX, name);
+            }
+            let family = self.font_aref(font, FONT_FAMILY_INDEX);
+            if !family.is_nil() {
+                self.check_symbol(family)?;
+                let name = self.symbol_name(family);
+                self.set_at(to, LFACE_FAMILY_INDEX, name);
+            }
+            for (fi, li) in [
+                (FONT_WEIGHT_INDEX, LFACE_WEIGHT_INDEX),
+                (FONT_SLANT_INDEX, LFACE_SLANT_INDEX),
+                (FONT_WIDTH_INDEX, LFACE_SWIDTH_INDEX),
+            ] {
+                if !self.font_aref(font, fi).is_nil() {
+                    let v = self.font_style_symbolic(font, fi, true);
+                    self.set_at(to, li, v);
+                }
+            }
+            let adstyle = self.font_aref(font, FONT_ADSTYLE_INDEX);
+            if !adstyle.is_nil() {
+                let tospec = self.at(to, LFACE_FONT_INDEX);
+                let tospec = if !tospec.is_nil() {
+                    self.copy_font_spec(tospec)?
+                } else {
+                    crate::font::f_font_spec(self, &[])?
+                };
+                self.set_at(to, LFACE_FONT_INDEX, tospec);
+                self.font_aset(tospec, FONT_ADSTYLE_INDEX, adstyle);
+            }
+            self.font_aset(font, FONT_SIZE_INDEX, Value::NIL);
+        }
+        self.set_at(to, LFACE_INHERIT_INDEX, Value::NIL);
+        Ok(())
+    }
+
+    fn face_inherited_attr(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        attrs: usize,
+        attr_idx: usize,
+        points: &mut MergePoints,
+    ) -> LispResult {
+        let base = self.stack.len();
+        let r = self.face_inherited_attr_1(w, f, attrs, attr_idx, points);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn face_inherited_attr_1(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        attrs: usize,
+        attr_idx: usize,
+        points: &mut MergePoints,
+    ) -> LispResult {
+        let snapshot = self.attrs_snapshot(attrs);
+        let inherited = self.attrs_push_from(&snapshot);
+        let mut attr_val = self.at(attrs, attr_idx);
+        while unspecifiedp(attr_val)
+            && !self.at(inherited, LFACE_INHERIT_INDEX).is_nil()
+            && !unspecifiedp(self.at(inherited, LFACE_INHERIT_INDEX))
+        {
+            let parent_face = self.at(inherited, LFACE_INHERIT_INDEX);
+            self.stack.push(parent_face);
+            if parent_face.is_cons() {
+                let mut ok = false;
+                let mut tail = parent_face;
+                while !tail.is_nil() {
+                    let face = self.car_safe(tail);
+                    ok = self.get_lface_attributes(w, f, face, inherited, false, points)?;
+                    if !ok {
+                        break;
+                    }
+                    attr_val = self.face_inherited_attr(w, f, inherited, attr_idx, points)?;
+                    if !unspecifiedp(attr_val) {
+                        break;
+                    }
+                    tail = self.cdr_safe(tail);
+                }
+                if !ok {
+                    break;
+                }
+            } else {
+                let ok = self.get_lface_attributes(w, f, parent_face, inherited, false, points)?;
+                if !ok {
+                    break;
+                }
+                attr_val = self.at(inherited, attr_idx);
+            }
+        }
+        Ok(attr_val)
+    }
+
+    fn face_inheritance_cycle(
+        &mut self,
+        f: Option<Value>,
+        face: Value,
+        child: Value,
+    ) -> LispResult<bool> {
+        let base = self.stack.len();
+        let r = self.face_inheritance_cycle_1(f, face, child);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn face_inheritance_cycle_1(
+        &mut self,
+        f: Option<Value>,
+        face: Value,
+        child: Value,
+    ) -> LispResult<bool> {
+        let face_attrs = self.attrs_push(sym::UNSPECIFIED);
+        let mut cycle_found = false;
+        let continues =
+            |p: Value| !p.is_nil() && !unspecifiedp(p) && !ignore_deffacep(p) && !resetp(p);
+        if face.is_cons() {
+            let mut tail = face;
+            while tail.is_cons() {
+                let member_face = self.xcar(tail);
+                let mut points = MergePoints::new();
+                let ok = self.get_lface_attributes(
+                    None,
+                    f,
+                    member_face,
+                    face_attrs,
+                    false,
+                    &mut points,
+                )?;
+                if !ok {
+                    break;
+                }
+                let parent_face = self.at(face_attrs, LFACE_INHERIT_INDEX);
+                if parent_face == member_face || parent_face == child {
+                    cycle_found = true;
+                } else if continues(parent_face) {
+                    cycle_found = self.face_inheritance_cycle(f, parent_face, child)?;
+                }
+                if cycle_found {
+                    break;
+                }
+                tail = self.xcdr(tail);
+            }
+        } else if face.is_symbol() {
+            let mut points = MergePoints::new();
+            let ok = self.get_lface_attributes(None, f, face, face_attrs, false, &mut points)?;
+            if ok {
+                let parent_face = self.at(face_attrs, LFACE_INHERIT_INDEX);
+                if parent_face == face || parent_face == child {
+                    cycle_found = true;
+                } else if continues(parent_face) {
+                    cycle_found = self.face_inheritance_cycle(f, parent_face, child)?;
+                }
+            }
+        }
+        Ok(cycle_found)
+    }
+
+    fn realized_default_face_attrs(&mut self, f: Option<Value>) -> LispResult<[Value; N]> {
+        let _ = f;
+        Err(self.error("Cannot realize default face"))
+    }
+
+    fn merge_named_face(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        face_name: Value,
+        to: usize,
+        points: &mut MergePoints,
+        attr_filter: usize,
+    ) -> LispResult<bool> {
+        let depth = points.len();
+        if !push_named_merge_point(points, face_name, NamedMergePointKind::Normal) {
+            return Ok(false);
+        }
+        let base = self.stack.len();
+        let r = self.merge_named_face_1(w, f, face_name, to, points, attr_filter);
+        self.stack.truncate(base);
+        points.truncate(depth);
+        r
+    }
+
+    fn merge_named_face_1(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        face_name: Value,
+        to: usize,
+        points: &mut MergePoints,
+        attr_filter: usize,
+    ) -> LispResult<bool> {
+        let from = self.attrs_push(sym::UNSPECIFIED);
+        let ok = self.get_lface_attributes(w, f, face_name, from, false, points)?;
+        if ok && face_name != sym::DEFAULT {
+            let mut deflt: Option<[Value; N]> = None;
+            for i in 1..N {
+                if resetp(self.at(from, i)) {
+                    let d = match deflt {
+                        Some(d) => d,
+                        None => {
+                            let d = self.realized_default_face_attrs(f)?;
+                            deflt = Some(d);
+                            d
+                        }
+                    };
+                    self.set_at(from, i, d[i]);
+                }
+            }
+        }
+        let merge = ok
+            && (attr_filter == 0
+                || (!self.at(from, attr_filter).is_nil()
+                    && !unspecifiedp(self.at(from, attr_filter)))
+                || (!self.at(from, LFACE_INHERIT_INDEX).is_nil()
+                    && !unspecifiedp(self.at(from, LFACE_INHERIT_INDEX))
+                    && {
+                        let val = self.face_inherited_attr(w, f, from, attr_filter, points)?;
+                        !val.is_nil() && !unspecifiedp(val)
+                    }));
+        if merge {
+            self.merge_face_vectors(w, f, from, to, points)?;
+        }
+        Ok(ok)
+    }
+
+    fn evaluate_face_filter(
+        &mut self,
+        filter: Value,
+        w: Option<Value>,
+        ok: &mut bool,
+        err_msgs: bool,
+    ) -> LispResult<bool> {
+        let orig_filter = filter;
+        if filter.is_nil() {
+            return Ok(true);
+        }
+        if self.var_true(sym::FACE_FILTERS_ALWAYS_MATCH) {
+            return Ok(true);
+        }
+        'err: {
+            if !filter.is_cons() || self.xcar(filter) != sym::K_WINDOW {
+                break 'err;
+            }
+            let filter = self.xcdr(filter);
+            let parameter = self.car_safe(filter);
+            let filter = self.cdr_safe(filter);
+            if !filter.is_cons() {
+                break 'err;
+            }
+            let value = self.xcar(filter);
+            if !self.xcdr(filter).is_nil() {
+                break 'err;
+            }
+            self.check_symbol(parameter)?;
+            if self.get(parameter, sym::K_FILTERED).is_nil() {
+                self.put(parameter, sym::K_FILTERED, sym::T);
+            }
+            let mut matched = false;
+            if let Some(w) = w {
+                let params = self.window(w).window_parameters;
+                let found = self.assq(parameter, params);
+                if !found.is_nil() && self.xcdr(found) == value {
+                    matched = true;
+                }
+            }
+            return Ok(matched);
+        }
+        if err_msgs {
+            self.add_to_log("Invalid face filter %S", &[orig_filter])?;
+        }
+        *ok = false;
+        Ok(false)
+    }
+
+    fn filter_face_ref(
+        &mut self,
+        face_ref: Value,
+        w: Option<Value>,
+        ok: &mut bool,
+        err_msgs: bool,
+    ) -> LispResult {
+        let orig_face_ref = face_ref;
+        if !face_ref.is_cons() {
+            return Ok(face_ref);
+        }
+        'err: {
+            if self.xcar(face_ref) != sym::K_FILTERED {
+                return Ok(face_ref);
+            }
+            let face_ref = self.xcdr(face_ref);
+            if !face_ref.is_cons() {
+                break 'err;
+            }
+            let filter = self.xcar(face_ref);
+            let face_ref = self.xcdr(face_ref);
+            if !face_ref.is_cons() {
+                break 'err;
+            }
+            let filtered_face_ref = self.xcar(face_ref);
+            if !self.xcdr(face_ref).is_nil() {
+                break 'err;
+            }
+            return Ok(if self.evaluate_face_filter(filter, w, ok, err_msgs)? {
+                filtered_face_ref
+            } else {
+                Value::NIL
+            });
+        }
+        if err_msgs {
+            self.add_to_log("Invalid face ref %S", &[orig_face_ref])?;
+        }
+        *ok = false;
+        Ok(Value::NIL)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn merge_face_ref(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        face_ref: Value,
+        to: usize,
+        err_msgs: bool,
+        points: &mut MergePoints,
+        attr_filter: usize,
+    ) -> LispResult<bool> {
+        let base = self.stack.len();
+        self.stack.push(face_ref);
+        let r = self.merge_face_ref_1(w, f, face_ref, to, err_msgs, points, attr_filter);
+        self.stack.truncate(base);
+        r
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn merge_face_ref_1(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        face_ref: Value,
+        to: usize,
+        err_msgs: bool,
+        points: &mut MergePoints,
+        attr_filter: usize,
+    ) -> LispResult<bool> {
+        let mut ok = true;
+        let mut attr_filter_passed = false;
+        let mut filtered_face_ref = face_ref;
+        let mut face_ref;
+        loop {
+            face_ref = filtered_face_ref;
+            filtered_face_ref = self.filter_face_ref(face_ref, w, &mut ok, err_msgs)?;
+            if !(ok && face_ref != filtered_face_ref) {
+                break;
+            }
+        }
+        if !ok {
+            return Ok(false);
+        }
+        if face_ref.is_nil() {
+            return Ok(true);
+        }
+        self.stack.push(face_ref);
+        if face_ref.is_cons() {
+            let first = self.xcar(face_ref);
+            if first == sym::FOREGROUND_COLOR || first == sym::BACKGROUND_COLOR {
+                let color_name = self.xcdr(face_ref);
+                if color_name.is_string() {
+                    if first == sym::FOREGROUND_COLOR {
+                        self.set_at(to, LFACE_FOREGROUND_INDEX, color_name);
+                    } else {
+                        self.set_at(to, LFACE_BACKGROUND_INDEX, color_name);
+                    }
+                } else {
+                    if err_msgs {
+                        self.add_to_log("Invalid face color %S", &[color_name])?;
+                    }
+                    ok = false;
+                }
+            } else if first.is_symbol()
+                && self.string_bytes(self.symbol_name(first)).first() == Some(&b':')
+            {
+                if attr_filter > 0 {
+                    let mut parent_face = Value::NIL;
+                    let mut attr_filter_seen = false;
+                    let mut tem = face_ref;
+                    while tem.is_cons() && self.xcdr(tem).is_cons() {
+                        let keyword = self.xcar(tem);
+                        let value = self.xcar(self.xcdr(tem));
+                        if keyword == FACE_ATTR_SYM[attr_filter] {
+                            attr_filter_seen = true;
+                            if value.is_nil() {
+                                return Ok(true);
+                            }
+                        } else if keyword == sym::K_INHERIT {
+                            parent_face = value;
+                        }
+                        tem = self.xcdr(self.xcdr(tem));
+                    }
+                    if !attr_filter_seen {
+                        if parent_face.is_nil() {
+                            return Ok(true);
+                        }
+                        let scratch = self.attrs_push(sym::UNSPECIFIED);
+                        self.set_at(scratch, 0, sym::FACE);
+                        if !self.merge_face_ref(w, f, parent_face, scratch, err_msgs, points, 0)? {
+                            self.add_to_log(
+                                "Invalid face attribute %S %S",
+                                &[sym::K_INHERIT, parent_face],
+                            )?;
+                            return Ok(false);
+                        }
+                        let v = self.at(scratch, attr_filter);
+                        if v.is_nil() || unspecifiedp(v) {
+                            return Ok(true);
+                        }
+                    }
+                    attr_filter_passed = true;
+                }
+                let mut tail = face_ref;
+                while tail.is_cons() && self.xcdr(tail).is_cons() {
+                    let keyword = self.xcar(tail);
+                    let value = self.xcar(self.xcdr(tail));
+                    let err = !self.merge_face_plist_attr(
+                        w,
+                        f,
+                        keyword,
+                        value,
+                        to,
+                        err_msgs,
+                        points,
+                        attr_filter,
+                        attr_filter_passed,
+                    )?;
+                    if err {
+                        self.add_to_log("Invalid face attribute %S %S", &[keyword, value])?;
+                        ok = false;
+                    }
+                    tail = self.xcdr(self.xcdr(tail));
+                }
+            } else {
+                let next = self.xcdr(face_ref);
+                if !next.is_nil() {
+                    ok = self.merge_face_ref(w, f, next, to, err_msgs, points, attr_filter)?;
+                }
+                if !self.merge_face_ref(w, f, first, to, err_msgs, points, attr_filter)? {
+                    ok = false;
+                }
+            }
+        } else {
+            ok = self.merge_named_face(w, f, face_ref, to, points, attr_filter)?;
+            if !ok && err_msgs {
+                self.add_to_log("Invalid face reference: %s", &[face_ref])?;
+            }
+        }
+        Ok(ok)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn merge_face_plist_attr(
+        &mut self,
+        w: Option<Value>,
+        f: Option<Value>,
+        keyword: Value,
+        value: Value,
+        to: usize,
+        err_msgs: bool,
+        points: &mut MergePoints,
+        attr_filter: usize,
+        attr_filter_passed: bool,
+    ) -> LispResult<bool> {
+        let mut value = value;
+        if value == sym::UNSPECIFIED {
+            return Ok(true);
+        }
+        if keyword == sym::K_FAMILY || keyword == sym::K_FOUNDRY {
+            if !value.is_string() {
+                return Ok(false);
+            }
+            let (li, fi) = if keyword == sym::K_FAMILY {
+                (LFACE_FAMILY_INDEX, FONT_FAMILY_INDEX)
+            } else {
+                (LFACE_FOUNDRY_INDEX, FONT_FOUNDRY_INDEX)
+            };
+            self.set_at(to, li, value);
+            self.attrs_font_clear_prop(to, fi)?;
+        } else if keyword == sym::K_HEIGHT {
+            let old = self.at(to, LFACE_HEIGHT_INDEX);
+            let new_height = self.merge_face_heights(value, old, Value::NIL)?;
+            if new_height.is_nil() {
+                return Ok(false);
+            }
+            self.set_at(to, LFACE_HEIGHT_INDEX, new_height);
+            self.attrs_font_clear_prop(to, FONT_SIZE_INDEX)?;
+        } else if keyword == sym::K_WEIGHT || keyword == sym::K_SLANT || keyword == sym::K_WIDTH {
+            let (li, fi) = if keyword == sym::K_WEIGHT {
+                (LFACE_WEIGHT_INDEX, FONT_WEIGHT_INDEX)
+            } else if keyword == sym::K_SLANT {
+                (LFACE_SLANT_INDEX, FONT_SLANT_INDEX)
+            } else {
+                (LFACE_SWIDTH_INDEX, FONT_WIDTH_INDEX)
+            };
+            if !value.is_symbol() || self.font_style_to_value(fi, value, false)? >> 8 < 0 {
+                return Ok(false);
+            }
+            self.set_at(to, li, value);
+            self.attrs_font_clear_prop(to, fi)?;
+        } else if keyword == sym::K_UNDERLINE {
+            if !(value == sym::T || value.is_nil() || value.is_string() || value.is_cons()) {
+                return Ok(false);
+            }
+            self.set_at(to, LFACE_UNDERLINE_INDEX, value);
+        } else if keyword == sym::K_OVERLINE || keyword == sym::K_STRIKE_THROUGH {
+            if !(value == sym::T || value.is_nil() || value.is_string()) {
+                return Ok(false);
+            }
+            let li = if keyword == sym::K_OVERLINE {
+                LFACE_OVERLINE_INDEX
+            } else {
+                LFACE_STRIKE_THROUGH_INDEX
+            };
+            self.set_at(to, li, value);
+        } else if keyword == sym::K_BOX {
+            if value == sym::T {
+                value = Value::fixnum(1);
+            }
+            if !((value.as_fixnum().is_some_and(|n| n != 0))
+                || value.is_string()
+                || value.is_cons()
+                || value.is_nil())
+            {
+                return Ok(false);
+            }
+            self.set_at(to, LFACE_BOX_INDEX, value);
+        } else if keyword == sym::K_INVERSE_VIDEO || keyword == sym::K_EXTEND {
+            if !(value == sym::T || value.is_nil()) {
+                return Ok(false);
+            }
+            let li = if keyword == sym::K_INVERSE_VIDEO {
+                LFACE_INVERSE_INDEX
+            } else {
+                LFACE_EXTEND_INDEX
+            };
+            self.set_at(to, li, value);
+        } else if keyword == sym::K_FOREGROUND
+            || keyword == sym::K_DISTANT_FOREGROUND
+            || keyword == sym::K_BACKGROUND
+        {
+            if !value.is_string() {
+                return Ok(false);
+            }
+            let li = if keyword == sym::K_FOREGROUND {
+                LFACE_FOREGROUND_INDEX
+            } else if keyword == sym::K_DISTANT_FOREGROUND {
+                LFACE_DISTANT_FOREGROUND_INDEX
+            } else {
+                LFACE_BACKGROUND_INDEX
+            };
+            self.set_at(to, li, value);
+        } else if keyword == sym::K_STIPPLE {
+            if !(value.is_nil() || !f_bitmap_spec_p(self, &[value])?.is_nil()) {
+                return Ok(false);
+            }
+            self.set_at(to, LFACE_STIPPLE_INDEX, value);
+        } else if keyword == sym::K_FONT {
+            if !self.is_font(value) {
+                return Ok(false);
+            }
+            self.set_at(to, LFACE_FONT_INDEX, value);
+        } else if keyword == sym::K_INHERIT {
+            let filter = if attr_filter_passed { 0 } else { attr_filter };
+            if !self.merge_face_ref(w, f, value, to, err_msgs, points, filter)? {
+                return Ok(false);
+            }
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
     pub fn tty_color_name(&mut self, f: Value, idx: i64) -> LispResult {
         if idx >= 0
             && !self
@@ -185,7 +1237,7 @@ impl Lisp {
         {
             let coldesc = self.funcall(sym::TTY_COLOR_BY_INDEX, &[Value::fixnum(idx), f])?;
             if !coldesc.is_nil() {
-                return Ok(self.car_safe(coldesc));
+                return self.car(coldesc);
             }
         }
         if idx == FACE_TTY_DEFAULT_FG_COLOR {
@@ -195,6 +1247,113 @@ impl Lisp {
             return Ok(self.string("unspecified-bg"));
         }
         Ok(sym::UNSPECIFIED)
+    }
+
+    fn parse_rgb_list(&self, rgb_list: Value, color: &mut EmacsColor) -> bool {
+        let mut rgb_list = rgb_list;
+        for field in [&mut color.red, &mut color.green, &mut color.blue] {
+            if !rgb_list.is_cons() {
+                return false;
+            }
+            match self.xcar(rgb_list).as_fixnum() {
+                Some(n) => *field = n as u16,
+                None => return false,
+            }
+            rgb_list = self.xcdr(rgb_list);
+        }
+        true
+    }
+
+    fn tty_lookup_color(
+        &mut self,
+        f: Value,
+        color: Value,
+        tty_color: &mut EmacsColor,
+    ) -> LispResult<bool> {
+        if !color.is_string() || self.heap.symbol_ref(sym::TTY_COLOR_DESC).function.is_nil() {
+            return Ok(false);
+        }
+        let color_desc = self.funcall(sym::TTY_COLOR_DESC, &[color, f])?;
+        if color_desc.is_cons() && self.xcdr(color_desc).is_cons() {
+            let Some(pixel) = self.xcar(self.xcdr(color_desc)).as_fixnum() else {
+                return Ok(false);
+            };
+            tty_color.pixel = pixel;
+            let rgb = self.xcdr(self.xcdr(color_desc));
+            Ok(self.parse_rgb_list(rgb, tty_color))
+        } else if self
+            .find_symbol_value(sym::TTY_DEFINED_COLOR_ALIST)
+            .is_nil()
+        {
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    pub fn tty_defined_color(
+        &mut self,
+        f: Value,
+        color_name: &[u8],
+    ) -> LispResult<(bool, EmacsColor)> {
+        let color_name = crate::fontset::c_bytes(color_name);
+        let mut status = true;
+        let mut color_def = EmacsColor {
+            pixel: FACE_TTY_DEFAULT_COLOR,
+            ..EmacsColor::default()
+        };
+        if !color_name.is_empty() {
+            let lcolor = self.make_string(color_name);
+            self.stack.push(lcolor);
+            let r = self.tty_lookup_color(f, lcolor, &mut color_def);
+            self.stack.pop();
+            status = r?;
+            if color_def.pixel == FACE_TTY_DEFAULT_COLOR {
+                if color_name == b"unspecified-fg" {
+                    color_def.pixel = FACE_TTY_DEFAULT_FG_COLOR;
+                } else if color_name == b"unspecified-bg" {
+                    color_def.pixel = FACE_TTY_DEFAULT_BG_COLOR;
+                }
+            }
+        }
+        if color_def.pixel != FACE_TTY_DEFAULT_COLOR {
+            status = true;
+        }
+        Ok((status, color_def))
+    }
+
+    pub fn defined_color(&mut self, f: Value, color_name: &[u8]) -> LispResult<(bool, EmacsColor)> {
+        match self.frame(f).output_method {
+            OutputMethod::Initial => self.tty_defined_color(f, color_name),
+        }
+    }
+
+    fn face_color_gray_p(&mut self, f: Value, color_name: &[u8]) -> LispResult<bool> {
+        let (ok, color) = self.defined_color(f, color_name)?;
+        if !ok {
+            return Ok(false);
+        }
+        let (r, g, b) = (
+            i32::from(color.red),
+            i32::from(color.green),
+            i32::from(color.blue),
+        );
+        Ok((r < 5000 && g < 5000 && b < 5000)
+            || ((r - g).abs() < r.max(g) / 20
+                && (g - b).abs() < g.max(b) / 20
+                && (b - r).abs() < b.max(r) / 20))
+    }
+
+    fn face_color_supported_p(
+        &mut self,
+        f: Value,
+        color_name: &[u8],
+        _background_p: bool,
+    ) -> LispResult<bool> {
+        if self.frame(f).window_p() {
+            unreachable!("window-system color support needs xw-display-color-p");
+        }
+        Ok(self.tty_defined_color(f, color_name)?.0)
     }
 
     pub fn update_face_from_frame_parameter(
@@ -227,12 +1386,1077 @@ impl Lisp {
             return Ok(());
         };
         let lface = self.lface_from_face_name(Some(f), face, true)?;
-        self.aset_value(lface, Value::fixnum(index as i64), value)?;
+        self.lface_aset(lface, index, value);
         if self.get(face, sym::FACE_NO_INHERIT).is_nil() {
-            let fr = self.frame_mut(f);
-            fr.flags.face_change = true;
-            fr.flags.redisplay = true;
+            self.frame_mut(f).flags.face_change = true;
+            self.fset_redisplay(f);
         }
         Ok(())
     }
+
+    fn set_font_frame_param(&mut self, frame: Value, lface: Value) {
+        if self.frame(frame).window_p() && !unspecifiedp(self.lface_aref(lface, LFACE_FONT_INDEX)) {
+            unreachable!("window-system frames need font_load_for_lface");
+        }
+    }
+
+    fn make_face_cache(&self) -> crate::xfaces::FaceCache {
+        FaceCache {
+            menu_face_changed_p: self.faces.menu_face_changed_default,
+        }
+    }
+
+    fn free_all_realized_faces(&mut self, frame: Value) {
+        if frame.is_nil() {
+            self.windows.windows_or_buffers_changed = 58;
+        }
+    }
+
+    fn face_change_for(&mut self, face: Value, f: Option<Value>, code: i64) {
+        if self.get(face, sym::FACE_NO_INHERIT).is_nil() {
+            match f {
+                Some(f) => {
+                    self.frame_mut(f).flags.face_change = true;
+                    self.fset_redisplay(f);
+                }
+                None => {
+                    self.faces.face_change = true;
+                    self.windows.windows_or_buffers_changed = code;
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn f_internal_make_lisp_face(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (face, frame) = (args[0], arg(args, 1));
+    lisp.check_symbol(face)?;
+    let mut global_lface = lisp.lface_from_face_name(None, face, false)?;
+    let (f, mut lface) = if !frame.is_nil() {
+        lisp.check_live_frame(frame)?;
+        (
+            Some(frame),
+            lisp.lface_from_face_name(Some(frame), face, false)?,
+        )
+    } else {
+        (None, Value::NIL)
+    };
+    if global_lface.is_nil() {
+        let face_id = Value::fixnum(lisp.faces.lface_id_to_name.len() as i64);
+        lisp.faces.lface_id_to_name.push(face);
+        lisp.put(face, sym::FACE, face_id);
+        global_lface = lisp.make_lface_vector();
+        let entry = lisp.cons(face_id, global_lface);
+        let table = lisp.face_new_frame_defaults();
+        lisp.puthash(face, entry, table)?;
+    } else if f.is_none() {
+        for i in 1..N {
+            lisp.lface_aset(global_lface, i, sym::UNSPECIFIED);
+        }
+    }
+    if let Some(fr) = f {
+        if lface.is_nil() {
+            lface = lisp.make_lface_vector();
+            let table = lisp.frame(fr).face_hash_table;
+            lisp.puthash(face, lface, table)?;
+        } else {
+            for i in 1..N {
+                lisp.lface_aset(lface, i, sym::UNSPECIFIED);
+            }
+        }
+    } else {
+        lface = global_lface;
+    }
+    lisp.face_change_for(face, f, 54);
+    Ok(lface)
+}
+
+fn f_internal_lisp_face_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (face, frame) = (args[0], arg(args, 1));
+    let face = lisp.resolve_face_name(face, true)?;
+    if !frame.is_nil() {
+        lisp.check_live_frame(frame)?;
+        lisp.lface_from_face_name(Some(frame), face, false)
+    } else {
+        lisp.lface_from_face_name(None, face, false)
+    }
+}
+
+fn f_internal_copy_lisp_face(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (from, to, frame, mut new_frame) = (args[0], args[1], args[2], args[3]);
+    lisp.check_symbol(from)?;
+    lisp.check_symbol(to)?;
+    let (lface, copy, f) = if frame == sym::T {
+        let lface = lisp.lface_from_face_name(None, from, true)?;
+        let copy = f_internal_make_lisp_face(lisp, &[to, Value::NIL])?;
+        (lface, copy, None)
+    } else {
+        if new_frame.is_nil() {
+            new_frame = frame;
+        }
+        lisp.check_live_frame(frame)?;
+        lisp.check_live_frame(new_frame)?;
+        let lface = lisp.lface_from_face_name(Some(frame), from, true)?;
+        let copy = f_internal_make_lisp_face(lisp, &[to, new_frame])?;
+        (lface, copy, Some(new_frame))
+    };
+    let contents = lisp.lface_contents(lface);
+    for (i, v) in contents.into_iter().enumerate() {
+        lisp.lface_aset(copy, i, v);
+    }
+    lisp.face_change_for(to, f, 55);
+    Ok(to)
+}
+
+fn handle_invalid_nil_value(
+    lisp: &mut Lisp,
+    value: Value,
+    attr: Value,
+    face: Value,
+) -> LispResult<Value> {
+    if value.is_nil() {
+        lisp.add_to_log(
+            "Warning: setting attribute `%s' of face `%s': nil value is invalid, use `unspecified' instead.",
+            &[attr, face],
+        )?;
+        return Ok(sym::UNSPECIFIED);
+    }
+    Ok(value)
+}
+
+fn valid_underline_p(lisp: &Lisp, value: Value) -> bool {
+    if unspecifiedp(value) || ignore_deffacep(value) || resetp(value) {
+        return true;
+    }
+    if value.is_nil() || value == sym::T {
+        return true;
+    }
+    if value.is_string() {
+        return lisp.string_chars(value) > 0;
+    }
+    if !value.is_cons() {
+        return false;
+    }
+    let mut list = value;
+    while !lisp.car_safe(list).is_nil() {
+        let key = lisp.car_safe(list);
+        list = lisp.cdr_safe(list);
+        let val = lisp.car_safe(list);
+        list = lisp.cdr_safe(list);
+        let invalid_color = key == sym::K_COLOR
+            && !(val == sym::FOREGROUND_COLOR || (val.is_string() && lisp.string_chars(val) > 0));
+        let invalid_style = key == sym::K_STYLE
+            && !(val == sym::LINE
+                || val == sym::DOUBLE_LINE
+                || val == sym::WAVE
+                || val == sym::DOTS
+                || val == sym::DASHES);
+        if key.is_nil()
+            || (val.is_nil() && key != sym::K_POSITION)
+            || invalid_color
+            || invalid_style
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn valid_box_p(lisp: &Lisp, value: Value) -> bool {
+    if unspecifiedp(value) || ignore_deffacep(value) || resetp(value) || value.is_nil() {
+        return true;
+    }
+    if let Some(n) = value.as_fixnum() {
+        return n != 0;
+    }
+    if value.is_string() {
+        return lisp.string_chars(value) > 0;
+    }
+    if !value.is_cons() {
+        return false;
+    }
+    if lisp.xcar(value).is_fixnum() && lisp.xcdr(value).is_fixnum() {
+        return true;
+    }
+    let mut tem = value;
+    while tem.is_cons() {
+        let k = lisp.xcar(tem);
+        tem = lisp.xcdr(tem);
+        if !tem.is_cons() {
+            break;
+        }
+        let v = lisp.xcar(tem);
+        if k == sym::K_LINE_WIDTH {
+            let pair_ok = v.is_cons()
+                && lisp.xcar(v).as_fixnum().is_some_and(|n| n != 0)
+                && lisp.xcdr(v).as_fixnum().is_some_and(|n| n != 0);
+            let int_ok = v.as_fixnum().is_some_and(|n| n != 0);
+            if !pair_ok && !int_ok {
+                break;
+            }
+        } else if k == sym::K_COLOR {
+            if !v.is_nil() && (!v.is_string() || lisp.string_chars(v) == 0) {
+                break;
+            }
+        } else if k == sym::K_STYLE {
+            if !v.is_nil()
+                && v != sym::PRESSED_BUTTON
+                && v != sym::RELEASED_BUTTON
+                && v != sym::FLAT_BUTTON
+            {
+                break;
+            }
+        } else {
+            break;
+        }
+        tem = lisp.xcdr(tem);
+    }
+    tem.is_nil()
+}
+
+pub(crate) fn f_internal_set_lisp_face_attribute(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let base = lisp.stack.len();
+    lisp.stack.extend_from_slice(&args[..3]);
+    lisp.stack.push(arg(args, 3));
+    let r = internal_set_lisp_face_attribute(lisp, args[0], args[1], args[2], arg(args, 3));
+    lisp.stack.truncate(base);
+    r
+}
+
+fn internal_set_lisp_face_attribute(
+    lisp: &mut Lisp,
+    face: Value,
+    attr: Value,
+    value: Value,
+    frame: Value,
+) -> LispResult {
+    let mut attr = attr;
+    let mut value = value;
+    let mut frame = frame;
+    let mut old_value = Value::NIL;
+    let mut prop_index = 0;
+    lisp.check_symbol(face)?;
+    lisp.check_symbol(attr)?;
+    let face = lisp.resolve_face_name(face, true)?;
+    if frame == Value::fixnum(0) {
+        f_internal_set_lisp_face_attribute(lisp, &[face, attr, value, sym::T])?;
+        for fr in lisp.frame_list_vec() {
+            f_internal_set_lisp_face_attribute(lisp, &[face, attr, value, fr])?;
+        }
+        return Ok(face);
+    }
+    let (f, lface) = if frame == sym::T {
+        let lface = lisp.lface_from_face_name(None, face, true)?;
+        if unspecifiedp(value) {
+            value = sym::K_IGNORE_DEFFACE;
+        }
+        (None, lface)
+    } else {
+        if frame.is_nil() {
+            frame = lisp.frames.selected_frame;
+        }
+        lisp.check_live_frame(frame)?;
+        let mut lface = lisp.lface_from_face_name(Some(frame), face, false)?;
+        if lface.is_nil() {
+            lface = f_internal_make_lisp_face(lisp, &[face, frame])?;
+        }
+        (Some(frame), lface)
+    };
+    lisp.stack.push(lface);
+    let special = |v: Value| unspecifiedp(v) || ignore_deffacep(v) || resetp(v);
+    if attr == sym::K_FAMILY || attr == sym::K_FOUNDRY {
+        if !special(value) {
+            lisp.check_string(value)?;
+            if lisp.string_chars(value) == 0 {
+                let msg = if attr == sym::K_FAMILY {
+                    "Invalid face family"
+                } else {
+                    "Invalid face foundry"
+                };
+                return Err(lisp.signal_error(msg, value));
+            }
+        }
+        let (li, fi) = if attr == sym::K_FAMILY {
+            (LFACE_FAMILY_INDEX, FONT_FAMILY_INDEX)
+        } else {
+            (LFACE_FOUNDRY_INDEX, FONT_FOUNDRY_INDEX)
+        };
+        old_value = lisp.lface_aref(lface, li);
+        lisp.lface_aset(lface, li, value);
+        prop_index = fi;
+    } else if attr == sym::K_HEIGHT {
+        if !special(value) {
+            if face == sym::DEFAULT {
+                if !value.as_fixnum().is_some_and(|n| n > 0) {
+                    return Err(
+                        lisp.signal_error("Default face height not absolute and positive", value)
+                    );
+                }
+            } else {
+                let test = lisp.merge_face_heights(value, Value::fixnum(10), Value::NIL)?;
+                if !test.as_fixnum().is_some_and(|n| n > 0) {
+                    return Err(
+                        lisp.signal_error("Face height does not produce a positive integer", value)
+                    );
+                }
+            }
+        }
+        old_value = lisp.lface_aref(lface, LFACE_HEIGHT_INDEX);
+        lisp.lface_aset(lface, LFACE_HEIGHT_INDEX, value);
+        prop_index = FONT_SIZE_INDEX;
+    } else if attr == sym::K_WEIGHT || attr == sym::K_SLANT || attr == sym::K_WIDTH {
+        let (li, fi, msg) = if attr == sym::K_WEIGHT {
+            (LFACE_WEIGHT_INDEX, FONT_WEIGHT_INDEX, "Invalid face weight")
+        } else if attr == sym::K_SLANT {
+            (LFACE_SLANT_INDEX, FONT_SLANT_INDEX, "Invalid face slant")
+        } else {
+            (LFACE_SWIDTH_INDEX, FONT_WIDTH_INDEX, "Invalid face width")
+        };
+        if !special(value) {
+            lisp.check_symbol(value)?;
+            if lisp.font_style_to_value(fi, value, false)? >> 8 < 0 {
+                return Err(lisp.signal_error(msg, value));
+            }
+        }
+        old_value = lisp.lface_aref(lface, li);
+        lisp.lface_aset(lface, li, value);
+        prop_index = fi;
+    } else if attr == sym::K_UNDERLINE {
+        if !valid_underline_p(lisp, value) {
+            return Err(lisp.signal_error("Invalid face underline", value));
+        }
+        old_value = lisp.lface_aref(lface, LFACE_UNDERLINE_INDEX);
+        lisp.lface_aset(lface, LFACE_UNDERLINE_INDEX, value);
+    } else if attr == sym::K_OVERLINE || attr == sym::K_STRIKE_THROUGH {
+        let (li, msg) = if attr == sym::K_OVERLINE {
+            (LFACE_OVERLINE_INDEX, "Invalid face overline")
+        } else {
+            (LFACE_STRIKE_THROUGH_INDEX, "Invalid face strike-through")
+        };
+        if !special(value)
+            && ((value.is_symbol() && value != sym::T && !value.is_nil())
+                || (value.is_string() && lisp.string_chars(value) == 0))
+        {
+            return Err(lisp.signal_error(msg, value));
+        }
+        old_value = lisp.lface_aref(lface, li);
+        lisp.lface_aset(lface, li, value);
+    } else if attr == sym::K_BOX {
+        if value == sym::T {
+            value = Value::fixnum(1);
+        }
+        if !valid_box_p(lisp, value) {
+            return Err(lisp.signal_error("Invalid face box", value));
+        }
+        old_value = lisp.lface_aref(lface, LFACE_BOX_INDEX);
+        lisp.lface_aset(lface, LFACE_BOX_INDEX, value);
+    } else if attr == sym::K_INVERSE_VIDEO || attr == sym::K_EXTEND {
+        let (li, msg) = if attr == sym::K_INVERSE_VIDEO {
+            (
+                LFACE_INVERSE_INDEX,
+                "Invalid inverse-video face attribute value",
+            )
+        } else {
+            (LFACE_EXTEND_INDEX, "Invalid extend face attribute value")
+        };
+        if !special(value) {
+            lisp.check_symbol(value)?;
+            if value != sym::T && !value.is_nil() {
+                return Err(lisp.signal_error(msg, value));
+            }
+        }
+        old_value = lisp.lface_aref(lface, li);
+        lisp.lface_aset(lface, li, value);
+    } else if attr == sym::K_FOREGROUND
+        || attr == sym::K_DISTANT_FOREGROUND
+        || attr == sym::K_BACKGROUND
+    {
+        let (li, msg) = if attr == sym::K_FOREGROUND {
+            (LFACE_FOREGROUND_INDEX, "Empty foreground color value")
+        } else if attr == sym::K_DISTANT_FOREGROUND {
+            (
+                LFACE_DISTANT_FOREGROUND_INDEX,
+                "Empty distant-foreground color value",
+            )
+        } else {
+            (LFACE_BACKGROUND_INDEX, "Empty background color value")
+        };
+        value = handle_invalid_nil_value(lisp, value, attr, face)?;
+        if !special(value) {
+            lisp.check_string(value)?;
+            if lisp.string_chars(value) == 0 {
+                return Err(lisp.signal_error(msg, value));
+            }
+        }
+        old_value = lisp.lface_aref(lface, li);
+        lisp.lface_aset(lface, li, value);
+    } else if attr == sym::K_STIPPLE {
+        if !special(value) && !value.is_nil() && f_bitmap_spec_p(lisp, &[value])?.is_nil() {
+            return Err(lisp.signal_error("Invalid stipple attribute", value));
+        }
+        old_value = lisp.lface_aref(lface, LFACE_STIPPLE_INDEX);
+        lisp.lface_aset(lface, LFACE_STIPPLE_INDEX, value);
+    } else if attr == sym::K_FONT {
+        if frame == sym::T || lisp.frame(frame).window_p() {
+            if !special(value) {
+                old_value = lisp.lface_aref(lface, LFACE_FONT_INDEX);
+                if !lisp.is_font(value) {
+                    if value.is_string() {
+                        let mut name = value;
+                        let fontset = lisp.fs_query_fontset(name, 0)?;
+                        if fontset >= 0 {
+                            name = lisp.fontset_ascii(fontset as usize);
+                        }
+                        lisp.stack.push(name);
+                        value = lisp.font_spec_from_name(name)?;
+                        lisp.stack.push(value);
+                        if !lisp.is_font(value) {
+                            return Err(lisp.signal_error("Invalid font name", name));
+                        }
+                    } else {
+                        return Err(lisp.signal_error("Invalid font or font-spec", value));
+                    }
+                }
+                let f1 = if frame == sym::T {
+                    lisp.frames.selected_frame
+                } else {
+                    frame
+                };
+                if lisp.frame(f1).window_p() {
+                    unreachable!("window-system frames need font_load_for_lface");
+                }
+            } else {
+                lisp.lface_aset(lface, LFACE_FONT_INDEX, value);
+            }
+        }
+    } else if attr == sym::K_FONTSET {
+        if frame == sym::T || lisp.frame(frame).window_p() {
+            let mut tmp = value;
+            old_value = lisp.lface_aref(lface, LFACE_FONTSET_INDEX);
+            if !resetp(value) {
+                tmp = crate::fontset::f_query_fontset(lisp, &[value, Value::NIL])?;
+                if tmp.is_nil() {
+                    return Err(lisp.signal_error("Invalid fontset name", value));
+                }
+            }
+            value = tmp;
+            lisp.stack.push(value);
+            lisp.lface_aset(lface, LFACE_FONTSET_INDEX, value);
+        }
+    } else if attr == sym::K_INHERIT {
+        let mut tail = Value::NIL;
+        if !value.is_symbol() {
+            tail = value;
+            while tail.is_cons() {
+                if !lisp.xcar(tail).is_symbol() {
+                    break;
+                }
+                tail = lisp.xcdr(tail);
+            }
+        }
+        if value == face || lisp.face_inheritance_cycle(f, value, face)? {
+            return Err(lisp.signal_error("Face inheritance results in inheritance cycle", value));
+        } else if tail.is_nil() {
+            lisp.lface_aset(lface, LFACE_INHERIT_INDEX, value);
+        } else {
+            return Err(lisp.signal_error("Invalid face inheritance", value));
+        }
+    } else if attr == sym::K_BOLD || attr == sym::K_ITALIC {
+        let (li, fi, on) = if attr == sym::K_BOLD {
+            (LFACE_WEIGHT_INDEX, FONT_WEIGHT_INDEX, sym::BOLD)
+        } else {
+            attr = sym::K_SLANT;
+            (LFACE_SLANT_INDEX, FONT_SLANT_INDEX, sym::ITALIC)
+        };
+        old_value = lisp.lface_aref(lface, li);
+        if resetp(value) {
+            lisp.lface_aset(lface, li, value);
+        } else {
+            lisp.lface_aset(lface, li, if value.is_nil() { sym::NORMAL } else { on });
+        }
+        prop_index = fi;
+    } else {
+        return Err(lisp.signal_error("Invalid face attribute name", attr));
+    }
+    if prop_index != 0 {
+        lisp.lface_font_clear_prop(lface, prop_index)?;
+    }
+    if let Some(fr) = f
+        && lisp.get(face, sym::FACE_NO_INHERIT).is_nil()
+        && !lisp.equal(old_value, value)?
+    {
+        lisp.frame_mut(fr).flags.face_change = true;
+        lisp.fset_redisplay(fr);
+    }
+    if !unspecifiedp(value) && !ignore_deffacep(value) && !lisp.equal(old_value, value)? {
+        let mut param = Value::NIL;
+        if face == sym::DEFAULT {
+            let contents = lisp.lface_contents(lface);
+            if lisp.is_frame(frame)
+                && (prop_index != 0 || attr == sym::K_FONT)
+                && lface_fully_specified_p(&contents)
+            {
+                lisp.set_font_frame_param(frame, lface);
+            } else if attr == sym::K_FOREGROUND {
+                param = sym::FOREGROUND_COLOR;
+            } else if attr == sym::K_BACKGROUND {
+                param = sym::BACKGROUND_COLOR;
+            }
+        } else if face == sym::SCROLL_BAR {
+            if attr == sym::K_FOREGROUND {
+                param = sym::SCROLL_BAR_FOREGROUND;
+            } else if attr == sym::K_BACKGROUND {
+                param = sym::SCROLL_BAR_BACKGROUND;
+            }
+        } else if face == sym::BORDER {
+            if attr == sym::K_BACKGROUND {
+                param = sym::BORDER_COLOR;
+            }
+        } else if face == sym::CURSOR {
+            if attr == sym::K_BACKGROUND {
+                param = sym::CURSOR_COLOR;
+            }
+        } else if face == sym::MOUSE {
+            if attr == sym::K_BACKGROUND {
+                param = sym::MOUSE_COLOR;
+            }
+        } else if face == sym::MENU {
+            if lisp.is_frame(frame) {
+                if lisp.frame(frame).face_cache.is_none() {
+                    let cache = lisp.make_face_cache();
+                    lisp.frame_mut(frame).face_cache = Some(Box::new(cache));
+                }
+                if let Some(c) = lisp.frame_mut(frame).face_cache.as_mut() {
+                    c.menu_face_changed_p = true;
+                }
+            } else {
+                lisp.faces.menu_face_changed_default = true;
+            }
+        }
+        if !param.is_nil() {
+            if frame == sym::T {
+                let alist = lisp.find_symbol_value(sym::DEFAULT_FRAME_ALIST);
+                let alist = lisp.store_in_alist(alist, param, value);
+                lisp.set_plain_value(sym::DEFAULT_FRAME_ALIST, alist);
+            } else {
+                let cell = lisp.cons(param, value);
+                let arg = lisp.list(&[cell]);
+                crate::frame::f_modify_frame_parameters(lisp, &[frame, arg])?;
+            }
+        }
+    }
+    Ok(face)
+}
+
+fn face_boolean_x_resource_value(
+    lisp: &mut Lisp,
+    value: Value,
+    signal_p: bool,
+) -> LispResult<Value> {
+    let s = crate::fontset::c_bytes(lisp.string_bytes(value)).to_vec();
+    let is = |word: &[u8]| s.eq_ignore_ascii_case(word);
+    if is(b"on") || is(b"true") {
+        Ok(sym::T)
+    } else if is(b"off") || is(b"false") {
+        Ok(Value::NIL)
+    } else if is(b"unspecified") {
+        Ok(sym::UNSPECIFIED)
+    } else if signal_p {
+        Err(lisp.signal_error("Invalid face attribute value from X resource", value))
+    } else {
+        Ok(Value::fixnum(0))
+    }
+}
+
+fn f_internal_set_lisp_face_attribute_from_resource(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (face, attr, mut value, frame) = (args[0], args[1], args[2], arg(args, 3));
+    lisp.check_symbol(face)?;
+    lisp.check_symbol(attr)?;
+    lisp.check_string(value)?;
+    if crate::fontset::c_bytes(lisp.string_bytes(value)).eq_ignore_ascii_case(b"unspecified") {
+        value = sym::UNSPECIFIED;
+    } else if attr == sym::K_HEIGHT {
+        value = crate::data::f_string_to_number(lisp, &[value, Value::NIL])?;
+        if !value.as_fixnum().is_some_and(|n| n > 0) {
+            return Err(lisp.signal_error("Invalid face height from X resource", value));
+        }
+    } else if attr == sym::K_BOLD || attr == sym::K_ITALIC {
+        value = face_boolean_x_resource_value(lisp, value, true)?;
+    } else if attr == sym::K_WEIGHT || attr == sym::K_SLANT || attr == sym::K_WIDTH {
+        let name = crate::fontset::c_bytes(lisp.string_bytes(value)).to_vec();
+        let name = lisp.make_string(&name);
+        value = crate::lread::f_intern(lisp, &[name, Value::NIL])?;
+    } else if attr == sym::K_INVERSE_VIDEO || attr == sym::K_EXTEND {
+        value = face_boolean_x_resource_value(lisp, value, true)?;
+    } else if attr == sym::K_UNDERLINE || attr == sym::K_OVERLINE || attr == sym::K_STRIKE_THROUGH {
+        let boolean_value = face_boolean_x_resource_value(lisp, value, false)?;
+        if boolean_value.is_symbol() {
+            value = boolean_value;
+        }
+    } else if attr == sym::K_BOX || attr == sym::K_INHERIT {
+        let read = crate::lread::f_read_from_string(lisp, &[value, Value::NIL, Value::NIL])?;
+        value = lisp.car(read)?;
+    }
+    f_internal_set_lisp_face_attribute(lisp, &[face, attr, value, frame])
+}
+
+fn f_face_attribute_relative_p(_lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (attribute, value) = (args[0], args[1]);
+    if unspecifiedp(value) || ignore_deffacep(value) {
+        Ok(sym::T)
+    } else if attribute == sym::K_HEIGHT {
+        Ok(if value.is_fixnum() {
+            Value::NIL
+        } else {
+            sym::T
+        })
+    } else {
+        Ok(Value::NIL)
+    }
+}
+
+fn f_merge_face_attribute(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (attribute, value1, value2) = (args[0], args[1], args[2]);
+    if unspecifiedp(value1) || ignore_deffacep(value1) {
+        Ok(value2)
+    } else if attribute == sym::K_HEIGHT {
+        lisp.merge_face_heights(value1, value2, value1)
+    } else {
+        Ok(value1)
+    }
+}
+
+fn f_internal_get_lisp_face_attribute(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (symbol, keyword, frame) = (args[0], args[1], arg(args, 2));
+    let f = if frame == sym::T {
+        None
+    } else {
+        Some(lisp.decode_live_frame(frame)?)
+    };
+    let lface = lisp.lface_from_face_name(f, symbol, true)?;
+    lisp.check_symbol(symbol)?;
+    lisp.check_symbol(keyword)?;
+    let idx = FACE_ATTR_SYM[1..]
+        .iter()
+        .position(|&k| k == keyword)
+        .map(|i| i + 1);
+    let Some(idx) = idx else {
+        return Err(lisp.signal_error("Invalid face attribute name", keyword));
+    };
+    let value = lisp.lface_aref(lface, idx);
+    if ignore_deffacep(value) {
+        return Ok(sym::UNSPECIFIED);
+    }
+    Ok(value)
+}
+
+fn f_internal_lisp_face_attribute_values(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let attr = args[0];
+    lisp.check_symbol(attr)?;
+    if attr == sym::K_UNDERLINE
+        || attr == sym::K_OVERLINE
+        || attr == sym::K_STRIKE_THROUGH
+        || attr == sym::K_INVERSE_VIDEO
+        || attr == sym::K_EXTEND
+    {
+        return Ok(lisp.list(&[sym::T, Value::NIL]));
+    }
+    Ok(Value::NIL)
+}
+
+fn f_internal_merge_in_global_face(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (face, frame) = (args[0], args[1]);
+    lisp.check_live_frame(frame)?;
+    let global_lface = lisp.lface_from_face_name(None, face, true)?;
+    let mut local_lface = lisp.lface_from_face_name(Some(frame), face, false)?;
+    if local_lface.is_nil() {
+        local_lface = f_internal_make_lisp_face(lisp, &[face, frame])?;
+    }
+    let gvec = lisp.lface_contents(global_lface);
+    for (i, &g) in gvec.iter().enumerate().skip(1) {
+        if ignore_deffacep(g) {
+            lisp.lface_aset(local_lface, i, sym::UNSPECIFIED);
+        } else if !unspecifiedp(g) {
+            lisp.lface_aset(local_lface, i, g);
+        }
+    }
+    Ok(Value::NIL)
+}
+
+fn face_attr_equal_p(lisp: &mut Lisp, v1: Value, v2: Value) -> LispResult<bool> {
+    if v1.tag() != v2.tag() {
+        return Ok(false);
+    }
+    if v1 == v2 {
+        return Ok(true);
+    }
+    match v1.tag() {
+        crate::value::Tag::String => Ok(lisp.string_bytes(v1) == lisp.string_bytes(v2)),
+        crate::value::Tag::Fixnum | crate::value::Tag::Symbol => Ok(false),
+        _ => lisp.equal(v1, v2),
+    }
+}
+
+fn lface_equal_p(lisp: &mut Lisp, v1: &[Value; N], v2: &[Value; N]) -> LispResult<bool> {
+    for i in 1..N {
+        if !face_attr_equal_p(lisp, v1[i], v2[i])? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn f_internal_lisp_face_equal_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (face1, face2, frame, inherit) = (args[0], args[1], arg(args, 2), arg(args, 3));
+    let f = if frame == sym::T {
+        None
+    } else {
+        Some(lisp.decode_live_frame(frame)?)
+    };
+    let lface1 = lisp.lface_from_face_name(f, face1, true)?;
+    let lface2 = lisp.lface_from_face_name(f, face2, true)?;
+    let attrs1 = lisp.lface_contents(lface1);
+    let attrs2 = lisp.lface_contents(lface2);
+    let mut equal_p = lface_equal_p(lisp, &attrs1, &attrs2)?;
+    if !(inherit.is_nil() || equal_p) {
+        let check = |lisp: &mut Lisp, child: &[Value; N]| -> LispResult<bool> {
+            for i in 1..N {
+                if i == LFACE_INHERIT_INDEX {
+                    continue;
+                }
+                if !(face_attr_equal_p(lisp, attrs1[i], attrs2[i])? || unspecifiedp(child[i])) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        if attrs1[LFACE_INHERIT_INDEX] == face2 {
+            equal_p = check(lisp, &attrs1)?;
+        } else if attrs2[LFACE_INHERIT_INDEX] == face1 {
+            equal_p = check(lisp, &attrs2)?;
+        }
+    }
+    Ok(lisp.bool(equal_p))
+}
+
+fn f_internal_lisp_face_empty_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (face, frame) = (args[0], arg(args, 1));
+    let f = if frame == sym::T {
+        None
+    } else {
+        Some(lisp.decode_live_frame(frame)?)
+    };
+    let lface = lisp.lface_from_face_name(f, face, true)?;
+    let contents = lisp.lface_contents(lface);
+    Ok(lisp.bool(contents[1..].iter().all(|&v| unspecifiedp(v))))
+}
+
+fn f_frame_face_hash_table(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(arg(args, 0))?;
+    Ok(lisp.frame(f).face_hash_table)
+}
+
+fn f_face_attributes_as_vector(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let plist = args[0];
+    let base = lisp.stack.len();
+    let to = lisp.attrs_push(sym::UNSPECIFIED);
+    let f = lisp.frames.selected_frame;
+    let mut points = MergePoints::new();
+    let r = lisp.merge_face_ref(None, Some(f), plist, to, true, &mut points, 0);
+    let attrs = lisp.attrs_snapshot(to);
+    lisp.stack.truncate(base);
+    r?;
+    Ok(lisp.vector(attrs.to_vec()))
+}
+
+fn f_display_supports_face_attributes_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (attributes, display) = (args[0], arg(args, 1));
+    if lisp.noninteractive() {
+        return Ok(Value::NIL);
+    }
+    let frame = if display.is_nil() {
+        lisp.frames.selected_frame
+    } else if lisp.is_frame(display) {
+        display
+    } else {
+        let mut found = Value::NIL;
+        for fr in lisp.frame_list_vec() {
+            let params = lisp.frame(fr).param_alist;
+            let entry = lisp.assq(sym::DISPLAY, params);
+            let d = lisp.cdr_safe(entry);
+            found = fr;
+            if lisp.equal(d, display)? {
+                break;
+            }
+        }
+        found
+    };
+    lisp.check_live_frame(frame)?;
+    let base = lisp.stack.len();
+    let attrs = lisp.attrs_push(sym::UNSPECIFIED);
+    let mut points = MergePoints::new();
+    let r = lisp.merge_face_ref(None, Some(frame), attributes, attrs, true, &mut points, 0);
+    lisp.stack.truncate(base);
+    r?;
+    lisp.realized_default_face_attrs(Some(frame))?;
+    Ok(Value::NIL)
+}
+
+fn f_color_distance(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (color1, color2, frame, metric) = (args[0], args[1], arg(args, 2), arg(args, 3));
+    let f = lisp.decode_live_frame(frame)?;
+    let mut cdefs = [EmacsColor::default(); 2];
+    for (cdef, color) in cdefs.iter_mut().zip([color1, color2]) {
+        let mut ok = color.is_cons() && lisp.parse_rgb_list(color, cdef);
+        if !ok && color.is_string() {
+            let name = lisp.string_bytes(color).to_vec();
+            let (defined, c) = lisp.defined_color(f, &name)?;
+            if defined {
+                *cdef = c;
+                ok = true;
+            }
+        }
+        if !ok {
+            return Err(lisp.signal_error("Invalid color", color));
+        }
+    }
+    let [cdef1, cdef2] = cdefs;
+    if metric.is_nil() {
+        return Ok(Value::fixnum(color_distance(&cdef1, &cdef2)));
+    }
+    let rgb = |c: &EmacsColor| {
+        [
+            Value::fixnum(i64::from(c.red)),
+            Value::fixnum(i64::from(c.green)),
+            Value::fixnum(i64::from(c.blue)),
+        ]
+    };
+    let l1 = lisp.list(&rgb(&cdef1));
+    lisp.stack.push(l1);
+    let l2 = lisp.list(&rgb(&cdef2));
+    lisp.stack.pop();
+    lisp.funcall(metric, &[l1, l2])
+}
+
+fn f_internal_set_font_selection_order(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let order = args[0];
+    lisp.check_list(order)?;
+    let mut indices = [0i32; 4];
+    let mut i = 0;
+    let mut list = order;
+    while list.is_cons() && i < indices.len() {
+        let attr = lisp.xcar(list);
+        let xlfd = if attr == sym::K_WIDTH {
+            XLFD_SWIDTH
+        } else if attr == sym::K_HEIGHT {
+            XLFD_POINT_SIZE
+        } else if attr == sym::K_WEIGHT {
+            XLFD_WEIGHT
+        } else if attr == sym::K_SLANT {
+            XLFD_SLANT
+        } else {
+            break;
+        };
+        if indices[i] != 0 {
+            break;
+        }
+        indices[i] = xlfd;
+        list = lisp.xcdr(list);
+        i += 1;
+    }
+    if !list.is_nil() || i != indices.len() || indices.contains(&0) {
+        return Err(lisp.signal_error("Invalid font sort order", order));
+    }
+    if indices != lisp.faces.font_sort_order {
+        lisp.faces.font_sort_order = indices;
+        lisp.free_all_realized_faces(Value::NIL);
+    }
+    let order = lisp.faces.font_sort_order;
+    lisp.fonts.font_update_sort_order(&order);
+    Ok(Value::NIL)
+}
+
+fn set_alternative_alist(
+    lisp: &mut Lisp,
+    alist: Value,
+    convert: fn(&mut Lisp, Value) -> LispResult,
+) -> LispResult {
+    lisp.check_list(alist)?;
+    let alist = crate::fns::f_copy_sequence(lisp, &[alist])?;
+    let base = lisp.stack.len();
+    lisp.stack.push(alist);
+    let r = convert_alternative_alist(lisp, alist, convert);
+    lisp.stack.truncate(base);
+    r?;
+    Ok(alist)
+}
+
+fn convert_alternative_alist(
+    lisp: &mut Lisp,
+    alist: Value,
+    convert: fn(&mut Lisp, Value) -> LispResult,
+) -> LispResult<()> {
+    let mut tail = alist;
+    while tail.is_cons() {
+        let entry = lisp.xcar(tail);
+        lisp.check_list(entry)?;
+        let entry = crate::fns::f_copy_sequence(lisp, &[entry])?;
+        lisp.heap.set_car(tail, entry);
+        let mut tail2 = entry;
+        while tail2.is_cons() {
+            let elt = lisp.xcar(tail2);
+            let v = convert(lisp, elt)?;
+            lisp.heap.set_car(tail2, v);
+            tail2 = lisp.xcdr(tail2);
+        }
+        tail = lisp.xcdr(tail);
+    }
+    Ok(())
+}
+
+fn f_internal_set_alternative_font_family_alist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let alist = set_alternative_alist(lisp, args[0], |lisp, v| {
+        crate::lread::f_intern(lisp, &[v, Value::NIL])
+    })?;
+    lisp.faces.alternative_font_family_alist = alist;
+    lisp.free_all_realized_faces(Value::NIL);
+    Ok(alist)
+}
+
+fn f_internal_set_alternative_font_registry_alist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let alist = set_alternative_alist(lisp, args[0], |lisp, v| {
+        crate::casefiddle::f_downcase(lisp, &[v])
+    })?;
+    lisp.faces.alternative_font_registry_alist = alist;
+    lisp.free_all_realized_faces(Value::NIL);
+    Ok(alist)
+}
+
+fn f_tty_suppress_bold_inverse_default_colors(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let suppress = args[0];
+    lisp.faces.tty_suppress_bold_inverse_default_colors_p = !suppress.is_nil();
+    lisp.faces.face_change = true;
+    Ok(suppress)
+}
+
+fn f_bitmap_spec_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let object = args[0];
+    let mut pixmap_p = false;
+    if object.is_string() {
+        pixmap_p = true;
+    } else if object.is_cons() {
+        let width = lisp.xcar(object);
+        let rest = lisp.xcdr(object);
+        let height = lisp.car_safe(rest);
+        let rest = lisp.cdr_safe(rest);
+        let data = lisp.car_safe(rest);
+        let ranged = |v: Value| {
+            v.as_fixnum()
+                .is_some_and(|n| (1..=i32::MAX as i64).contains(&n))
+        };
+        if data.is_string() && ranged(width) && ranged(height) {
+            let bytes_per_row = (width.as_fixnum().unwrap_or(0) + 7) / 8;
+            let nbytes = lisp.string_bytes(data).len() as i64;
+            if height.as_fixnum().unwrap_or(0) <= nbytes / bytes_per_row {
+                pixmap_p = true;
+            }
+        }
+    }
+    Ok(lisp.bool(pixmap_p))
+}
+
+fn f_color_values_from_color_spec(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let spec = lisp.check_string(args[0])?;
+    match parse_color_spec(lisp.string_bytes(spec)) {
+        Some((r, g, b)) => Ok(lisp.list(&[
+            Value::fixnum(i64::from(r)),
+            Value::fixnum(i64::from(g)),
+            Value::fixnum(i64::from(b)),
+        ])),
+        None => Ok(Value::NIL),
+    }
+}
+
+fn f_color_gray_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (color, frame) = (args[0], arg(args, 1));
+    lisp.check_string(color)?;
+    let f = lisp.decode_any_frame(frame)?;
+    let name = lisp.string_bytes(color).to_vec();
+    let r = lisp.face_color_gray_p(f, &name)?;
+    Ok(lisp.bool(r))
+}
+
+fn f_color_supported_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (color, frame, background_p) = (args[0], arg(args, 1), arg(args, 2));
+    lisp.check_string(color)?;
+    let f = lisp.decode_any_frame(frame)?;
+    let name = lisp.string_bytes(color).to_vec();
+    let r = lisp.face_color_supported_p(f, &name, !background_p.is_nil())?;
+    Ok(lisp.bool(r))
+}
+
+fn scan_int(line: &[u8], pos: &mut usize) -> Option<i32> {
+    while line.get(*pos).is_some_and(|c| c.is_ascii_whitespace()) {
+        *pos += 1;
+    }
+    let start = *pos;
+    if matches!(line.get(*pos), Some(b'+') | Some(b'-')) {
+        *pos += 1;
+    }
+    let digits = *pos;
+    while line.get(*pos).is_some_and(u8::is_ascii_digit) {
+        *pos += 1;
+    }
+    if *pos == digits {
+        return None;
+    }
+    let text = std::str::from_utf8(&line[start..*pos]).ok()?;
+    Some(text.parse::<i64>().map_or(-1, |n| n as i32))
+}
+
+fn f_x_load_color_file(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let filename = lisp.check_string(args[0])?;
+    let abspath = lisp.expand_file_name(filename, Value::NIL)?;
+    let path = std::path::PathBuf::from(lisp.string_to_rust(abspath));
+    let mut cmap = Value::NIL;
+    let Ok(contents) = std::fs::read(&path) else {
+        return Ok(cmap);
+    };
+    let mut lines = Vec::new();
+    let mut rest = &contents[..];
+    while !rest.is_empty() {
+        let limit = rest.len().min(511);
+        let end = rest[..limit]
+            .iter()
+            .position(|&c| c == b'\n')
+            .map_or(limit, |p| p + 1);
+        lines.push(&rest[..end]);
+        rest = &rest[end..];
+    }
+    for line in lines {
+        let line = crate::fontset::c_bytes(line);
+        let mut pos = 0;
+        let (Some(red), Some(green), Some(blue)) = (
+            scan_int(line, &mut pos),
+            scan_int(line, &mut pos),
+            scan_int(line, &mut pos),
+        ) else {
+            continue;
+        };
+        while line.get(pos).is_some_and(|c| c.is_ascii_whitespace()) {
+            pos += 1;
+        }
+        let color = (red << 16) | (green << 8) | blue;
+        let mut name = &line[pos..];
+        if name.last() == Some(&b'\n') {
+            name = &name[..name.len() - 1];
+        }
+        let base = lisp.stack.len();
+        lisp.stack.push(cmap);
+        let s = lisp.make_string(name);
+        let cell = lisp.cons(s, Value::fixnum(i64::from(color)));
+        cmap = lisp.cons(cell, cmap);
+        lisp.stack.truncate(base);
+    }
+    Ok(cmap)
 }

@@ -1614,7 +1614,7 @@ fn f_assq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_assoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_assoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist, testfn) = (args[0], args[1], args[2]);
     if testfn.is_nil() && (key.is_symbol() || key.is_fixnum()) {
         return f_assq(lisp, &[key, alist]);
@@ -1660,7 +1660,7 @@ fn f_rassq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_rassoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_rassoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist) = (args[0], args[1]);
     let mut tail = alist;
     while tail.is_cons() {

@@ -602,14 +602,6 @@ impl Lisp {
         self.wset_redisplay(w);
     }
 
-    pub fn wset_redisplay(&mut self, w: Value) {
-        self.window_mut(w).flags.redisplay = true;
-        let f = self.window(w).frame;
-        if self.is_frame(f) {
-            self.frame_mut(f).flags.redisplay = true;
-        }
-    }
-
     pub fn set_window_buffer(
         &mut self,
         window: Value,
@@ -1178,9 +1170,8 @@ fn f_set_window_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         && lisp.cdr_safe(old) != value
         && lisp.var_true(sym::WINDOW_AUTO_REDRAW_ON_PARAMETER_CHANGE)
     {
-        let fr = lisp.frame_mut(f);
-        fr.flags.face_change = true;
-        fr.flags.redisplay = true;
+        lisp.frame_mut(f).flags.face_change = true;
+        lisp.fset_redisplay(f);
     }
     if old.is_nil() {
         let cell = lisp.cons(parameter, value);

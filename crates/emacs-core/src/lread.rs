@@ -1858,7 +1858,7 @@ fn read_internal(lisp: &mut Lisp, stream: Value, locate_syms: bool) -> LispResul
     r.map(|(v, _)| v)
 }
 
-fn f_read_from_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_from_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (string, start, end) = (args[0], args[1], args[2]);
     lisp.check_string(string)?;
     let size = lisp.string_chars(string);

@@ -131,13 +131,39 @@ impl Font {
 pub struct Fonts {
     pub style_table: Value,
     pub charset_alist: Value,
+    pub sort_shift_bits: [i32; FONT_SIZE_INDEX + 1],
 }
 
 impl Default for Fonts {
     fn default() -> Self {
+        let mut sort_shift_bits = [0; FONT_SIZE_INDEX + 1];
+        sort_shift_bits[FONT_TYPE_INDEX] = 0;
+        sort_shift_bits[FONT_SLANT_INDEX] = 2;
+        sort_shift_bits[FONT_WEIGHT_INDEX] = 9;
+        sort_shift_bits[FONT_SIZE_INDEX] = 16;
+        sort_shift_bits[FONT_WIDTH_INDEX] = 23;
         Fonts {
             style_table: Value::NIL,
             charset_alist: Value::NIL,
+            sort_shift_bits,
+        }
+    }
+}
+
+impl Fonts {
+    pub fn font_update_sort_order(&mut self, order: &[i32; 4]) {
+        let mut shift_bits = 23;
+        for &xlfd_idx in order {
+            if xlfd_idx == XLFD_WEIGHT_INDEX as i32 {
+                self.sort_shift_bits[FONT_WEIGHT_INDEX] = shift_bits;
+            } else if xlfd_idx == XLFD_SLANT_INDEX as i32 {
+                self.sort_shift_bits[FONT_SLANT_INDEX] = shift_bits;
+            } else if xlfd_idx == XLFD_SWIDTH_INDEX as i32 {
+                self.sort_shift_bits[FONT_WIDTH_INDEX] = shift_bits;
+            } else {
+                self.sort_shift_bits[FONT_SIZE_INDEX] = shift_bits;
+            }
+            shift_bits -= 7;
         }
     }
 }

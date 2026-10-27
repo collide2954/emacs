@@ -146,6 +146,26 @@ pub fn string_char(bytes: &[u8]) -> (u32, usize) {
     }
 }
 
+pub fn parse_str_as_multibyte(bytes: &[u8]) -> (usize, usize) {
+    let mut i = 0;
+    let mut chars = 0;
+    let mut nbytes = 0;
+    while i < bytes.len() {
+        match multibyte_length(&bytes[i..]) {
+            Some(n) => {
+                i += n;
+                nbytes += n;
+            }
+            None => {
+                i += 1;
+                nbytes += 2;
+            }
+        }
+        chars += 1;
+    }
+    (chars, nbytes)
+}
+
 pub fn chars_in_multibyte(bytes: &[u8]) -> usize {
     let mut i = 0;
     let mut n = 0;
