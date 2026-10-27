@@ -1140,7 +1140,7 @@ pub(crate) fn f_string_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(sa.chars == sb.chars && sa.data == sb.data))
 }
 
-fn f_compare_strings(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_compare_strings(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (str1, start1, end1, str2, start2, end2, ignore_case) = (
         args[0], args[1], args[2], args[3], args[4], args[5], args[6],
     );
@@ -1705,7 +1705,7 @@ fn f_delete(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.delete(args[0], args[1])
 }
 
-fn f_nreverse(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_nreverse(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let seq = args[0];
     if seq.is_nil() {
         return Ok(seq);

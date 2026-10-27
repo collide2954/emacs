@@ -1997,7 +1997,7 @@ fn f_signal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Err(lisp.signal(error_symbol, data))
 }
 
-fn f_commandp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_commandp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (function, for_call_interactively) = (args[0], args[1]);
     let mut fun = function;
     fun = lisp.indirect_function(fun);

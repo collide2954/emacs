@@ -42,6 +42,18 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("innermost-minibuffer-p", 0, 1, f_innermost_minibuffer_p),
     Subr::fixed("minibuffer-depth", 0, 0, f_minibuffer_depth),
     Subr::fixed("minibuffer-prompt", 0, 0, f_minibuffer_prompt),
+    Subr::fixed("try-completion", 2, 3, f_try_completion),
+    Subr::fixed("all-completions", 2, 3, f_all_completions),
+    Subr::fixed("test-completion", 2, 3, f_test_completion),
+    Subr::fixed("internal-complete-buffer", 3, 3, f_internal_complete_buffer),
+    Subr::fixed("assoc-string", 2, 3, f_assoc_string),
+    Subr::fixed("completing-read", 2, 8, f_completing_read),
+    Subr::fixed(
+        "completion--flex-cost-gotoh",
+        2,
+        2,
+        f_completion_flex_cost_gotoh,
+    ),
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
@@ -74,6 +86,10 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::MINIBUFFER_PROMPT_PROPERTIES, props);
     lisp.defvar_bool(sym::INHIBIT_INTERACTION, false);
     lisp.defvar_bool(sym::READ_MINIBUFFER_RESTORE_WINDOWS, true);
+    lisp.defvar(sym::READ_BUFFER_FUNCTION, Value::NIL);
+    lisp.set_plain_value(sym::MINIBUFFER_DEFAULT, Value::NIL);
+    lisp.set_plain_value(sym::CUSTOM_VARIABLE_HISTORY, Value::NIL);
+    lisp.set_plain_value(sym::BUFFER_NAME_HISTORY, Value::NIL);
 }
 
 pub fn init_minibuf_once(lisp: &mut Lisp) {
@@ -206,4 +222,677 @@ fn f_minibuffer_depth(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
 fn f_minibuffer_prompt(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let prompt = lisp.minibuf.minibuf_prompt;
     crate::fns::f_copy_sequence(lisp, &[prompt])
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TableType {
+    Function,
+    List,
+    Obarray,
+    Hash,
+}
+
+fn completion_ignore_case(lisp: &Lisp) -> Value {
+    lisp.bool(lisp.var_true(sym::COMPLETION_IGNORE_CASE))
+}
+
+fn compare_strings(lisp: &mut Lisp, args: [Value; 7]) -> LispResult {
+    crate::fns::f_compare_strings(lisp, &args)
+}
+
+fn table_type(lisp: &mut Lisp, collection: Value) -> TableType {
+    if lisp.is_hash_table(collection) {
+        TableType::Hash
+    } else if lisp.is_obarray(collection) {
+        TableType::Obarray
+    } else if collection.is_nil() || (collection.is_cons() && !lisp.functionp(collection)) {
+        TableType::List
+    } else {
+        TableType::Function
+    }
+}
+
+fn completion_candidates(
+    lisp: &mut Lisp,
+    collection: Value,
+    kind: TableType,
+) -> Vec<(Value, Value)> {
+    match kind {
+        TableType::List => {
+            let mut out = Vec::new();
+            let mut tail = collection;
+            while tail.is_cons() {
+                out.push((lisp.xcar(tail), Value::NIL));
+                tail = lisp.xcdr(tail);
+            }
+            out
+        }
+        TableType::Obarray => match lisp.heap.vectorlike_ref(collection) {
+            crate::object::Vectorlike::Obarray(o) => {
+                o.symbols.values().map(|&s| (s, Value::NIL)).collect()
+            }
+            _ => Vec::new(),
+        },
+        TableType::Hash => lisp.hash_table(collection).live_entries(),
+        TableType::Function => Vec::new(),
+    }
+}
+
+fn root_candidates(lisp: &mut Lisp, candidates: &[(Value, Value)]) {
+    for &(k, v) in candidates {
+        lisp.stack.push(k);
+        lisp.stack.push(v);
+    }
+}
+
+fn candidate_string(lisp: &Lisp, elt: Value, kind: TableType) -> Value {
+    let eltstring = if kind == TableType::List && elt.is_cons() {
+        lisp.xcar(elt)
+    } else {
+        elt
+    };
+    if eltstring.is_symbol() {
+        lisp.symbol_name(eltstring)
+    } else {
+        eltstring
+    }
+}
+
+fn match_regexps(
+    lisp: &mut Lisp,
+    string: Value,
+    regexps: Value,
+    ignore_case: bool,
+) -> LispResult<bool> {
+    let mut regexps = regexps;
+    while regexps.is_cons() {
+        let re = lisp.xcar(regexps);
+        lisp.check_string(re)?;
+        let table = if ignore_case {
+            lisp.cur().case_canon_table
+        } else {
+            Value::NIL
+        };
+        let val = lisp.fast_string_match(re, string, table)?;
+        if val == -2 {
+            return Err(lisp.error("Stack overflow in regexp matcher"));
+        }
+        if val < 0 {
+            return Ok(false);
+        }
+        regexps = lisp.xcdr(regexps);
+    }
+    Ok(true)
+}
+
+fn candidate_accepted(
+    lisp: &mut Lisp,
+    elt: Value,
+    hash_value: Value,
+    eltstring: Value,
+    predicate: Value,
+    kind: TableType,
+) -> LispResult<bool> {
+    let regexps = lisp.find_symbol_value(sym::COMPLETION_REGEXP_LIST);
+    let ignore = lisp.var_true(sym::COMPLETION_IGNORE_CASE);
+    if !match_regexps(lisp, eltstring, regexps, ignore)? {
+        return Ok(false);
+    }
+    if !predicate.is_nil() {
+        let tem = if predicate == sym::COMMANDP {
+            crate::eval::f_commandp(lisp, &[elt, Value::NIL])?
+        } else if kind == TableType::Hash {
+            lisp.funcall(predicate, &[elt, hash_value])?
+        } else {
+            lisp.funcall(predicate, &[elt])?
+        };
+        if tem.is_nil() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn completion_collection(lisp: &mut Lisp, collection: Value) -> LispResult<Value> {
+    if lisp.is_vector(collection) {
+        lisp.check_obarray(collection)
+    } else {
+        Ok(collection)
+    }
+}
+
+pub(crate) fn f_try_completion(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (string, predicate) = (args[0], arg(args, 2));
+    let collection = completion_collection(lisp, args[1])?;
+    let kind = table_type(lisp, collection);
+    lisp.check_string(string)?;
+    if kind == TableType::Function {
+        return lisp.funcall(collection, &[string, predicate, Value::NIL]);
+    }
+    let base = lisp.stack.len();
+    lisp.stack.push(collection);
+    let r = try_completion(lisp, string, collection, predicate, kind);
+    lisp.stack.truncate(base);
+    r
+}
+
+fn try_completion(
+    lisp: &mut Lisp,
+    string: Value,
+    collection: Value,
+    predicate: Value,
+    kind: TableType,
+) -> LispResult {
+    let candidates = completion_candidates(lisp, collection, kind);
+    root_candidates(lisp, &candidates);
+    let best_slot = lisp.stack.len();
+    lisp.stack.push(Value::NIL);
+    let zero = Value::fixnum(0);
+    let mut bestmatchsize = 0usize;
+    let mut matchcount = 0;
+    let string_chars = lisp.string_chars(string);
+    for (elt, hash_value) in candidates {
+        let eltstring = candidate_string(lisp, elt, kind);
+        if !(eltstring.is_string() && string_chars <= lisp.string_chars(eltstring)) {
+            continue;
+        }
+        let ic = completion_ignore_case(lisp);
+        let tem = compare_strings(
+            lisp,
+            [
+                eltstring,
+                zero,
+                Value::fixnum(string_chars as i64),
+                string,
+                zero,
+                Value::NIL,
+                ic,
+            ],
+        )?;
+        if tem != sym::T {
+            continue;
+        }
+        if !candidate_accepted(lisp, elt, hash_value, eltstring, predicate, kind)? {
+            continue;
+        }
+        let bestmatch = lisp.stack[best_slot];
+        if bestmatch.is_nil() {
+            matchcount = 1;
+            lisp.stack[best_slot] = eltstring;
+            bestmatchsize = lisp.string_chars(eltstring);
+            continue;
+        }
+        let eltchars = lisp.string_chars(eltstring);
+        let compare = bestmatchsize.min(eltchars);
+        let lcompare = Value::fixnum(compare as i64);
+        let ic = completion_ignore_case(lisp);
+        let tem = compare_strings(
+            lisp,
+            [bestmatch, zero, lcompare, eltstring, zero, lcompare, ic],
+        )?;
+        let matchsize = if tem == sym::T {
+            compare
+        } else {
+            tem.as_fixnum().unwrap_or(0).unsigned_abs() as usize - 1
+        };
+        let old_bestmatch = bestmatch;
+        let ignore = lisp.var_true(sym::COMPLETION_IGNORE_CASE);
+        if ignore {
+            let best_chars = lisp.string_chars(bestmatch);
+            let replace = if matchsize == eltchars && matchsize < best_chars {
+                true
+            } else if (matchsize == eltchars) == (matchsize == best_chars) {
+                let len = Value::fixnum(string_chars as i64);
+                let a = compare_strings(
+                    lisp,
+                    [eltstring, zero, len, string, zero, Value::NIL, Value::NIL],
+                )?;
+                a == sym::T && {
+                    let b = compare_strings(
+                        lisp,
+                        [bestmatch, zero, len, string, zero, Value::NIL, Value::NIL],
+                    )?;
+                    b != sym::T
+                }
+            } else {
+                false
+            };
+            if replace {
+                lisp.stack[best_slot] = eltstring;
+            }
+        }
+        let differs = bestmatchsize != eltchars
+            || bestmatchsize != matchsize
+            || (lisp.var_true(sym::COMPLETION_IGNORE_CASE)
+                && compare_strings(
+                    lisp,
+                    [
+                        old_bestmatch,
+                        zero,
+                        lcompare,
+                        eltstring,
+                        zero,
+                        lcompare,
+                        Value::NIL,
+                    ],
+                )? != sym::T);
+        if differs && matchcount <= 1 {
+            matchcount += 1;
+        }
+        bestmatchsize = matchsize;
+        if matchsize <= string_chars
+            && !lisp.var_true(sym::COMPLETION_IGNORE_CASE)
+            && matchcount > 1
+        {
+            break;
+        }
+    }
+    let bestmatch = lisp.stack[best_slot];
+    if bestmatch.is_nil() {
+        return Ok(Value::NIL);
+    }
+    if matchcount == 1 && lisp.equal(bestmatch, string)? {
+        return Ok(sym::T);
+    }
+    crate::fns::f_substring(
+        lisp,
+        &[bestmatch, zero, Value::fixnum(bestmatchsize as i64)],
+    )
+}
+
+pub(crate) fn f_all_completions(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (string, predicate) = (args[0], arg(args, 2));
+    let collection = completion_collection(lisp, args[1])?;
+    let kind = table_type(lisp, collection);
+    lisp.check_string(string)?;
+    if kind == TableType::Function {
+        return lisp.funcall(collection, &[string, predicate, sym::T]);
+    }
+    let base = lisp.stack.len();
+    lisp.stack.push(collection);
+    let r = all_completions(lisp, string, collection, predicate, kind);
+    lisp.stack.truncate(base);
+    r
+}
+
+fn all_completions(
+    lisp: &mut Lisp,
+    string: Value,
+    collection: Value,
+    predicate: Value,
+    kind: TableType,
+) -> LispResult {
+    let candidates = completion_candidates(lisp, collection, kind);
+    root_candidates(lisp, &candidates);
+    let all_slot = lisp.stack.len();
+    lisp.stack.push(Value::NIL);
+    let zero = Value::fixnum(0);
+    let string_chars = lisp.string_chars(string);
+    for (elt, hash_value) in candidates {
+        let eltstring = candidate_string(lisp, elt, kind);
+        if !(eltstring.is_string() && string_chars <= lisp.string_chars(eltstring)) {
+            continue;
+        }
+        let len = Value::fixnum(string_chars as i64);
+        let ic = completion_ignore_case(lisp);
+        let tem = compare_strings(lisp, [eltstring, zero, len, string, zero, len, ic])?;
+        if tem != sym::T {
+            continue;
+        }
+        if !candidate_accepted(lisp, elt, hash_value, eltstring, predicate, kind)? {
+            continue;
+        }
+        let all = lisp.stack[all_slot];
+        lisp.stack[all_slot] = lisp.cons(eltstring, all);
+    }
+    let all = lisp.stack[all_slot];
+    crate::fns::f_nreverse(lisp, &[all])
+}
+
+pub(crate) fn f_test_completion(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (string, collection, predicate) = (args[0], args[1], arg(args, 2));
+    lisp.check_string(string)?;
+    let base = lisp.stack.len();
+    lisp.stack.push(collection);
+    let r = test_completion(lisp, string, collection, predicate);
+    lisp.stack.truncate(base);
+    r
+}
+
+fn test_completion(
+    lisp: &mut Lisp,
+    string: Value,
+    collection: Value,
+    predicate: Value,
+) -> LispResult {
+    let mut tem;
+    let mut hash_arg = Value::NIL;
+    let hash = lisp.is_hash_table(collection);
+    if collection.is_nil() || (collection.is_cons() && !lisp.functionp(collection)) {
+        let ic = completion_ignore_case(lisp);
+        tem = f_assoc_string(lisp, &[string, collection, ic])?;
+        if tem.is_nil() {
+            return Ok(Value::NIL);
+        }
+    } else if lisp.is_obarray(collection) || lisp.is_vector(collection) {
+        let collection = lisp.check_obarray(collection)?;
+        let bytes = lisp.string_bytes(string).to_vec();
+        tem = lisp
+            .obarray_lookup(collection, &bytes)
+            .unwrap_or(Value::fixnum(0));
+        if lisp.var_true(sym::COMPLETION_IGNORE_CASE) && !tem.is_symbol() {
+            let symbols: Vec<Value> = match lisp.heap.vectorlike_ref(collection) {
+                crate::object::Vectorlike::Obarray(o) => o.symbols.values().copied().collect(),
+                _ => Vec::new(),
+            };
+            for obj in symbols {
+                let name = lisp.symbol_name(obj);
+                let zero = Value::fixnum(0);
+                let r = compare_strings(
+                    lisp,
+                    [string, zero, Value::NIL, name, zero, Value::NIL, sym::T],
+                )?;
+                if r == sym::T {
+                    tem = obj;
+                    break;
+                }
+            }
+        }
+        if !tem.is_symbol() {
+            return Ok(Value::NIL);
+        }
+    } else if hash {
+        match lisp.hash_lookup(collection, string)? {
+            Some(slot) => {
+                let (k, v) =
+                    lisp.hash_table(collection).entries[slot].unwrap_or((Value::NIL, Value::NIL));
+                tem = k;
+                hash_arg = v;
+            }
+            None => {
+                let entries = lisp.hash_table(collection).live_entries();
+                root_candidates(lisp, &entries);
+                let mut found = None;
+                for (k, v) in entries {
+                    let strkey = if k.is_symbol() {
+                        lisp.symbol_name(k)
+                    } else {
+                        k
+                    };
+                    if !strkey.is_string() {
+                        continue;
+                    }
+                    let ic = completion_ignore_case(lisp);
+                    let r = compare_strings(
+                        lisp,
+                        [
+                            string,
+                            Value::NIL,
+                            Value::NIL,
+                            strkey,
+                            Value::NIL,
+                            Value::NIL,
+                            ic,
+                        ],
+                    )?;
+                    if r == sym::T {
+                        found = Some((k, v));
+                        break;
+                    }
+                }
+                let Some((k, v)) = found else {
+                    return Ok(Value::NIL);
+                };
+                tem = k;
+                hash_arg = v;
+            }
+        }
+    } else {
+        return lisp.funcall(collection, &[string, predicate, sym::LAMBDA]);
+    }
+    lisp.stack.push(tem);
+    lisp.stack.push(hash_arg);
+    let regexps = lisp.find_symbol_value(sym::COMPLETION_REGEXP_LIST);
+    let ignore = lisp.var_true(sym::COMPLETION_IGNORE_CASE);
+    if !match_regexps(lisp, string, regexps, ignore)? {
+        return Ok(Value::NIL);
+    }
+    if !predicate.is_nil() {
+        return if hash {
+            lisp.funcall(predicate, &[tem, hash_arg])
+        } else {
+            lisp.funcall(predicate, &[tem])
+        };
+    }
+    Ok(sym::T)
+}
+
+impl Lisp {
+    pub fn buffer_alist(&mut self) -> Value {
+        let live: Vec<Value> = self
+            .buffers
+            .iter()
+            .copied()
+            .filter(|&b| self.buffer_live_p(b))
+            .collect();
+        let base = self.stack.len();
+        let mut cells = Vec::with_capacity(live.len());
+        for b in live {
+            let name = self.buffer(b).name;
+            let cell = self.cons(name, b);
+            self.stack.push(cell);
+            cells.push(cell);
+        }
+        let alist = self.list(&cells);
+        self.stack.truncate(base);
+        alist
+    }
+}
+
+fn first_byte(lisp: &Lisp, s: Value) -> u8 {
+    lisp.string_bytes(s).first().copied().unwrap_or(0)
+}
+
+fn f_internal_complete_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (string, predicate, flag) = (args[0], args[1], args[2]);
+    let alist = lisp.buffer_alist();
+    let base = lisp.stack.len();
+    lisp.stack.push(alist);
+    let r = internal_complete_buffer(lisp, string, predicate, flag, alist);
+    lisp.stack.truncate(base);
+    r
+}
+
+fn internal_complete_buffer(
+    lisp: &mut Lisp,
+    string: Value,
+    predicate: Value,
+    flag: Value,
+    alist: Value,
+) -> LispResult {
+    if flag.is_nil() {
+        f_try_completion(lisp, &[string, alist, predicate])
+    } else if flag == sym::T {
+        let res = f_all_completions(lisp, &[string, alist, predicate])?;
+        if lisp.string_chars(string) > 0 {
+            return Ok(res);
+        }
+        let mut bufs = res;
+        while bufs.is_cons() && first_byte(lisp, lisp.xcar(bufs)) == b' ' {
+            bufs = lisp.xcdr(bufs);
+        }
+        if bufs.is_nil() {
+            let n_res = lisp.list_to_vec(res)?.len();
+            let n_all = lisp.list_to_vec(alist)?.len();
+            return Ok(if n_res == n_all { res } else { bufs });
+        }
+        let res = bufs;
+        while lisp.xcdr(bufs).is_cons() {
+            let next = lisp.xcdr(bufs);
+            if first_byte(lisp, lisp.xcar(next)) == b' ' {
+                let after = lisp.xcdr(next);
+                lisp.heap.set_cdr(bufs, after);
+            } else {
+                bufs = next;
+            }
+        }
+        Ok(res)
+    } else if flag == sym::LAMBDA {
+        f_test_completion(lisp, &[string, alist, predicate])
+    } else if flag == sym::METADATA {
+        let category = lisp.cons(sym::CATEGORY, sym::BUFFER);
+        lisp.stack.push(category);
+        let sort = lisp.cons(sym::CYCLE_SORT_FUNCTION, sym::IDENTITY);
+        lisp.stack.pop();
+        Ok(lisp.list(&[sym::METADATA, category, sort]))
+    } else {
+        Ok(Value::NIL)
+    }
+}
+
+pub(crate) fn f_assoc_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (mut key, list, case_fold) = (args[0], args[1], arg(args, 2));
+    if key.is_symbol() {
+        key = lisp.symbol_name(key);
+    }
+    let mut tail = list;
+    while tail.is_cons() {
+        let elt = lisp.xcar(tail);
+        let mut thiscar = if elt.is_cons() { lisp.xcar(elt) } else { elt };
+        if thiscar.is_symbol() {
+            thiscar = lisp.symbol_name(thiscar);
+        } else if !thiscar.is_string() {
+            tail = lisp.xcdr(tail);
+            continue;
+        }
+        let zero = Value::fixnum(0);
+        let tem = compare_strings(
+            lisp,
+            [thiscar, zero, Value::NIL, key, zero, Value::NIL, case_fold],
+        )?;
+        if tem == sym::T {
+            return Ok(elt);
+        }
+        tail = lisp.xcdr(tail);
+    }
+    Ok(Value::NIL)
+}
+
+fn f_completing_read(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let function = lisp.find_symbol_value(sym::COMPLETING_READ_FUNCTION);
+    if function == sym::UNBOUND {
+        return Err(lisp.signal_list(sym::VOID_VARIABLE, &[sym::COMPLETING_READ_FUNCTION]));
+    }
+    let call: Vec<Value> = (0..8).map(|i| arg(args, i)).collect();
+    lisp.funcall(function, &call)
+}
+
+impl Lisp {
+    fn buffer_downcase(&self, c: u32) -> u32 {
+        let table = self.cur().downcase_table;
+        if self.is_char_table(table)
+            && let Some(n) = self.char_table_ref(table, c).as_fixnum()
+            && n >= 0
+        {
+            return n as u32;
+        }
+        c
+    }
+}
+
+fn f_completion_flex_cost_gotoh(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    const FLEX_MAX_STR_SIZE: usize = 512;
+    const FLEX_MAX_PAT_SIZE: usize = 128;
+    const FLEX_MAX_MATRIX_SIZE: usize = FLEX_MAX_PAT_SIZE * FLEX_MAX_STR_SIZE;
+    let (pat, s) = (args[0], args[1]);
+    lisp.check_string(pat)?;
+    lisp.check_string(s)?;
+    let patlen = lisp.string_chars(pat);
+    let strlen = lisp.string_chars(s);
+    let width = strlen + 1;
+    let size = (patlen + 1) * width;
+    let gap_open_cost: i32 = 10;
+    let gap_extend_cost: i32 = 1;
+    let pos_inf: i32 = i32::MAX / 2;
+    if patlen == 0 || strlen == 0 || size > FLEX_MAX_MATRIX_SIZE {
+        return Ok(Value::NIL);
+    }
+    let ignore_case = lisp.var_true(sym::COMPLETION_IGNORE_CASE);
+    if !ignore_case {
+        let p = lisp.string_bytes(pat);
+        let sb = lisp.string_bytes(s);
+        let mut pi = 0;
+        let mut si = 0;
+        while si < strlen && pi < patlen {
+            if sb.get(si) == p.get(pi) {
+                pi += 1;
+            }
+            si += 1;
+        }
+        if pi < patlen {
+            return Ok(Value::NIL);
+        }
+    }
+    let mut m = vec![pos_inf; size];
+    let mut d = vec![pos_inf; size];
+    for cell in d.iter_mut().take(width) {
+        *cell = gap_open_cost / 2;
+    }
+    d[0] = 0;
+    let idx = |i: isize, j: isize| ((i + 1) as usize) * width + (j + 1) as usize;
+    let pat_chars = lisp.string_char_vec(pat);
+    let str_chars = lisp.string_char_vec(s);
+    let mut prev_match = 0usize;
+    for (ix, &pat_char) in pat_chars.iter().enumerate() {
+        let i = ix as isize;
+        let mut match_seen = false;
+        let row_start = prev_match;
+        for (jx, &str_char) in str_chars.iter().enumerate().skip(row_start) {
+            let j = jx as isize;
+            let cmatch = if ignore_case {
+                lisp.buffer_downcase(pat_char) == lisp.buffer_downcase(str_char)
+            } else {
+                pat_char == str_char
+            };
+            if cmatch {
+                if !match_seen {
+                    match_seen = true;
+                    prev_match = jx;
+                }
+                m[idx(i, j)] = m[idx(i - 1, j - 1)].min(d[idx(i - 1, j - 1)]);
+            }
+            d[idx(i, j)] =
+                (m[idx(i, j - 1)] + gap_open_cost).min(d[idx(i, j - 1)] + gap_extend_cost);
+        }
+    }
+    let mut best_cost = pos_inf;
+    let mut lastcol: isize = -1;
+    for j in 0..strlen as isize {
+        let cost = m[idx(patlen as isize - 1, j)];
+        if cost < best_cost {
+            best_cost = cost;
+            lastcol = j;
+        }
+    }
+    if lastcol < 0 || best_cost >= pos_inf {
+        return Ok(Value::NIL);
+    }
+    let mut positions = vec![lastcol];
+    let mut l = lastcol;
+    for i in (0..patlen as isize - 1).rev() {
+        loop {
+            l -= 1;
+            if !(l >= 0 && m[idx(i, l)] >= d[idx(i, l)]) {
+                break;
+            }
+        }
+        positions.push(l);
+    }
+    positions.reverse();
+    let items: Vec<Value> = positions
+        .into_iter()
+        .map(|p| Value::fixnum(p as i64))
+        .collect();
+    let matches = lisp.list(&items);
+    Ok(lisp.cons(Value::fixnum(i64::from(best_cost)), matches))
 }
