@@ -227,6 +227,9 @@ pub enum Vectorlike {
     Buffer(Box<crate::buffer::Buffer>),
     Marker(crate::buffer::Marker),
     Overlay(Box<crate::buffer::Overlay>),
+    Terminal(Box<crate::terminal::Terminal>),
+    Frame(Box<crate::frame::Frame>),
+    Window(Box<crate::window::Window>),
 }
 
 impl Vectorlike {
@@ -319,6 +322,9 @@ impl Trace for Vectorlike {
                 out.push(o.buffer);
                 out.push(o.plist);
             }
+            Vectorlike::Terminal(t) => t.trace(out),
+            Vectorlike::Frame(f) => f.trace(out),
+            Vectorlike::Window(w) => w.trace(out),
         }
     }
 }

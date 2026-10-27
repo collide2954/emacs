@@ -878,6 +878,9 @@ pub fn cl_type_of(lisp: &Lisp, object: Value) -> Value {
             Vectorlike::Buffer(_) => sym::BUFFER,
             Vectorlike::Marker(_) => sym::MARKER,
             Vectorlike::Overlay(_) => sym::OVERLAY,
+            Vectorlike::Terminal(_) => sym::TERMINAL,
+            Vectorlike::Frame(_) => sym::FRAME,
+            Vectorlike::Window(_) => sym::WINDOW,
             Vectorlike::Record(slots) => {
                 let t = slots.first().copied().unwrap_or(Value::NIL);
                 if t.is_vectorlike()
@@ -1915,7 +1918,7 @@ fn f_ash(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.bignum(result))
 }
 
-fn f_add1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_add1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = lisp.number(args[0])?;
     let r = match n {
         Num::Fix(i) => match i.checked_add(1) {

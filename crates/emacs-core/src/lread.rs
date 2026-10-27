@@ -1911,7 +1911,7 @@ fn collect_all(lisp: &Lisp, v: Value, out: &mut HashSet<Value>) {
     }
 }
 
-fn f_intern(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_intern(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (string, obarray) = (args[0], args[1]);
     let string = lisp.check_string(string)?;
     let obarray = if obarray.is_nil() {

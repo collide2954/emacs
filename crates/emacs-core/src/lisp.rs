@@ -86,6 +86,12 @@ pub struct Lisp {
     pub kboards: Vec<crate::keyboard::Kboard>,
     pub current_kboard: usize,
     pub initial_kboard: usize,
+    pub terminals: crate::terminal::Terminals,
+    pub frames: crate::frame::Frames,
+    pub windows: crate::window::Windows,
+    pub minibuf: crate::minibuf::Minibuf,
+    pub faces: crate::xfaces::Faces,
+    pub pending_funcalls: Value,
 }
 
 impl Default for Lisp {
@@ -123,6 +129,10 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::charset::SUBRS,
     crate::ccl::SUBRS,
     crate::coding::SUBRS,
+    crate::terminal::SUBRS,
+    crate::frame::SUBRS,
+    crate::window::SUBRS,
+    crate::minibuf::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -153,7 +163,13 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::charset::init_vars,
     crate::ccl::init_vars,
     crate::coding::init_vars,
+    crate::terminal::init_vars,
+    crate::frame::init_vars,
+    crate::minibuf::init_vars,
+    crate::xfaces::init_vars,
     init_first_buffers,
+    crate::minibuf::init_minibuf_once,
+    crate::window::init_window_once,
 ];
 
 fn init_emacs_vars(lisp: &mut Lisp) {
@@ -217,6 +233,12 @@ impl Lisp {
             kboards: Vec::new(),
             current_kboard: 0,
             initial_kboard: 0,
+            terminals: crate::terminal::Terminals::default(),
+            frames: crate::frame::Frames::default(),
+            windows: crate::window::Windows::default(),
+            minibuf: crate::minibuf::Minibuf::default(),
+            faces: crate::xfaces::Faces::default(),
+            pending_funcalls: Value::NIL,
         };
         lisp.init_symbols();
         lisp.empty_unibyte = lisp.heap.string(LispString::unibyte(Vec::new()));
@@ -851,6 +873,12 @@ impl Lisp {
         self.charsets.roots(&mut roots);
         self.codings.roots(&mut roots);
         self.ccl.roots(&mut roots);
+        self.terminals.roots(&mut roots);
+        self.frames.roots(&mut roots);
+        self.windows.roots(&mut roots);
+        self.minibuf.roots(&mut roots);
+        self.faces.roots(&mut roots);
+        roots.push(self.pending_funcalls);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);
         }

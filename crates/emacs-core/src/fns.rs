@@ -1132,7 +1132,7 @@ fn f_string_distance(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(prev[y.len()] as i64))
 }
 
-fn f_string_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_string_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let a = lisp.string_or_symbol_name(args[0])?;
     let b = lisp.string_or_symbol_name(args[1])?;
     let sa = lisp.heap.string_ref(a);
@@ -1429,7 +1429,7 @@ fn f_string_to_unibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.unibyte_string(&bytes))
 }
 
-fn f_copy_alist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_copy_alist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let alist = lisp.check_list(args[0])?;
     let items = lisp.list_to_vec(alist)?;
     let mut copied = Vec::with_capacity(items.len());
@@ -1517,7 +1517,7 @@ fn f_ntake(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(list)
 }
 
-fn f_nthcdr(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_nthcdr(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (n, list) = (args[0], args[1]);
     let n = match n.as_fixnum() {
         Some(n) => n,
@@ -2188,7 +2188,7 @@ fn f_featurep(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(!tem.is_nil()))
 }
 
-fn f_provide(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_provide(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let feature = lisp.check_symbol(args[0])?;
     let subfeatures = lisp.check_list(args[1])?;
     let features = lisp.plain_value(sym::FEATURES);

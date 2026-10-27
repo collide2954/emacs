@@ -308,6 +308,7 @@ pub struct Buffer {
     pub point_marker: Value,
     pub modtime: (i64, i64),
     pub modtime_size: i64,
+    pub last_selected_window: Value,
 }
 
 impl Buffer {
@@ -329,6 +330,7 @@ impl Buffer {
         out.push(self.case_eqv_table);
         out.push(self.base_buffer);
         out.push(self.point_marker);
+        out.push(self.last_selected_window);
         out.extend(self.text.props.iter().map(|r| r.plist));
     }
 
@@ -734,6 +736,7 @@ impl Lisp {
             point_marker: Value::NIL,
             modtime: (0, 0),
             modtime_size: -1,
+            last_selected_window: Value::NIL,
         };
         let value = self.heap.vectorlike(Vectorlike::Buffer(Box::new(buffer)));
         self.stack.push(value);
@@ -850,6 +853,96 @@ impl Lisp {
             }
             count += 1;
         }
+    }
+
+    pub fn buffer_hidden_p(&self, buffer: Value) -> bool {
+        let name = self.buffer(buffer).name;
+        self.is_string(name) && self.string_bytes(name).first() == Some(&b' ')
+    }
+
+    fn candidate_buffer(&self, b: Value, buffer: Value) -> bool {
+        self.is_buffer(b) && b != buffer && self.buffer_live_p(b) && !self.buffer_hidden_p(b)
+    }
+
+    pub fn other_buffer_safely(&mut self, buffer: Value) -> Value {
+        let live = self.buffers.clone();
+        for b in live {
+            if self.candidate_buffer(b, buffer) {
+                return b;
+            }
+        }
+        let buf = self
+            .safe_calln(sym::GET_SCRATCH_BUFFER_CREATE, &[])
+            .unwrap_or(Value::NIL);
+        if !buf.is_nil() {
+            return buf;
+        }
+        let scratch = self.string("*scratch*");
+        let buf = self
+            .get_buffer_create(scratch, false)
+            .expect("scratch buffer");
+        let _ = f_set_buffer_major_mode(self, &[buf]);
+        buf
+    }
+
+    pub fn reset_buffer(&mut self, b: Value) {
+        let directory = if self.current_buffer.is_nil() {
+            Value::NIL
+        } else {
+            self.buffer_local_get(self.current_buffer, sym::DEFAULT_DIRECTORY)
+                .unwrap_or(Value::NIL)
+        };
+        let multibyte = self.default_value_unchecked(sym::ENABLE_MULTIBYTE_CHARACTERS);
+        let cursor_type = self.default_value_unchecked(sym::CURSOR_TYPE);
+        let line_spacing = self.default_value_unchecked(sym::LINE_SPACING);
+        for (symbol, value) in [
+            (sym::BUFFER_FILE_NAME, Value::NIL),
+            (sym::BUFFER_FILE_TRUENAME, Value::NIL),
+            (sym::DEFAULT_DIRECTORY, directory),
+            (sym::BUFFER_SAVED_SIZE, Value::fixnum(0)),
+            (sym::BUFFER_BACKED_UP, Value::NIL),
+            (sym::LOCAL_MINOR_MODES, Value::NIL),
+            (sym::BUFFER_AUTO_SAVE_FILE_NAME, Value::NIL),
+            (sym::BUFFER_READ_ONLY, Value::NIL),
+            (sym::MARK_ACTIVE, Value::NIL),
+            (sym::POINT_BEFORE_SCROLL, Value::NIL),
+            (sym::BUFFER_FILE_FORMAT, Value::NIL),
+            (sym::BUFFER_AUTO_SAVE_FILE_FORMAT, sym::T),
+            (sym::BUFFER_DISPLAY_COUNT, Value::fixnum(0)),
+            (sym::BUFFER_DISPLAY_TIME, Value::NIL),
+            (sym::ENABLE_MULTIBYTE_CHARACTERS, multibyte),
+            (sym::CURSOR_TYPE, cursor_type),
+            (sym::LINE_SPACING, line_spacing),
+        ] {
+            self.buffer_local_set(b, symbol, value);
+        }
+        let buf = self.buffer_mut(b);
+        buf.modtime = (0, -2);
+        buf.modtime_size = -1;
+        buf.last_window_start = 1;
+        buf.text.autosave_modiff = 0;
+        buf.overlays.clear();
+        buf.last_selected_window = Value::NIL;
+    }
+
+    pub fn record_buffer(&mut self, buffer: Value) -> LispResult<()> {
+        let buffer = self.check_buffer(buffer)?;
+        if let Some(i) = self.buffers.iter().position(|&b| b == buffer) {
+            self.buffers.remove(i);
+            self.buffers.insert(0, buffer);
+        }
+        let f = self.frames.selected_frame;
+        let list = self.frame(f).buffer_list;
+        let list = crate::fns::f_delq(self, &[buffer, list])?;
+        let list = self.cons(buffer, list);
+        self.frame_mut(f).buffer_list = list;
+        let buried = self.frame(f).buried_buffer_list;
+        let buried = crate::fns::f_delq(self, &[buffer, buried])?;
+        self.frame_mut(f).buried_buffer_list = buried;
+        if !self.buffer(buffer).inhibit_hooks {
+            self.run_hook(sym::BUFFER_LIST_UPDATE_HOOK)?;
+        }
+        Ok(())
     }
 
     pub fn buffer_read_only_p(&self) -> bool {
@@ -1221,7 +1314,7 @@ fn f_buffer_list(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.buffer_list_value())
 }
 
-fn f_get_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_get_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let name = args[0];
     if lisp.is_buffer(name) {
         return Ok(name);
@@ -1426,7 +1519,7 @@ fn f_other_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.get_buffer_create(name, false)
 }
 
-fn f_buffer_enable_undo(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_buffer_enable_undo(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let b = if args[0].is_nil() {
         lisp.current_buffer
     } else {
@@ -1486,7 +1579,7 @@ fn f_current_buffer(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.current_buffer)
 }
 
-fn f_set_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_set_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = f_get_buffer(lisp, &[args[0]])?;
     if buffer.is_nil() {
         return Err(lisp.signal_error("No such buffer", args[0]));
@@ -1576,7 +1669,7 @@ pub(crate) fn f_set_buffer_multibyte(lisp: &mut Lisp, args: &[Value]) -> LispRes
     Ok(args[0])
 }
 
-fn f_kill_all_local_variables(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_kill_all_local_variables(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.kill_all_local_variables(!args[0].is_nil())?;
     Ok(Value::NIL)
 }

@@ -1482,7 +1482,7 @@ fn f_time_convert(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.cons(ticks, form))
 }
 
-fn f_current_time(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_current_time(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let now = lisp.now_ticks_hz();
     let (s, ns) = lisp.ticks_hz_to_timespec(&now)?;
     Ok(lisp.make_lisp_time(s, ns))

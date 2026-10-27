@@ -700,6 +700,44 @@ impl Lisp {
                 }
                 Ok(())
             }
+            Vectorlike::Terminal(t) => {
+                p.push_str(&format!("#<terminal {}", t.id));
+                if let Some(name) = &t.name {
+                    p.push_str(" on ");
+                    p.push_str(name);
+                }
+                p.push('>' as u32);
+                Ok(())
+            }
+            Vectorlike::Frame(f) => {
+                p.push_str(if f.terminal.is_nil() {
+                    "#<dead frame "
+                } else {
+                    "#<frame "
+                });
+                let name = if self.is_string(f.name) {
+                    self.string_char_vec(f.name)
+                } else if f.name.is_symbol() {
+                    let n = self.symbol_name(f.name);
+                    self.string_char_vec(n)
+                } else {
+                    "*INVALID*FRAME*NAME*".chars().map(|c| c as u32).collect()
+                };
+                p.out.extend(name);
+                p.push_str(&format!(" {:#x}>", obj.bits()));
+                Ok(())
+            }
+            Vectorlike::Window(w) => {
+                p.push_str(&format!("#<window {}", w.sequence_number));
+                if self.is_buffer(w.contents) {
+                    p.push_str(" on ");
+                    let name = self.buffer(w.contents).name;
+                    let chars = self.string_char_vec(name);
+                    p.out.extend(chars);
+                }
+                p.push('>' as u32);
+                Ok(())
+            }
         }
     }
 
