@@ -1,10 +1,71 @@
 use crate::character;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
+use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
 
+pub const SUBRS: &[Subr] = &[Subr::fixed("invisible-p", 1, 1, f_invisible_p)];
+
 pub const REDISPLAY_SOME: i64 = 2;
+
+impl Lisp {
+    pub fn invisible_prop(&self, propval: Value, list: Value) -> i64 {
+        let mut tail = list;
+        while tail.is_cons() {
+            let tem = self.xcar(tail);
+            if self.eq(propval, tem) {
+                return 1;
+            }
+            if tem.is_cons() && self.eq(propval, self.xcar(tem)) {
+                return if self.xcdr(tem).is_nil() { 1 } else { 2 };
+            }
+            tail = self.xcdr(tail);
+        }
+        if propval.is_cons() {
+            let mut proptail = propval;
+            while proptail.is_cons() {
+                let propelt = self.xcar(proptail);
+                let mut tail = list;
+                while tail.is_cons() {
+                    let tem = self.xcar(tail);
+                    if self.eq(propelt, tem) {
+                        return 1;
+                    }
+                    if tem.is_cons() && self.eq(propelt, self.xcar(tem)) {
+                        return if self.xcdr(tem).is_nil() { 1 } else { 2 };
+                    }
+                    tail = self.xcdr(tail);
+                }
+                proptail = self.xcdr(proptail);
+            }
+        }
+        0
+    }
+
+    pub fn text_prop_means_invisible(&self, prop: Value) -> i64 {
+        let spec = self.find_symbol_value(sym::BUFFER_INVISIBILITY_SPEC);
+        if spec == sym::T {
+            i64::from(!prop.is_nil())
+        } else {
+            self.invisible_prop(prop, spec)
+        }
+    }
+}
+
+fn f_invisible_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let pos = args[0];
+    let prop = if matches!(pos.as_fixnum(), Some(n) if n >= 0) || lisp.is_marker(pos) {
+        lisp.get_char_property(pos, sym::INVISIBLE, Value::NIL)?
+    } else {
+        pos
+    };
+    Ok(match lisp.text_prop_means_invisible(prop) {
+        0 => Value::NIL,
+        1 => sym::T,
+        n => Value::fixnum(n),
+    })
+}
 
 #[derive(Default)]
 pub struct Xdisp {

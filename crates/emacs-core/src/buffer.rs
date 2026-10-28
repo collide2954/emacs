@@ -306,6 +306,7 @@ pub struct Buffer {
     pub base_buffer: Value,
     pub inhibit_hooks: bool,
     pub prevent_redisplay_optimizations_p: bool,
+    pub long_line_optimizations_p: bool,
     pub last_window_start: usize,
     pub window_count: usize,
     pub point_marker: Value,
@@ -736,6 +737,7 @@ impl Lisp {
             base_buffer: Value::NIL,
             inhibit_hooks,
             prevent_redisplay_optimizations_p: false,
+            long_line_optimizations_p: false,
             last_window_start: 1,
             window_count: 0,
             point_marker: Value::NIL,
@@ -814,6 +816,7 @@ impl Lisp {
             return;
         }
         self.current_buffer = buffer;
+        self.indent.last_known_column_point = -1;
     }
 
     pub fn set_buffer_checked(&mut self, buffer: Value) -> LispResult<()> {

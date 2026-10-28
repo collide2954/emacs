@@ -161,7 +161,7 @@ fn f_char_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.char_width_of(c) as i64))
 }
 
-fn f_string_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_string_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let s = lisp.check_string(args[0])?;
     let chars = lisp.string_char_vec(s);
     let multibyte = lisp.string_multibyte(s);

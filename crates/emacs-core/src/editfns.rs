@@ -843,7 +843,7 @@ fn f_insert_before_markers_and_inherit(lisp: &mut Lisp, args: &[Value]) -> LispR
     general_insert(lisp, args, true, true)
 }
 
-fn f_insert_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_insert_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let c = lisp.check_character(args[0])?;
     let count = if args[1].is_nil() {
         1
@@ -1029,6 +1029,7 @@ fn f_delete_and_extract_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_widen(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     lisp.widen();
+    lisp.invalidate_current_column();
     Ok(Value::NIL)
 }
 
@@ -1041,6 +1042,7 @@ fn f_narrow_to_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         return Err(lisp.args_out_of_range(args[0], args[1]));
     }
     lisp.narrow(s as usize, e as usize);
+    lisp.invalidate_current_column();
     Ok(Value::NIL)
 }
 
@@ -1050,6 +1052,7 @@ fn f_labeled_narrow_to_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_labeled_widen(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     lisp.widen();
+    lisp.invalidate_current_column();
     Ok(Value::NIL)
 }
 

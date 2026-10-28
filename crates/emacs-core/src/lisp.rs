@@ -99,6 +99,7 @@ pub struct Lisp {
     pub subr_docs: std::collections::HashMap<usize, i64>,
     pub compositions: crate::composite::Compositions,
     pub syntax: crate::syntax::Syntax,
+    pub indent: crate::indent::Indent,
     pub frame_and_buffer_state: Value,
     pub pending_funcalls: Value,
 }
@@ -148,6 +149,8 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::doc::SUBRS,
     crate::composite::SUBRS,
     crate::dispnew::SUBRS,
+    crate::xdisp::SUBRS,
+    crate::indent::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -172,6 +175,16 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::emacs::init_vars,
     crate::keyboard::init_vars,
     crate::macros::init_vars,
+    crate::indent::init_vars,
+    crate::image::init_vars,
+    crate::gnutls::init_vars,
+    crate::treesit::init_vars,
+    crate::callint::init_vars,
+    crate::dired::init_vars,
+    crate::filelock::init_vars,
+    crate::process::init_vars,
+    crate::term::init_vars,
+    crate::w32fns::init_vars,
     crate::dispnew::init_vars,
     crate::window::init_vars,
     crate::keymap::init_vars,
@@ -273,6 +286,7 @@ impl Lisp {
             subr_docs: std::collections::HashMap::new(),
             compositions: crate::composite::Compositions::default(),
             syntax: crate::syntax::Syntax::default(),
+            indent: crate::indent::Indent::default(),
             frame_and_buffer_state: Value::NIL,
             pending_funcalls: Value::NIL,
         };

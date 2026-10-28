@@ -216,6 +216,25 @@ impl Lisp {
         val
     }
 
+    pub fn disp_char_vector(&self, dp: Value, c: u32) -> Value {
+        let t = self.char_table(dp);
+        let val = if c < 128 {
+            if self.is_sub_char_table(t.ascii) {
+                self.sub_table(t.ascii).contents[c as usize]
+            } else {
+                t.ascii
+            }
+        } else {
+            let v = t.contents[chartab_idx(c, 0, 0)];
+            if self.is_sub_char_table(v) {
+                self.sub_char_table_ref(v, c)
+            } else {
+                v
+            }
+        };
+        if val.is_nil() { t.default } else { val }
+    }
+
     fn sub_char_table_set(&mut self, table: Value, c: u32, val: Value) {
         let (depth, min_char) = {
             let t = self.sub_table(table);

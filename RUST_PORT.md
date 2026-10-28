@@ -41,33 +41,45 @@ Ported but not yet complete (C kept):
 | `character.c` | `charfns.rs` | `get-byte`, display-table aware `string-width` |
 | `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c`, `emacs.c` | same names | assorted primitives |
 | `keyboard.c` | `keyboard.rs` | everything except event modifier parsing |
-| `syntax.c` | `syntax.rs` | scanning (`forward-word`, `skip-chars-*`, `scan-lists`, `parse-partial-sexp`, ...) |
+| `syntax.c` | `syntax.rs` | the regex engine still ignores `syntax-table` text properties |
+| `indent.c` | `indent.rs` | `compute-motion`, `vertical-motion`, `line-number-display-width` (they need the display iterator); an image `display` spec signals an error |
 | `casefiddle.c` | `casefiddle.rs` | a real port; the current version is a placeholder using Rust's Unicode tables |
 | `coding.c` | `coding.rs`, `coding/` | `encode_string_utf_8`/`decode_string_utf_8` (for `json.c`), file-name encoding |
 | `bytecode.c` | `bytecode.rs` | the VM (stub) |
 | `terminal.c` | `terminal.rs` | `delete-terminal` (needs `delete-frame`) |
 | `frame.c` | `frame.rs` | `delete-frame`, `adjust_frame_size`, `x-create-frame` |
 | `window.c` | `window.rs` | splitting, resizing, `window-list` |
-| `minibuf.c` | `minibuf.rs` | reading from the minibuffer |
+| `minibuf.c` | `minibuf.rs` | interactive reading (needs the command loop; it signals an error) |
 | `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface` |
 | `fontset.c` | `fontset.rs` | `new-fontset`, `set-fontset-font`, `fontset-info`, `fontset-font` |
-| `xfaces.c` | `xfaces.rs` | realized faces (face cache, `realize_basic_faces`), `face-font`, `clear-face-cache`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource` |
-| `xdisp.c` | `xdisp.rs` | everything except the redisplay flags, `add_to_log` and `message_dolog` |
+| `xfaces.c` | `xfaces.rs` | GUI and tty face realization, `face-font`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource` |
+| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog` and `invisible-p` |
+| `composite.c` | `composite.rs` | shaping on window-system frames |
 
-Window-system frames don't exist yet, so `xfaces.rs` stops with `unreachable!` on the
-branches that need them (`font_load_for_lface`, `xw-display-color-p`). A `reset` face
-attribute signals "Cannot realize default face" until realized faces are ported.
+Window-system frames don't exist yet, so the face, font and composition code stops with
+`unreachable!` on the branches that need them. Realized faces work for the initial frame,
+which gets plain realized faces as in C.
 
-`doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables only.
-`minibuf.rs` has the completion primitives but not `read-from-minibuffer` and friends.
+`doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables and
+`frame-or-buffer-changed-p`. `callint.rs`, `dired.rs`, `filelock.rs`, `process.rs`,
+`image.rs`, `gnutls.rs`, `treesit.rs`, `macros.rs`, `term.rs` and `w32fns.rs` hold only
+those files' variables, which the unmodified Lisp needs (cus-start.el checks them).
+No image, GnuTLS or tree-sitter library is linked, so their version variables are -1.
 
 `crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
 writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
 `charprop.el` files still need `unidata-gen.el` run by a working Emacs.
 
-`emacs --batch` loads `loadup.el` through `faces`, `ldefs-boot`, `button`, `cl-preloaded`,
-`oclosure`, `abbrev`, `help`, `mule-cmds` and `case-table`, and stops in
-`international/characters.el` on `composition-function-table` (`composite.c`).
+`emacs --batch` loads every preloaded file in `loadup.el`, including the `w32-*` files and
+`cus-start.el`, and runs `Snarf-documentation`. Startup then stops on `directory-files`
+(`dired.c`).
+
+`emacs` without `--batch` stops while loading `window.el`. This is expected for now: the
+preloaded Lisp loads from source, so eager macro-expansion autoloads `flymake-log`, and
+`project.el`'s `defcustom` reaches `locate-user-emacs-file` before `user-emacs-directory`
+is set. C Emacs never meets this, because it runs `loadup.el` only in batch to make the
+dump and an interactive start restores the dump. Interactive startup needs the heap
+snapshot (the pdumper replacement) or byte-compiled Lisp.
 
 ## Coding
 

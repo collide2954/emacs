@@ -42,6 +42,47 @@ const TAG_SPACE: i64 = 0xE0020;
 const CANCEL_TAG: i64 = 0xE007F;
 const UNICODE_CATEGORY_ZS: i64 = 23;
 
+#[derive(Clone, Copy, Debug)]
+pub struct CompositionIt {
+    pub stop_pos: i64,
+    pub id: i64,
+    pub ch: i64,
+    pub rule_idx: i64,
+    pub lookback: i64,
+    pub nglyphs: i64,
+    pub reversed_p: bool,
+    pub parent_w: Value,
+    pub parent_f: Value,
+    pub charpos: i64,
+    pub nchars: i64,
+    pub nbytes: i64,
+    pub from: i64,
+    pub to: i64,
+    pub width: i64,
+}
+
+impl Default for CompositionIt {
+    fn default() -> Self {
+        CompositionIt {
+            stop_pos: 0,
+            id: 0,
+            ch: 0,
+            rule_idx: 0,
+            lookback: 0,
+            nglyphs: 0,
+            reversed_p: false,
+            parent_w: Value::NIL,
+            parent_f: Value::NIL,
+            charpos: 0,
+            nchars: 0,
+            nbytes: 0,
+            from: 0,
+            to: 0,
+            width: 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Composition {
     pub glyph_len: usize,
@@ -1157,6 +1198,443 @@ impl Lisp {
             )?;
         }
         Ok(lgstring)
+    }
+
+    fn composition_function_table(&mut self) -> LispResult<Value> {
+        let table = self.find_symbol_value(sym::COMPOSITION_FUNCTION_TABLE);
+        if self.is_char_table(table) {
+            return Ok(table);
+        }
+        let table = self.make_char_table(Value::NIL, Value::NIL)?;
+        self.set_plain_value(sym::COMPOSITION_FUNCTION_TABLE, table);
+        Ok(table)
+    }
+
+    fn text_char_to_byte(&self, pos: i64, string: Value) -> i64 {
+        if string.is_nil() {
+            self.cur().text.char_to_byte(pos as usize) as i64
+        } else {
+            self.string_char_to_byte_index(string, pos as usize) as i64
+        }
+    }
+
+    fn text_byte_to_char(&self, pos_byte: i64, string: Value) -> i64 {
+        if string.is_nil() {
+            self.cur().text.byte_to_char(pos_byte as usize) as i64
+        } else {
+            self.string_byte_to_char_index(string, pos_byte as usize) as i64
+        }
+    }
+
+    fn auto_rule(&self, elt: Value) -> Option<i64> {
+        let items = self.aref_items(elt);
+        if self.is_vector(elt) && items.len() == 3 {
+            return items[1].as_fixnum().filter(|&n| n >= 0);
+        }
+        None
+    }
+
+    pub fn composition_compute_stop_pos(
+        &mut self,
+        cmp_it: &mut CompositionIt,
+        charpos: i64,
+        endpos: i64,
+        string: Value,
+        include_static: bool,
+    ) -> LispResult<()> {
+        const MAX_NEWLINE_DISTANCE: i64 = 500;
+        let mut charpos = charpos;
+        let mut endpos = endpos;
+        if charpos < endpos {
+            if endpos > charpos + MAX_NEWLINE_DISTANCE {
+                endpos = charpos + MAX_NEWLINE_DISTANCE;
+            }
+        } else if endpos < charpos && endpos < 0 {
+            endpos = if string.is_nil() {
+                self.cur().begv as i64 - 1
+            } else {
+                -1
+            };
+            if self.cur().long_line_optimizations_p {
+                unreachable!("long-line optimizations are enabled only by redisplay");
+            }
+        }
+        cmp_it.id = -1;
+        cmp_it.ch = -2;
+        cmp_it.reversed_p = false;
+        cmp_it.stop_pos = endpos;
+        if charpos == endpos {
+            return Ok(());
+        }
+        if include_static
+            && charpos < endpos
+            && let Some((start, end, prop)) = self.find_composition(charpos, endpos, string)?
+            && start as i64 >= charpos
+            && self.composition_valid_p(start, end, prop)
+        {
+            cmp_it.stop_pos = start as i64;
+            endpos = start as i64;
+            cmp_it.ch = -1;
+        }
+        if (string.is_nil() && !self.cur().text.multibyte)
+            || (string.is_string() && !self.string_multibyte(string))
+            || self.inhibit_auto_composition()
+        {
+            return Ok(());
+        }
+        let start = charpos;
+        let table = self.composition_function_table()?;
+        if charpos < endpos {
+            while charpos < endpos {
+                let c = self.text_char(charpos as usize, string) as i64;
+                charpos += 1;
+                if c == b'\n' as i64 {
+                    cmp_it.ch = -2;
+                    break;
+                }
+                let mut val = self.char_table_ref(table, c as u32);
+                let mut ridx = 0;
+                while val.is_cons() {
+                    let elt = self.xcar(val);
+                    if let Some(back) = self.auto_rule(elt)
+                        && charpos - 1 - back >= start
+                    {
+                        cmp_it.rule_idx = ridx;
+                        cmp_it.lookback = back;
+                        cmp_it.stop_pos = charpos - 1 - back;
+                        cmp_it.ch = c;
+                        return Ok(());
+                    }
+                    val = self.xcdr(val);
+                    ridx += 1;
+                }
+            }
+            if charpos == endpos
+                && !(string.is_string() && endpos == self.string_chars(string) as i64)
+            {
+                charpos = endpos - MAX_AUTO_COMPOSITION_LOOKBACK;
+                if charpos < start {
+                    charpos = start;
+                }
+            }
+        } else if charpos > endpos {
+            let mut c = self.text_char(charpos as usize, string) as i64;
+            let base = self.stack.len();
+            self.stack.push(table);
+            let r = (|| -> LispResult<()> {
+                while self.char_composable_p(c) {
+                    let mut val = self.char_table_ref(table, c as u32);
+                    let mut ridx = 0;
+                    while val.is_cons() {
+                        let elt = self.xcar(val);
+                        if let Some(back) = self.auto_rule(elt)
+                            && charpos - back > endpos
+                        {
+                            let mut cpos = charpos - back;
+                            let re = self.aref_items(elt)[0];
+                            let blen = if re.is_string() {
+                                self.stack.push(val);
+                                let r = self.fast_looking_at(
+                                    re,
+                                    cpos as usize,
+                                    (start + 1) as usize,
+                                    string,
+                                );
+                                self.stack.pop();
+                                r? as i64
+                            } else {
+                                1
+                            };
+                            if blen > 0 {
+                                if blen > 1 {
+                                    let bpos = self.text_char_to_byte(cpos, string) + blen;
+                                    cpos = self.text_byte_to_char(bpos, string) - 1;
+                                }
+                                let back = cpos - (charpos - back);
+                                if cmp_it.stop_pos < cpos
+                                    || (cmp_it.stop_pos == cpos && cmp_it.lookback < back)
+                                {
+                                    cmp_it.rule_idx = ridx;
+                                    cmp_it.stop_pos = cpos;
+                                    cmp_it.ch = c;
+                                    cmp_it.lookback = back;
+                                    cmp_it.nchars = back + 1;
+                                }
+                            }
+                        }
+                        val = self.xcdr(val);
+                        ridx += 1;
+                    }
+                    if charpos - 1 == endpos {
+                        break;
+                    }
+                    charpos -= 1;
+                    c = self.text_char(charpos as usize, string) as i64;
+                }
+                Ok(())
+            })();
+            self.stack.truncate(base);
+            r?;
+            if cmp_it.ch >= 0 {
+                return Ok(());
+            }
+            while charpos - 1 > endpos && !self.char_composable_p(c) {
+                charpos -= 1;
+                c = self.text_char(charpos as usize, string) as i64;
+            }
+        }
+        cmp_it.stop_pos = charpos;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn composition_reseat_it(
+        &mut self,
+        cmp_it: &mut CompositionIt,
+        charpos: i64,
+        endpos: i64,
+        w: Value,
+        bidi_level: i32,
+        string: Value,
+    ) -> LispResult<bool> {
+        if cmp_it.ch == -2 {
+            self.composition_compute_stop_pos(cmp_it, charpos, endpos, string, true)?;
+            if cmp_it.ch == -2 || cmp_it.stop_pos != charpos {
+                return Ok(false);
+            }
+        }
+        let mut endpos = endpos;
+        if endpos < 0 {
+            endpos = if string.is_nil() {
+                self.cur().begv as i64
+            } else {
+                0
+            };
+        }
+        let base = self.stack.len();
+        let composed = self.composition_reseat_it_1(cmp_it, charpos, endpos, w, bidi_level, string);
+        self.stack.truncate(base);
+        if composed? {
+            return Ok(true);
+        }
+        if charpos == endpos {
+            return Ok(false);
+        }
+        let next = if charpos < endpos {
+            charpos + 1
+        } else {
+            charpos - 1
+        };
+        if cmp_it.reversed_p {
+            endpos = -1;
+        }
+        self.composition_compute_stop_pos(cmp_it, next, endpos, string, true)?;
+        Ok(false)
+    }
+
+    fn composition_reseat_it_1(
+        &mut self,
+        cmp_it: &mut CompositionIt,
+        charpos: i64,
+        endpos: i64,
+        w: Value,
+        bidi_level: i32,
+        string: Value,
+    ) -> LispResult<bool> {
+        if cmp_it.ch < 0 {
+            let Some((start, end, prop)) = self.find_composition(charpos, -1, string)? else {
+                return Ok(false);
+            };
+            cmp_it.id = self.get_composition_id(charpos as usize, end - start, prop, string)?;
+            if cmp_it.id < 0 {
+                return Ok(false);
+            }
+            cmp_it.nchars = (end - start) as i64;
+            cmp_it.nglyphs = self.compositions.table[cmp_it.id as usize].glyph_len as i64;
+            return Ok(true);
+        }
+        if w.is_nil() {
+            return Ok(false);
+        }
+        let table = self.composition_function_table()?;
+        self.stack.push(table);
+        let mut val = self.char_table_ref(table, cmp_it.ch as u32);
+        for _ in 0..cmp_it.rule_idx {
+            val = self.xcdr(val);
+        }
+        self.stack.push(val);
+        let direction = if bidi_level < 0 {
+            Value::NIL
+        } else if bidi_level & 1 == 0 {
+            sym::L2R
+        } else {
+            sym::R2L
+        };
+        let mut lgstring = Value::NIL;
+        if charpos < endpos {
+            while val.is_cons() {
+                let elt = self.xcar(val);
+                let fixnum_rule = self.is_vector(elt)
+                    && self.aref_items(elt).len() == 3
+                    && self.aref_items(elt)[1].is_fixnum();
+                if !fixnum_rule {
+                    val = self.xcdr(val);
+                    continue;
+                }
+                if self.aref_items(elt)[1].as_fixnum() != Some(cmp_it.lookback) {
+                    return Ok(false);
+                }
+                lgstring = self.autocmp_chars(
+                    elt,
+                    charpos as usize,
+                    endpos as usize,
+                    w,
+                    string,
+                    direction,
+                    cmp_it.ch,
+                )?;
+                if self.composition_gstring_p(lgstring)? {
+                    break;
+                }
+                lgstring = Value::NIL;
+                val = self.xcdr(val);
+            }
+            cmp_it.reversed_p = false;
+        } else {
+            let mut cpos = charpos;
+            cmp_it.reversed_p = true;
+            let elt = self.xcar(val);
+            if cmp_it.lookback > 0 {
+                cpos = charpos - cmp_it.lookback;
+                if cpos < endpos {
+                    return Ok(false);
+                }
+            }
+            lgstring = self.autocmp_chars(
+                elt,
+                cpos as usize,
+                (charpos + 1) as usize,
+                w,
+                string,
+                direction,
+                cmp_it.ch,
+            )?;
+            if !self.composition_gstring_p(lgstring)?
+                || cpos + self.lgstring_char_len(lgstring) as i64 - 1 != charpos
+            {
+                return Ok(false);
+            }
+        }
+        if lgstring.is_nil() {
+            return Ok(false);
+        }
+        if self.lgstring_id(lgstring).is_nil() {
+            lgstring = self.composition_gstring_put_cache(lgstring, -1)?;
+        }
+        cmp_it.id = self.lgstring_id(lgstring).as_fixnum().unwrap_or(-1);
+        let glyph_len = self.lgstring_glyph_len(lgstring);
+        let i = (0..glyph_len)
+            .find(|&i| self.lgstring_glyph(lgstring, i).is_nil())
+            .unwrap_or(glyph_len) as i64;
+        cmp_it.nglyphs = i;
+        cmp_it.from = 0;
+        cmp_it.to = i;
+        Ok(true)
+    }
+
+    pub fn composition_update_it(
+        &mut self,
+        cmp_it: &mut CompositionIt,
+        charpos: i64,
+        bytepos: i64,
+        string: Value,
+    ) -> i64 {
+        let mut c: i64 = 0;
+        if cmp_it.ch < 0 {
+            let cmp = self.compositions.table[cmp_it.id as usize].clone();
+            cmp_it.charpos = charpos;
+            cmp_it.to = cmp_it.nglyphs;
+            if cmp_it.nglyphs == 0 {
+                c = -1;
+            } else {
+                for i in 0..cmp.glyph_len {
+                    let idx = if cmp.method == CompositionMethod::WithRuleAltchars {
+                        i * 2
+                    } else {
+                        i
+                    };
+                    c = self.aref_items(cmp.key)[idx].as_fixnum().unwrap_or(0);
+                    if c != b'\t' as i64 {
+                        break;
+                    }
+                }
+                if c == b'\t' as i64 {
+                    c = b' ' as i64;
+                }
+            }
+            cmp_it.width = cmp.width as i64;
+            let end = charpos + cmp_it.nchars;
+            cmp_it.nbytes = self.text_char_to_byte(end, string) - bytepos;
+        } else {
+            let gstring = self.composition_gstring_from_id(cmp_it.id as usize);
+            if cmp_it.nglyphs == 0 {
+                cmp_it.nchars = self.lgstring_char_len(gstring) as i64;
+                cmp_it.width = 0;
+                cmp_it.from = 0;
+                cmp_it.to = 0;
+                return -1;
+            }
+            let from;
+            if !cmp_it.reversed_p {
+                let glyph = self.lgstring_glyph(gstring, cmp_it.from as usize);
+                from = self.lglyph_int(glyph, LGLYPH_IX_FROM);
+                cmp_it.to = cmp_it.from + 1;
+                while cmp_it.to < cmp_it.nglyphs {
+                    let glyph = self.lgstring_glyph(gstring, cmp_it.to as usize);
+                    if self.lglyph_int(glyph, LGLYPH_IX_FROM) != from {
+                        break;
+                    }
+                    cmp_it.to += 1;
+                }
+                cmp_it.charpos = charpos;
+            } else {
+                let glyph = self.lgstring_glyph(gstring, (cmp_it.to - 1) as usize);
+                from = self.lglyph_int(glyph, LGLYPH_IX_FROM);
+                cmp_it.charpos = charpos - (self.lglyph_int(glyph, LGLYPH_IX_TO) - from);
+                cmp_it.from = cmp_it.to - 1;
+                while cmp_it.from > 0 {
+                    let glyph = self.lgstring_glyph(gstring, (cmp_it.from - 1) as usize);
+                    if self.lglyph_int(glyph, LGLYPH_IX_FROM) != from {
+                        break;
+                    }
+                    cmp_it.from -= 1;
+                }
+            }
+            let glyph = self.lgstring_glyph(gstring, cmp_it.from as usize);
+            cmp_it.nchars = self.lglyph_int(glyph, LGLYPH_IX_TO) + 1 - from;
+            cmp_it.nbytes = 0;
+            let mut column_width = 1;
+            if self.font_object_p(self.lgstring_font(gstring)) && !cmp_it.parent_f.is_nil() {
+                column_width = self.frame(cmp_it.parent_f).geometry.column_width;
+            }
+            cmp_it.width = self.composition_gstring_width(
+                gstring,
+                cmp_it.from as usize,
+                cmp_it.to as usize,
+                None,
+            ) as i64;
+            cmp_it.width /= column_width;
+            let header = self.lgstring_header(gstring);
+            for i in (0..cmp_it.nchars).rev() {
+                c = self
+                    .aref_items(header)
+                    .get((from + i + 1) as usize)
+                    .and_then(|v| v.as_fixnum())
+                    .unwrap_or(0);
+                cmp_it.nbytes += character::char_string(c as u32).len() as i64;
+            }
+        }
+        c
     }
 
     pub fn find_automatic_composition(

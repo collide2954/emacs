@@ -891,6 +891,21 @@ impl Lisp {
         let obj = self.decode_obj(object)?;
         let pos = self.validate_position(obj, position)?;
         let (lo, hi) = self.obj_limits(obj);
+        if forward && prop.is_none() && limit == sym::T {
+            if self.obj_runs(obj).is_empty() {
+                return Ok(Value::fixnum(hi as i64));
+            }
+            let (first, last) = match obj {
+                Obj::Buffer(b) => (1, self.buffer(b).z()),
+                Obj::String(s) => (0, self.string_chars(s)),
+            };
+            let segs = self.segments(obj, first, last);
+            let next = segs
+                .iter()
+                .position(|s| s.start <= pos && pos < s.end)
+                .and_then(|i| segs.get(i + 1));
+            return Ok(Value::fixnum(next.map_or(hi, |s| s.start) as i64));
+        }
         let limit_pos = if limit.is_nil() {
             None
         } else {
@@ -1028,7 +1043,7 @@ fn f_get_char_property_and_overlay(lisp: &mut Lisp, args: &[Value]) -> LispResul
     Ok(lisp.cons(v, o))
 }
 
-fn f_next_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_next_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.property_change(args[0], args[1], args[2], None, true)
 }
 
