@@ -1131,7 +1131,7 @@ fn f_boundp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(lisp.find_symbol_value(symbol) != sym::UNBOUND))
 }
 
-fn f_fboundp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_fboundp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let symbol = lisp.maybe_remove_pos_from_symbol(args[0]);
     let symbol = lisp.check_symbol(symbol)?;
     Ok(bool_value(!lisp.heap.symbol_ref(symbol).function.is_nil()))

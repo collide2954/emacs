@@ -97,28 +97,13 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar_bool(sym::DELETE_BY_MOVING_TO_TRASH, false);
     lisp.defvar(sym::AFTER_INSERT_FILE_FUNCTIONS, Value::NIL);
     lisp.defvar(sym::FILE_NAME_HISTORY, Value::NIL);
-    let invocation = std::env::current_exe().unwrap_or_default();
-    let dir_path = invocation
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let mut idir = normalize_slashes(&dir_path.to_string_lossy());
-    if !idir.ends_with('/') {
-        idir.push('/');
-    }
-    let id = lisp.string(&idir);
-    lisp.defvar(sym::INVOCATION_DIRECTORY, id);
-    let name = invocation
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "emacs".to_string());
-    let iname = lisp.string(&name);
-    lisp.defvar(sym::INVOCATION_NAME, iname);
 }
 
 pub fn normalize_slashes(s: &str) -> String {
     if cfg!(windows) {
-        s.replace('\\', "/")
+        let mut bytes = s.as_bytes().to_vec();
+        dostounix_filename(&mut bytes);
+        String::from_utf8(bytes).expect("ASCII-only changes keep UTF-8 valid")
     } else {
         s.to_string()
     }
@@ -164,21 +149,70 @@ fn home_of(user: &str) -> Option<String> {
     (user == current).then(home_dir)
 }
 
-pub fn file_name_directory(s: &str) -> Option<String> {
-    let idx = s.rfind(is_sep);
-    match idx {
-        Some(i) => Some(s[..=i].to_string()),
-        None if has_drive(s) => Some(s[..2].to_string()),
-        None => None,
+fn is_directory_sep(c: u8) -> bool {
+    c == b'/' || (cfg!(windows) && c == b'\\')
+}
+
+pub fn dostounix_filename(p: &mut [u8]) {
+    let mut i = 0;
+    if p.len() > 1 && p[1] == b':' && p[0].is_ascii_uppercase() {
+        p[0] = p[0].to_ascii_lowercase();
+        i = 2;
+    }
+    for c in &mut p[i..] {
+        if *c == b'\\' {
+            *c = b'/';
+        }
     }
 }
 
-pub fn file_name_nondirectory(s: &str) -> String {
-    match s.rfind(is_sep) {
-        Some(i) => s[i + 1..].to_string(),
-        None if has_drive(s) => s[2..].to_string(),
-        None => s.to_string(),
+pub fn file_name_directory(beg: &[u8]) -> Option<(Vec<u8>, bool)> {
+    let mut p = beg.len();
+    while p != 0
+        && !is_directory_sep(beg[p - 1])
+        && !(cfg!(windows)
+            && beg[p - 1] == b':'
+            && ((p == 2 && !is_directory_sep(beg[0])) || (p == 4 && is_directory_sep(beg[0]))))
+    {
+        p -= 1;
     }
+    if p == 0 {
+        return None;
+    }
+    if !cfg!(windows) {
+        return Some((beg[..p].to_vec(), false));
+    }
+    if beg[p - 1] == b':' {
+        let mut res = Vec::new();
+        let mut b = 0;
+        if p == 4 && is_directory_sep(beg[0]) && beg[1] == b':' {
+            res.extend_from_slice(&beg[..2]);
+            b = 2;
+        }
+        res.push(beg[b].to_ascii_uppercase());
+        res.extend_from_slice(b":/");
+        if res.len() > 3 || !is_directory_sep(res[res.len() - 1]) {
+            res.push(b'/');
+        }
+        dostounix_filename(&mut res);
+        return Some((res, false));
+    }
+    let mut dir = beg[..p].to_vec();
+    dostounix_filename(&mut dir);
+    Some((dir, true))
+}
+
+pub fn file_name_nondirectory(beg: &[u8]) -> &[u8] {
+    let mut p = beg.len();
+    while p != 0
+        && !is_directory_sep(beg[p - 1])
+        && !(cfg!(windows)
+            && beg[p - 1] == b':'
+            && (p == 2 || (p == 4 && is_directory_sep(beg[0]))))
+    {
+        p -= 1;
+    }
+    &beg[p..]
 }
 
 pub fn file_name_as_directory(s: &str) -> String {
@@ -546,14 +580,45 @@ fn string_op(lisp: &mut Lisp, v: Value, op: Value, f: fn(&str) -> Option<String>
     }
 }
 
-fn f_file_name_directory(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    string_op(lisp, args[0], sym::FILE_NAME_DIRECTORY, file_name_directory)
+pub(crate) fn f_file_name_directory(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let filename = lisp.check_string(args[0])?;
+    if let Some(handler) = lisp.find_file_name_handler(filename, sym::FILE_NAME_DIRECTORY)? {
+        let handled = lisp.funcall(handler, &[sym::FILE_NAME_DIRECTORY, filename])?;
+        return Ok(if handled.is_string() {
+            handled
+        } else {
+            Value::NIL
+        });
+    }
+    let multibyte = lisp.string_multibyte(filename);
+    let bytes = lisp.string_bytes(filename).to_vec();
+    match file_name_directory(&bytes) {
+        None => Ok(Value::NIL),
+        Some((dir, w32_case)) => {
+            let tem = lisp.make_string_from_bytes(dir, multibyte);
+            if cfg!(windows) && w32_case && multibyte {
+                let var = lisp.intern("w32-downcase-file-names");
+                if !lisp.find_symbol_value(var).is_nil() {
+                    return crate::casefiddle::f_downcase(lisp, &[tem]);
+                }
+            }
+            Ok(tem)
+        }
+    }
 }
 
-fn f_file_name_nondirectory(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    string_op(lisp, args[0], sym::FILE_NAME_NONDIRECTORY, |s| {
-        Some(file_name_nondirectory(s))
-    })
+pub(crate) fn f_file_name_nondirectory(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let filename = lisp.check_string(args[0])?;
+    if let Some(handler) = lisp.find_file_name_handler(filename, sym::FILE_NAME_NONDIRECTORY)? {
+        let handled = lisp.funcall(handler, &[sym::FILE_NAME_NONDIRECTORY, filename])?;
+        if handled.is_string() {
+            return Ok(handled);
+        }
+        return Err(lisp.error("Invalid handler in `file-name-handler-alist'"));
+    }
+    let multibyte = lisp.string_multibyte(filename);
+    let name = file_name_nondirectory(lisp.string_bytes(filename)).to_vec();
+    Ok(lisp.make_string_from_bytes(name, multibyte))
 }
 
 fn f_unhandled_file_name_directory(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -767,7 +832,7 @@ fn f_make_symbolic_link(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_file_name_absolute_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_file_name_absolute_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let s = lisp.check_string(args[0])?;
     let text = lisp.string_to_rust(s);
     Ok(lisp.bool(file_name_absolute_p(&text)))
@@ -782,7 +847,7 @@ fn predicate(lisp: &mut Lisp, args: &[Value], op: Value, f: fn(&Path) -> bool) -
     Ok(lisp.bool(f(&path)))
 }
 
-fn f_file_exists_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_file_exists_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     predicate(lisp, args, sym::FILE_EXISTS_P, |p| {
         p.exists() || p.symlink_metadata().is_ok()
     })
@@ -840,7 +905,7 @@ fn f_access_file(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_file_symlink_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_file_symlink_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let s = lisp.check_string(args[0])?;
     if let Some(r) = lisp.handled(sym::FILE_SYMLINK_P, &[s])? {
         return Ok(r);

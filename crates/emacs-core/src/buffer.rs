@@ -529,12 +529,9 @@ pub const PER_BUFFER_VARS: &[PerBufferSpec] = &[
     per_buffer!(sym::TEXT_CONVERSION_STYLE, nil, Value::NIL),
 ];
 
-fn emacs_wd() -> std::io::Result<Vec<u8>> {
+pub fn emacs_wd() -> std::io::Result<Vec<u8>> {
     let dir = std::env::current_dir()?;
-    #[cfg(windows)]
-    let bytes = crate::fileio::normalize_slashes(&dir.to_string_lossy()).into_bytes();
-    #[cfg(unix)]
-    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(dir.as_os_str()).to_vec();
+    let bytes = crate::emacs::os_bytes(dir.as_os_str());
     #[cfg(unix)]
     if bytes.first() == Some(&b'(') {
         return Err(std::io::Error::from_raw_os_error(2));
@@ -627,7 +624,7 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::DELETE_AUTO_SAVE_FILES, sym::T);
     lisp.defvar_int(sym::LARGE_HSCROLL_THRESHOLD, 10000);
     lisp.defvar(sym::LONG_LINE_THRESHOLD, Value::fixnum(50000));
-    lisp.defvar(sym::UNDO_OUTER_LIMIT, Value::NIL);
+    lisp.defvar(sym::UNDO_OUTER_LIMIT, Value::fixnum(24_000_000));
     lisp.defvar_int(sym::UNDO_LIMIT, 160_000);
     lisp.defvar_int(sym::UNDO_STRONG_LIMIT, 240_000);
     lisp.defvar(sym::UNDO_INHIBIT_RECORD_POINT, Value::NIL);
@@ -758,7 +755,7 @@ impl Lisp {
     }
 
     pub fn noninteractive(&self) -> bool {
-        self.var_true(sym::NONINTERACTIVE)
+        self.noninteractive
     }
 
     pub fn echo_area_append(&mut self, text: &str) -> LispResult<()> {

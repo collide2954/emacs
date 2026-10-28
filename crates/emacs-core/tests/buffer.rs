@@ -26,8 +26,8 @@ fn startup_default_directory() {
     let mut cwd = std::env::current_dir()
         .expect("cwd")
         .to_string_lossy()
-        .replace('\\', "/");
-    if !cwd.ends_with('/') {
+        .into_owned();
+    if !cwd.ends_with('/') && !(cfg!(windows) && cwd.ends_with('\\')) {
         cwd.push('/');
     }
     let expected = format!("{cwd:?}");

@@ -48,7 +48,8 @@ pub enum SpecBinding {
 
 pub struct Lisp {
     pub heap: Heap,
-    pub startup_noninteractive: bool,
+    pub noninteractive: bool,
+    pub startup: crate::emacs::Startup,
     pub obarray: Value,
     pub specpdl: Vec<SpecBinding>,
     pub handlers: Vec<Handler>,
@@ -218,8 +219,8 @@ pub const ALL_INITS: &[InitFn] = &[
 ];
 
 fn init_emacs_vars(lisp: &mut Lisp) {
-    lisp.defvar_bool(sym::NONINTERACTIVE, lisp.startup_noninteractive);
-    let version = lisp.string("31.0.50");
+    lisp.defvar_bool(sym::NONINTERACTIVE, lisp.noninteractive);
+    let version = lisp.string(crate::emacs::EMACS_VERSION);
     lisp.defvar(sym::EMACS_VERSION, version);
     lisp.defvar(sym::STANDARD_SYNTAX_TABLE_INTERNAL, Value::NIL);
     lisp.defvar(sym::STANDARD_CATEGORY_TABLE_INTERNAL, Value::NIL);
@@ -242,8 +243,13 @@ impl Lisp {
     }
 
     pub fn new_with(noninteractive: bool) -> Lisp {
+        Lisp::boot(crate::emacs::Startup::program(noninteractive))
+    }
+
+    pub fn boot(startup: crate::emacs::Startup) -> Lisp {
         let mut lisp = Lisp {
-            startup_noninteractive: noninteractive,
+            noninteractive: startup.noninteractive1,
+            startup: startup.clone(),
             heap: Heap::new(),
             obarray: Value::NIL,
             specpdl: Vec::new(),
@@ -315,6 +321,8 @@ impl Lisp {
         for init in ALL_INITS {
             init(&mut lisp);
         }
+        lisp.init_cmdargs(&startup).expect("init_cmdargs");
+        lisp.noninteractive = startup.noninteractive;
         lisp.gc_inhibited = 0;
         lisp
     }

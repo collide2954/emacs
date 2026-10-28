@@ -39,7 +39,8 @@ Ported but not yet complete (C kept):
 | --- | --- | --- |
 | `alloc.c`, `data.c`, `eval.c`, `fns.c`, `lread.c`, `print.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
 | `character.c` | `charfns.rs` | `get-byte`, display-table aware `string-width` |
-| `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c`, `emacs.c` | same names | assorted primitives; the overlay DEFUNs in `overlay.rs` are still approximations (only `overlays_in`, `overlays_at` and `sort_overlays` follow C), and `replace_range` is approximated by `replace_range_chars` |
+| `emacs.c` | `emacs.rs` | `kill-emacs` and `shut_down_emacs` (see below); argument handling (`sort_args`, `argmatch`, the option sequence in `main`, `init_cmdargs`) is ported, but `-t` and the daemon options exit with an error because there is no tty frontend and no daemon support |
+| `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c` | same names | assorted primitives; the overlay DEFUNs in `overlay.rs` are still approximations (only `overlays_in`, `overlays_at` and `sort_overlays` follow C), and `replace_range` is approximated by `replace_range_chars` |
 | `cmds.c` | `editfns.rs` | nothing |
 | `dired.c` | `dired.rs` | on Windows, inode, device and link count come from w32.c's fallback (std can't read them without `unsafe`) |
 | `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
@@ -59,7 +60,8 @@ Ported but not yet complete (C kept):
 | `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface`; `internal-char-font` is ported |
 | `fontset.c` | `fontset.rs` | `new-fontset`, `set-fontset-font`, `fontset-info`, `fontset-font` |
 | `xfaces.c` | `xfaces.rs` | GUI and tty face realization, `face-font`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource`; `face_at_buffer_position` is ported |
-| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path and `invisible-p` || `composite.c` | `composite.rs` | shaping on window-system frames |
+| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path and `invisible-p` |
+| `composite.c` | `composite.rs` | shaping on window-system frames |
 
 Window-system frames don't exist yet, so the face, font and composition code stops with
 `unreachable!` on the branches that need them. Realized faces work for the initial frame,
@@ -82,15 +84,22 @@ writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
 `charprop.el` files still need `unidata-gen.el` run by a working Emacs.
 
 `emacs --batch` loads every preloaded file in `loadup.el`, including the `w32-*` files and
-`cus-start.el`, and runs `Snarf-documentation`. Startup (`init_buffer` gives `*scratch*`
-its `default-directory`) then runs `command-line` to the end, where `command-line-1`
-reports "Unknown option ‘--batch’" and calls `kill-emacs`. The cause is `crates/emacs`'s
-`main.rs`: it puts every argument into `command-line-args`, while C's `main` consumes the
-options it handles (`argmatch`, `sort_args`, `skip_args`) and leaves only the rest for
-Lisp. Porting that argument handling from `emacs.c` is the next step. After it:
+`cus-start.el`, runs `Snarf-documentation`, then runs startup to the end. `main.rs`
+decodes the command line as C's `main` does and `Lisp::boot` runs `init_cmdargs`, so
+`emacs --batch --eval EXPR`, `--version` and `--help` work. The port behaves like an
+undumped `temacs`: `top-level` is `(load "loadup.el")` unless `-nl` is given.
+`Lisp::noninteractive` is C's `noninteractive` and the Lisp variable is `noninteractive1`;
+they differ after `-x`, as in C.
+
+What remains on this path:
 
 - `kill-emacs` is still an early approximation: it lacks `shut_down_emacs` and
-  `do-auto-save`, and it exits with 1 for a non-integer ARG where C exits successfully.
+  `do-auto-save`, and it exits with 1 for a non-integer ARG where C exits successfully, so
+  a plain `emacs --batch` currently exits with 1.
+- `w32.c`'s `init_environment` isn't ported, so `LANG` and the other registry defaults are
+  missing on Windows and `set-locale-environment` leaves `locale-coding-system` nil. That
+  skips startup.el's Windows conversion of `default-directory`, which therefore keeps C's
+  raw `GetCurrentDirectory` form (`C:\Users\...\`).
 - `set-buffer-auto-saved` and `recent-auto-save-p` are stubs.
 - `do-auto-save` needs `safe_run_hooks`, the echo-area message stack (`push_message`,
   `restore_message`), `auto_saving` in `write-region`, `record_auto_save`, and `sleep-for`
