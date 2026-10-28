@@ -139,6 +139,65 @@ impl Lisp {
         self.kboards.push(kb);
         self.kboards.len() - 1
     }
+
+    pub fn not_single_kboard_state(&mut self, kboard: usize) {
+        if kboard == self.current_kboard {
+            self.single_kboard = false;
+        }
+    }
+
+    pub fn push_kboard(&mut self, k: usize) {
+        self.kboard_stack.push(self.current_kboard);
+        self.current_kboard = k;
+    }
+
+    pub fn pop_kboard(&mut self) {
+        let p = *self.kboard_stack.last().expect("kboard stack entry");
+        let found = self
+            .terminals
+            .list
+            .iter()
+            .any(|&t| self.terminal(t).kboard == Some(p));
+        if found {
+            self.current_kboard = p;
+        } else {
+            let selected = self.frames.selected_frame;
+            self.current_kboard = self.frame_kboard(selected).expect("frame kboard");
+            self.single_kboard = false;
+        }
+        self.kboard_stack.pop();
+    }
+
+    pub fn temporarily_switch_to_single_kboard(&mut self, f: Option<Value>) -> LispResult<()> {
+        let was_locked = self.single_kboard;
+        if was_locked {
+            if let Some(f) = f
+                && self.frame_kboard(f) != Some(self.current_kboard)
+            {
+                let id = self.terminal(self.frame(f).terminal).id;
+                return Err(self.error(&format!("Terminal {id} is locked, cannot read from it")));
+            }
+            self.push_kboard(self.current_kboard);
+        } else if let Some(f) = f {
+            self.current_kboard = self.frame_kboard(f).expect("frame kboard");
+        }
+        self.single_kboard = true;
+        self.record_unwind(restore_kboard_configuration, self.bool(was_locked));
+        Ok(())
+    }
+}
+
+fn restore_kboard_configuration(lisp: &mut Lisp, was_locked: Value) -> LispResult<()> {
+    let was_locked = !was_locked.is_nil();
+    lisp.single_kboard = was_locked;
+    if was_locked {
+        let prev = lisp.current_kboard;
+        lisp.pop_kboard();
+        if lisp.single_kboard && lisp.current_kboard != prev {
+            unreachable!();
+        }
+    }
+    Ok(())
 }
 
 fn init_while_no_input_ignore_events(lisp: &mut Lisp) -> Value {

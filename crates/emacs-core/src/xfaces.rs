@@ -1784,6 +1784,138 @@ impl Lisp {
         r
     }
 
+    pub fn face_at_buffer_position(
+        &mut self,
+        w: Value,
+        pos: usize,
+        limit: usize,
+        mouse: bool,
+        base_face_id: Option<usize>,
+        attr_filter: usize,
+    ) -> LispResult<(usize, usize)> {
+        let base = self.stack.len();
+        let r = self.face_at_buffer_position_1(w, pos, limit, mouse, base_face_id, attr_filter);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn face_at_buffer_position_1(
+        &mut self,
+        w: Value,
+        pos: usize,
+        limit: usize,
+        mouse: bool,
+        base_face_id: Option<usize>,
+        attr_filter: usize,
+    ) -> LispResult<(usize, usize)> {
+        let f = self.window(w).frame;
+        let contents = self.window(w).contents;
+        let propname = if mouse { sym::MOUSE_FACE } else { sym::FACE };
+        let position = Value::fixnum(pos as i64);
+        let mut endpos = self.cur().zv;
+        let prop = crate::textprop::f_get_text_property(self, &[position, propname, contents])?;
+        self.stack.push(prop);
+        let limit1 = Value::fixnum(limit.min(endpos) as i64);
+        let end = crate::textprop::f_next_single_property_change(
+            self,
+            &[position, propname, contents, limit1],
+        )?;
+        if let Some(e) = end.as_fixnum() {
+            endpos = e as usize;
+        }
+        let (overlay_vec, next_overlay) = self.overlays_at(pos);
+        self.stack.extend_from_slice(&overlay_vec);
+        let next_overlay = next_overlay.min(self.cur().zv);
+        if next_overlay < endpos {
+            endpos = next_overlay;
+        }
+        let face_id = match base_face_id {
+            Some(id) => id,
+            None if self.find_symbol_value(sym::FACE_REMAPPING_ALIST).is_nil() => DEFAULT_FACE_ID,
+            None => self.lookup_basic_face(Some(w), f, DEFAULT_FACE_ID)?,
+        };
+        let default_face_id = if self.face_from_id(f, face_id).is_some() {
+            face_id
+        } else {
+            let used = self
+                .frame(f)
+                .face_cache
+                .as_ref()
+                .expect("frame has no face cache")
+                .used();
+            if used == 0 {
+                self.recompute_basic_faces(f)?;
+            }
+            let id = self.lookup_basic_face(Some(w), f, DEFAULT_FACE_ID)?;
+            self.face_from_id(f, id).expect("default face").id
+        };
+        if overlay_vec.is_empty() && prop.is_nil() {
+            return Ok((default_face_id, endpos));
+        }
+        let lface = self
+            .face_from_id(f, default_face_id)
+            .expect("default face")
+            .lface;
+        let attrs = self.attrs_push_from(&lface);
+        if !prop.is_nil() {
+            self.merge_face_ref(
+                Some(w),
+                Some(f),
+                prop,
+                attrs,
+                true,
+                &mut MergePoints::new(),
+                attr_filter,
+            )?;
+        }
+        let overlays = self.sort_overlays(&overlay_vec, Some(w));
+        if mouse {
+            let mut prop = Value::NIL;
+            let mut i = overlays.len();
+            while i > 0 && prop.is_nil() {
+                i -= 1;
+                prop = self.overlay_get(overlays[i], propname);
+                if !prop.is_nil() {
+                    self.stack[attrs..attrs + N].copy_from_slice(&lface);
+                    self.merge_face_ref(
+                        Some(w),
+                        Some(f),
+                        prop,
+                        attrs,
+                        true,
+                        &mut MergePoints::new(),
+                        attr_filter,
+                    )?;
+                }
+                let oendpos = self.overlay(overlays[i]).end;
+                if oendpos < endpos {
+                    endpos = oendpos;
+                }
+            }
+        } else {
+            for &ov in &overlays {
+                let prop = self.overlay_get(ov, propname);
+                if !prop.is_nil() {
+                    self.merge_face_ref(
+                        Some(w),
+                        Some(f),
+                        prop,
+                        attrs,
+                        true,
+                        &mut MergePoints::new(),
+                        attr_filter,
+                    )?;
+                }
+                let oendpos = self.overlay(ov).end;
+                if oendpos < endpos {
+                    endpos = oendpos;
+                }
+            }
+        }
+        let merged = self.attrs_snapshot(attrs);
+        Ok((self.lookup_face(f, &merged)?, endpos))
+    }
+
     pub fn lookup_basic_face(
         &mut self,
         w: Option<Value>,

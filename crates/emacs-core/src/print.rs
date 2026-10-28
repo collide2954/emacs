@@ -791,6 +791,7 @@ impl Lisp {
                 let _ = self.stderr.write_all(s.as_bytes());
             } else {
                 let _ = self.stdout.write_all(s.as_bytes());
+                self.xdisp.noninteractive_need_newline = true;
             }
             return Ok(());
         }
@@ -815,6 +816,14 @@ impl Lisp {
     }
 
     pub fn error_message_string(&mut self, obj: Value) -> LispResult<String> {
+        let base = self.stack.len();
+        self.stack.push(obj);
+        let r = self.error_message_string_1(obj);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn error_message_string_1(&mut self, obj: Value) -> LispResult<String> {
         let errname = self.car_safe(obj);
         let data = self.cdr_safe(obj);
         if errname == sym::ERROR {

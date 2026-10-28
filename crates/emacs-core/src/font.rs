@@ -1504,7 +1504,48 @@ pub const SUBRS: &[crate::subr::Subr] = &[
     crate::subr::Subr::fixed("font-get", 2, 2, f_font_get),
     crate::subr::Subr::fixed("font-put", 3, 3, f_font_put),
     crate::subr::Subr::fixed("font-xlfd-name", 1, 3, f_font_xlfd_name),
+    crate::subr::Subr::fixed("internal-char-font", 1, 2, f_internal_char_font),
 ];
+
+fn f_internal_char_font(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (position, ch) = (args[0], args[1]);
+    let c: i64;
+    let f: Value;
+    if position.is_nil() {
+        c = lisp.check_character(ch)? as i64;
+        f = lisp.frames.selected_frame;
+        lisp.lookup_basic_face(None, f, crate::xfaces::DEFAULT_FACE_ID)?;
+    } else {
+        let fixed_pos = lisp.fix_position(position)?;
+        let (begv, zv) = (lisp.cur().begv as i64, lisp.cur().zv as i64);
+        if !(begv..zv).contains(&fixed_pos) {
+            return Err(lisp.args_out_of_range3(position, Value::fixnum(begv), Value::fixnum(zv)));
+        }
+        let pos = fixed_pos as usize;
+        let pos_byte = lisp.cur().text.char_to_byte(pos);
+        c = if ch.is_nil() {
+            lisp.cur().text.char_at_byte(pos_byte) as i64
+        } else {
+            lisp.check_fixnat(ch)?
+        };
+        let current = lisp.current_buffer;
+        let window = crate::window::f_get_buffer_window(lisp, &[current, Value::NIL])?;
+        if window.is_nil() {
+            return Ok(Value::NIL);
+        }
+        f = lisp.window(window).frame;
+        lisp.face_at_buffer_position(window, pos, pos + 100, false, None, 0)?;
+    }
+    if !(0..=crate::character::MAX_CHAR as i64).contains(&c) {
+        return Ok(Value::NIL);
+    }
+    match lisp.frame(f).output_method {
+        crate::terminal::OutputMethod::Initial => {
+            let t = lisp.frame(f).terminal;
+            Ok(lisp.terminal_glyph_code(t, c as u32))
+        }
+    }
+}
 
 fn build_style_table(lisp: &mut Lisp, entries: &[(i64, &[&str])]) -> Value {
     let mut rows = Vec::with_capacity(entries.len());

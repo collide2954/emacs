@@ -39,7 +39,13 @@ Ported but not yet complete (C kept):
 | --- | --- | --- |
 | `alloc.c`, `data.c`, `eval.c`, `fns.c`, `lread.c`, `print.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
 | `character.c` | `charfns.rs` | `get-byte`, display-table aware `string-width` |
-| `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c`, `emacs.c` | same names | assorted primitives |
+| `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c`, `emacs.c` | same names | assorted primitives; the overlay DEFUNs in `overlay.rs` are still approximations (only `overlays_in`, `overlays_at` and `sort_overlays` follow C), and `replace_range` is approximated by `replace_range_chars` |
+| `cmds.c` | `editfns.rs` | nothing |
+| `dired.c` | `dired.rs` | on Windows, inode, device and link count come from w32.c's fallback (std can't read them without `unsafe`) |
+| `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
+| `process.c` | `process.rs` | everything but `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask) |
+| `term.c` | `term.rs` | `tty-frame-list-z-order`, `tty-frame-at` (need frame z-order); there is no tty frontend, so `decode_tty_terminal` never finds a tty |
+| `w32proc.c` | `w32proc.rs` | the DEFUNs (they need Win32 calls); it has the variables |
 | `keyboard.c` | `keyboard.rs` | everything except event modifier parsing |
 | `syntax.c` | `syntax.rs` | the regex engine still ignores `syntax-table` text properties |
 | `indent.c` | `indent.rs` | `compute-motion`, `vertical-motion`, `line-number-display-width` (they need the display iterator); an image `display` spec signals an error |
@@ -50,29 +56,34 @@ Ported but not yet complete (C kept):
 | `frame.c` | `frame.rs` | `delete-frame`, `adjust_frame_size`, `x-create-frame` |
 | `window.c` | `window.rs` | splitting, resizing, `window-list` |
 | `minibuf.c` | `minibuf.rs` | interactive reading (needs the command loop; it signals an error) |
-| `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface` |
+| `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface`; `internal-char-font` is ported |
 | `fontset.c` | `fontset.rs` | `new-fontset`, `set-fontset-font`, `fontset-info`, `fontset-font` |
-| `xfaces.c` | `xfaces.rs` | GUI and tty face realization, `face-font`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource` |
-| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog` and `invisible-p` |
-| `composite.c` | `composite.rs` | shaping on window-system frames |
+| `xfaces.c` | `xfaces.rs` | GUI and tty face realization, `face-font`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource`; `face_at_buffer_position` is ported |
+| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path and `invisible-p` || `composite.c` | `composite.rs` | shaping on window-system frames |
 
 Window-system frames don't exist yet, so the face, font and composition code stops with
 `unreachable!` on the branches that need them. Realized faces work for the initial frame,
 which gets plain realized faces as in C.
 
-`doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables and
-`frame-or-buffer-changed-p`. `callint.rs`, `dired.rs`, `filelock.rs`, `process.rs`,
-`image.rs`, `gnutls.rs`, `treesit.rs`, `macros.rs`, `term.rs` and `w32fns.rs` hold only
-those files' variables, which the unmodified Lisp needs (cus-start.el checks them).
-No image, GnuTLS or tree-sitter library is linked, so their version variables are -1.
+`doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables,
+`frame-or-buffer-changed-p`, `ding` and `internal-show-cursor(-p)`. `filelock.rs`,
+`image.rs`, `gnutls.rs`, `treesit.rs`, `macros.rs` and `w32fns.rs` hold only those files'
+variables, which the unmodified Lisp needs (cus-start.el checks them). No image, GnuTLS or
+tree-sitter library is linked, so their version variables are -1.
+
+GC roots for non-local exits: a signal or throw pushes its values on `Lisp::flow_roots`,
+because Rust code can run Lisp (for example `unbind_to`) while an `Err` is still on its
+way to the handler, where C's conservative stack scan would keep it alive. A catch keeps
+the caught values rooted while its handler runs; `pop_handler` and a finished catch
+truncate back to the handler's level.
 
 `crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
 writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
 `charprop.el` files still need `unidata-gen.el` run by a working Emacs.
 
 `emacs --batch` loads every preloaded file in `loadup.el`, including the `w32-*` files and
-`cus-start.el`, and runs `Snarf-documentation`. Startup then stops on `directory-files`
-(`dired.c`).
+`cus-start.el`, and runs `Snarf-documentation`. Startup (`init_buffer` now gives
+`*scratch*` its `default-directory`) then stops on `set-window-buffer` (`window.c`).
 
 `emacs` without `--batch` stops while loading `window.el`. This is expected for now: the
 preloaded Lisp loads from source, so eager macro-expansion autoloads `flymake-log`, and

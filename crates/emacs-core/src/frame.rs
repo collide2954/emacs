@@ -558,6 +558,17 @@ impl Lisp {
         }
     }
 
+    pub fn frame_make_pointer_invisible(&mut self, f: Value) {
+        if !self.find_symbol_value(sym::MAKE_POINTER_INVISIBLE).is_nil()
+            && self.frame_live_p(f)
+            && !self.frame(f).flags.pointer_invisible
+        {
+            match self.terminal(self.frame(f).terminal).kind {
+                OutputMethod::Initial => {}
+            }
+        }
+    }
+
     pub fn get_frame_param(&self, f: Value, prop: Value) -> Value {
         let cell = self.assq(prop, self.frame(f).param_alist);
         self.cdr_safe(cell)

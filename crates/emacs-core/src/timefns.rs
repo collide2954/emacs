@@ -1078,7 +1078,7 @@ impl Lisp {
         self.list(&[hi, Value::fixnum(lo), Value::fixnum(us), Value::fixnum(ps)])
     }
 
-    fn make_lisp_time(&mut self, sec: i64, ns: i64) -> Value {
+    pub(crate) fn make_lisp_time(&mut self, sec: i64, ns: i64) -> Value {
         if self.current_time_list() {
             let hi = self.integer(sec >> LO_TIME_BITS);
             self.list(&[

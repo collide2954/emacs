@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use crate::buffer::Overlay;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
@@ -5,6 +7,54 @@ use crate::object::Vectorlike;
 use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
+
+struct SortvecItem {
+    overlay: Value,
+    beg: usize,
+    end: usize,
+    priority: i64,
+    spriority: i64,
+}
+
+fn compare_overlays(s1: &SortvecItem, s2: &SortvecItem) -> Ordering {
+    if s1.priority != s2.priority {
+        if s1.priority < s2.priority {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    } else if s1.beg < s2.beg {
+        if s1.end < s2.end && s1.spriority > s2.spriority {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        }
+    } else if s1.beg > s2.beg {
+        if s1.end > s2.end && s1.spriority < s2.spriority {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    } else if s1.end != s2.end {
+        if s2.end < s1.end {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    } else if s1.spriority != s2.spriority {
+        if s1.spriority < s2.spriority {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        }
+    } else if s1.overlay == s2.overlay {
+        Ordering::Equal
+    } else if s1.overlay.bits() < s2.overlay.bits() {
+        Ordering::Less
+    } else {
+        Ordering::Greater
+    }
+}
 
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("overlayp", 1, 1, f_overlayp),
@@ -62,6 +112,122 @@ impl Lisp {
                 .unwrap_or(0);
         }
         0
+    }
+
+    pub fn overlay_get(&self, overlay: Value, prop: Value) -> Value {
+        let plist = self.overlay(overlay).plist;
+        let mut tail = plist;
+        while tail.is_cons() {
+            if self.xcar(tail) == prop {
+                return self.car_safe(self.xcdr(tail));
+            }
+            tail = self.cdr_safe(self.xcdr(tail));
+        }
+        let category = self.plist_get_eq(plist, sym::CATEGORY);
+        if category.is_symbol() && !category.is_nil() {
+            return self.get(category, prop);
+        }
+        Value::NIL
+    }
+
+    pub fn overlays_in(
+        &self,
+        beg: usize,
+        end: usize,
+        empty: bool,
+        trailing: bool,
+    ) -> (Vec<Value>, usize) {
+        let b = self.cur();
+        let z = b.z();
+        let mut next = z;
+        let mut search_end = z;
+        if end >= z && (empty || trailing) {
+            search_end += 1;
+        }
+        let mut nodes: Vec<Value> = b
+            .overlays
+            .iter()
+            .copied()
+            .filter(|&o| {
+                let ov = self.overlay(o);
+                (beg < ov.end && ov.start < search_end) || (ov.start == ov.end && beg == ov.start)
+            })
+            .collect();
+        nodes.sort_by_key(|&o| self.overlay(o).start);
+        let mut vec = Vec::new();
+        for o in nodes {
+            let ov = self.overlay(o);
+            if ov.start > end {
+                next = next.min(ov.start);
+                break;
+            } else if ov.start == end {
+                next = ov.start;
+                if (!empty || end < z) && beg < end {
+                    break;
+                }
+                if empty && ov.start != ov.end {
+                    continue;
+                }
+            }
+            if !empty && ov.start == ov.end {
+                continue;
+            }
+            vec.push(o);
+        }
+        (vec, if next != 0 { next } else { z })
+    }
+
+    pub fn overlays_at(&self, pos: usize) -> (Vec<Value>, usize) {
+        self.overlays_in(pos, pos + 1, false, true)
+    }
+
+    fn overlay_matches_window(&self, w: Value, ov: Value) -> bool {
+        let window = self.overlay_get(ov, sym::WINDOW);
+        !self.is_window(window) || window == w
+    }
+
+    fn make_sortvec_item(&self, overlay: Value) -> SortvecItem {
+        let ov = self.overlay(overlay);
+        let tem = self.overlay_get(overlay, sym::PRIORITY);
+        let (priority, spriority) = if let Some(n) = tem.as_fixnum() {
+            (n, 0)
+        } else if tem.is_cons() {
+            (
+                self.xcar(tem).as_fixnum().unwrap_or(0),
+                self.xcdr(tem).as_fixnum().unwrap_or(0),
+            )
+        } else {
+            (0, 0)
+        };
+        SortvecItem {
+            overlay,
+            beg: ov.start,
+            end: ov.end,
+            priority,
+            spriority,
+        }
+    }
+
+    pub fn sort_overlays(&self, overlay_vec: &[Value], w: Option<Value>) -> Vec<Value> {
+        let mut sortvec = Vec::with_capacity(overlay_vec.len());
+        for &overlay in overlay_vec {
+            if self.is_overlay(overlay) && !self.overlay(overlay).buffer.is_nil() {
+                if let Some(w) = w
+                    && !self.overlay_matches_window(w, overlay)
+                {
+                    continue;
+                }
+                sortvec.push(self.make_sortvec_item(overlay));
+            }
+        }
+        for i in 1..sortvec.len() {
+            let mut j = i;
+            while j > 0 && compare_overlays(&sortvec[j - 1], &sortvec[j]) == Ordering::Greater {
+                sortvec.swap(j - 1, j);
+                j -= 1;
+            }
+        }
+        sortvec.into_iter().map(|s| s.overlay).collect()
     }
 
     pub fn sorted_overlays_at(&self, buffer: Value, pos: usize) -> Vec<Value> {
@@ -407,19 +573,7 @@ fn f_overlay_recenter(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
 
 fn f_overlay_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let o = lisp.check_overlay(args[0])?;
-    let plist = lisp.overlay(o).plist;
-    let mut tail = plist;
-    while tail.is_cons() {
-        if lisp.xcar(tail) == args[1] {
-            return Ok(lisp.car_safe(lisp.xcdr(tail)));
-        }
-        tail = lisp.cdr_safe(lisp.xcdr(tail));
-    }
-    let category = lisp.plist_get_eq(plist, sym::CATEGORY);
-    if category.is_symbol() && !category.is_nil() {
-        return Ok(lisp.get(category, args[1]));
-    }
-    Ok(Value::NIL)
+    Ok(lisp.overlay_get(o, args[1]))
 }
 
 fn f_overlay_put(lisp: &mut Lisp, args: &[Value]) -> LispResult {

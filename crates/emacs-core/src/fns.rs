@@ -1938,7 +1938,7 @@ impl Lisp {
     }
 }
 
-fn f_sort(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_sort(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let seq = args[0];
     let mut key = Value::NIL;
     let mut lessp = Value::NIL;

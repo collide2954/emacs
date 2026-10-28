@@ -185,6 +185,12 @@ impl Lisp {
         }
     }
 
+    pub fn terminal_glyph_code(&self, t: Value, _ch: u32) -> Value {
+        match self.terminal(t).kind {
+            OutputMethod::Initial => Value::NIL,
+        }
+    }
+
     pub fn terminal_type_symbol(&self, terminal: Value) -> Value {
         match self.terminal(terminal).kind {
             OutputMethod::Initial => sym::T,

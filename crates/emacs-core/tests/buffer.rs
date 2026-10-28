@@ -22,6 +22,27 @@ fn buffers_exist_at_startup() {
 }
 
 #[test]
+fn startup_default_directory() {
+    let mut cwd = std::env::current_dir()
+        .expect("cwd")
+        .to_string_lossy()
+        .replace('\\', "/");
+    if !cwd.ends_with('/') {
+        cwd.push('/');
+    }
+    let expected = format!("{cwd:?}");
+    check(&[
+        ("default-directory", expected.as_str()),
+        ("(multibyte-string-p default-directory)", "nil"),
+        ("(default-value 'default-directory)", "nil"),
+        (
+            "(equal default-directory (save-current-buffer (set-buffer \" *Minibuf-0*\") default-directory))",
+            "t",
+        ),
+    ]);
+}
+
+#[test]
 fn insertion_and_point() {
     check(&[
         ("(insert \"hello\")", "nil"),
@@ -62,6 +83,10 @@ fn deletion() {
         ("(buffer-size)", "0"),
         ("(insert \"xyz\")", "nil"),
         ("(goto-char 2)", "2"),
+        (
+            "(progn (fset 'undo-auto-amalgamate (function (lambda ()))) nil)",
+            "nil",
+        ),
         ("(delete-char 1)", "nil"),
         ("(buffer-string)", "\"xz\""),
         ("(delete-char 5)", "error: (end-of-buffer)"),

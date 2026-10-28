@@ -97,13 +97,6 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar_bool(sym::DELETE_BY_MOVING_TO_TRASH, false);
     lisp.defvar(sym::AFTER_INSERT_FILE_FUNCTIONS, Value::NIL);
     lisp.defvar(sym::FILE_NAME_HISTORY, Value::NIL);
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let mut dir = normalize_slashes(&cwd.to_string_lossy());
-    if !dir.ends_with('/') {
-        dir.push('/');
-    }
-    let d = lisp.string(&dir);
-    lisp.set_default(sym::DEFAULT_DIRECTORY, d).ok();
     let invocation = std::env::current_exe().unwrap_or_default();
     let dir_path = invocation
         .parent()
@@ -534,7 +527,7 @@ fn f_zero(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::fixnum(0))
 }
 
-fn f_find_file_name_handler(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_find_file_name_handler(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let filename = lisp.check_string(args[0])?;
     Ok(lisp
         .find_file_name_handler(filename, args[1])?
@@ -569,7 +562,7 @@ fn f_unhandled_file_name_directory(lisp: &mut Lisp, args: &[Value]) -> LispResul
     Ok(lisp.string(&file_name_as_directory(&text)))
 }
 
-fn f_file_name_as_directory(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_file_name_as_directory(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     string_op(lisp, args[0], sym::FILE_NAME_AS_DIRECTORY, |s| {
         Some(file_name_as_directory(s))
     })
@@ -581,7 +574,7 @@ fn f_directory_name_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.bool(text.ends_with(is_sep)))
 }
 
-fn f_directory_file_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_directory_file_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     string_op(lisp, args[0], sym::DIRECTORY_FILE_NAME, |s| {
         Some(directory_file_name(s))
     })
@@ -657,7 +650,7 @@ fn f_file_name_concat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.string(&out))
 }
 
-fn f_expand_file_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_expand_file_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.expand_file_name(args[0], args[1])
 }
 
@@ -1049,7 +1042,7 @@ impl Lisp {
         if pos > t.bytes() { 0 } else { t.byte_at(pos) }
     }
 
-    fn set_pt_both(&mut self, charpos: usize, bytepos: usize) {
+    pub(crate) fn set_pt_both(&mut self, charpos: usize, bytepos: usize) {
         let b = self.cur_mut();
         b.pt = charpos;
         b.pt_byte = bytepos;
@@ -2070,12 +2063,15 @@ fn f_write_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         let modiff = lisp.cur().text.modiff;
         lisp.cur_mut().text.save_modiff = modiff;
     }
-    if visit.is_nil() || visit == sym::T {
-        let name = lisp.string_to_rust(expanded);
-        if !lisp.noninteractive() {
-            let msg = lisp.string(&format!("Wrote {name}"));
-            lisp.message_string(msg)?;
-        }
+    if (visit.is_nil() || visit == sym::T) && !lisp.noninteractive() {
+        let format = if append.is_fixnum() || append.is_float() || lisp.is_bignum(append) {
+            "Updated %s"
+        } else if !append.is_nil() {
+            "Added to %s"
+        } else {
+            "Wrote %s"
+        };
+        lisp.message_with_string(format, expanded, true)?;
     }
     lisp.stack.pop();
     Ok(Value::NIL)

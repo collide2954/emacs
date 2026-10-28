@@ -70,6 +70,129 @@ fn f_invisible_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 #[derive(Default)]
 pub struct Xdisp {
     pub message_log_need_newline: bool,
+    pub noninteractive_need_newline: bool,
+    pub redisplaying_p: bool,
+}
+
+impl Lisp {
+    pub fn message_log_maybe_newline(&mut self) -> LispResult<()> {
+        if self.xdisp.message_log_need_newline {
+            self.message_dolog(b"", true, false)?;
+        }
+        Ok(())
+    }
+
+    pub fn cancel_echoing(&mut self) {
+        let kb = self.current_kboard;
+        if let Some(kboard) = self.kboards.get_mut(kb) {
+            kboard.vars[crate::keyboard::Kvar::EchoString as usize] = Value::NIL;
+            kboard.vars[crate::keyboard::Kvar::EchoPrompt as usize] = Value::NIL;
+        }
+    }
+
+    pub fn clear_message(&mut self, current_p: bool) -> LispResult<()> {
+        if current_p && !self.var_true(sym::INHIBIT_MESSAGE) {
+            let mut preserve = Value::NIL;
+            let function = self.find_symbol_value(sym::CLEAR_MESSAGE_FUNCTION);
+            if self.functionp(function) && self.gc_inhibited == 0 {
+                preserve = if self.var_true(sym::INHIBIT_EVAL_DURING_REDISPLAY) {
+                    sym::UNBOUND
+                } else {
+                    let count = self.specpdl.len();
+                    self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+                    let r = self.safe_calln(function, &[]);
+                    self.unbind_to_value(count, r)?
+                };
+            }
+            if preserve != sym::DONT_CLEAR_MESSAGE {
+                self.set_plain_value(sym::CURRENT_MESSAGE_INTERNAL, Value::NIL);
+            }
+        }
+        Ok(())
+    }
+
+    fn log_message(&mut self, m: Value) -> LispResult<()> {
+        self.clear_message(true)?;
+        self.cancel_echoing();
+        self.message_log_maybe_newline()?;
+        if m.is_string() {
+            let bytes = self.string_bytes(m).to_vec();
+            let multibyte = self.string_multibyte(m);
+            self.message_dolog(&bytes, true, multibyte)?;
+        }
+        Ok(())
+    }
+
+    pub fn message3(&mut self, m: Value) -> LispResult<()> {
+        let base = self.stack.len();
+        self.stack.push(m);
+        let r = self.log_message(m).and_then(|()| {
+            if self.var_true(sym::INHIBIT_MESSAGE) {
+                Ok(())
+            } else {
+                self.message3_nolog(m)
+            }
+        });
+        self.stack.truncate(base);
+        r
+    }
+
+    pub fn message3_nolog(&mut self, m: Value) -> LispResult<()> {
+        let sf = self.frames.selected_frame;
+        match self.frame(sf).output_method {
+            crate::terminal::OutputMethod::Initial => self.message_to_stderr(m),
+        }
+    }
+
+    fn errwrite(&mut self, bytes: &[u8]) {
+        use std::io::Write;
+        let _ = self.stderr.write_all(bytes);
+        let _ = self.stderr.flush();
+    }
+
+    pub fn message_to_stderr(&mut self, m: Value) -> LispResult<()> {
+        if self.xdisp.noninteractive_need_newline {
+            self.xdisp.noninteractive_need_newline = false;
+            self.errwrite(b"\n");
+        }
+        if m.is_string() {
+            let mut coding_system = self.find_symbol_value(sym::LOCALE_CODING_SYSTEM);
+            let for_write = self.find_symbol_value(sym::CODING_SYSTEM_FOR_WRITE);
+            if !for_write.is_nil() {
+                coding_system = for_write;
+            }
+            let s = if coding_system.is_nil() {
+                m
+            } else {
+                self.code_convert_string_norecord(m, coding_system, true)?
+            };
+            let bytes = self.string_bytes(s).to_vec();
+            self.errwrite(&bytes);
+        }
+        if m.is_string() || !self.var_true(sym::CURSOR_IN_ECHO_AREA) {
+            self.errwrite(b"\n");
+        }
+        Ok(())
+    }
+
+    pub fn message_with_string(&mut self, m: &str, string: Value, log: bool) -> LispResult<()> {
+        self.check_string(string)?;
+        let noninteractive = self.noninteractive();
+        let interactive =
+            !noninteractive && self.find_symbol_value(sym::EXECUTING_KBD_MACRO).is_nil();
+        if !noninteractive && !interactive {
+            return Ok(());
+        }
+        let fmt = self.string(m);
+        let msg = crate::editfns::f_format_message(self, &[fmt, string])?;
+        if noninteractive {
+            self.message_to_stderr(msg)
+        } else if log {
+            self.message3(msg)
+        } else {
+            self.message3_nolog(msg)
+        }
+    }
 }
 
 pub fn init_vars(lisp: &mut Lisp) {

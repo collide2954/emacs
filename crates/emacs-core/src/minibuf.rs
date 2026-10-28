@@ -1321,7 +1321,7 @@ fn f_completing_read(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 impl Lisp {
-    fn buffer_downcase(&self, c: u32) -> u32 {
+    pub(crate) fn buffer_downcase(&self, c: u32) -> u32 {
         let table = self.cur().downcase_table;
         if self.is_char_table(table)
             && let Some(n) = self.char_table_ref(table, c).as_fixnum()

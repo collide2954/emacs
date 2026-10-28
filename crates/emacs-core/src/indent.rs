@@ -613,7 +613,7 @@ fn f_current_indentation(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.position_indentation(pos_byte)?))
 }
 
-fn f_move_to_column(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_move_to_column(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (column, force) = (args[0], args[1]);
     let goal = match column.as_fixnum() {
         Some(n) if n >= 0 => n,

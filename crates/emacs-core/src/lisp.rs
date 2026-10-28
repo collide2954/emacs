@@ -52,6 +52,7 @@ pub struct Lisp {
     pub obarray: Value,
     pub specpdl: Vec<SpecBinding>,
     pub handlers: Vec<Handler>,
+    pub flow_roots: Vec<Value>,
     pub stack: Vec<Value>,
     pub lisp_eval_depth: i64,
     pub gc_inhibited: usize,
@@ -88,6 +89,8 @@ pub struct Lisp {
     pub kboards: Vec<crate::keyboard::Kboard>,
     pub current_kboard: usize,
     pub initial_kboard: usize,
+    pub single_kboard: bool,
+    pub kboard_stack: Vec<usize>,
     pub terminals: crate::terminal::Terminals,
     pub frames: crate::frame::Frames,
     pub windows: crate::window::Windows,
@@ -151,6 +154,10 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::dispnew::SUBRS,
     crate::xdisp::SUBRS,
     crate::indent::SUBRS,
+    crate::dired::SUBRS,
+    crate::callint::SUBRS,
+    crate::process::SUBRS,
+    crate::term::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -185,6 +192,7 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::process::init_vars,
     crate::term::init_vars,
     crate::w32fns::init_vars,
+    crate::w32proc::init_vars,
     crate::dispnew::init_vars,
     crate::window::init_vars,
     crate::keymap::init_vars,
@@ -206,6 +214,7 @@ pub const ALL_INITS: &[InitFn] = &[
     init_first_buffers,
     crate::minibuf::init_minibuf_once,
     crate::window::init_window_once,
+    crate::buffer::init_buffer,
 ];
 
 fn init_emacs_vars(lisp: &mut Lisp) {
@@ -239,6 +248,7 @@ impl Lisp {
             obarray: Value::NIL,
             specpdl: Vec::new(),
             handlers: Vec::new(),
+            flow_roots: Vec::new(),
             stack: Vec::new(),
             lisp_eval_depth: 0,
             gc_inhibited: 1,
@@ -274,6 +284,8 @@ impl Lisp {
             infile: None,
             kboards: Vec::new(),
             current_kboard: 0,
+            single_kboard: false,
+            kboard_stack: Vec::new(),
             initial_kboard: 0,
             terminals: crate::terminal::Terminals::default(),
             frames: crate::frame::Frames::default(),
@@ -877,13 +889,25 @@ impl Lisp {
             kind,
             specpdl: self.specpdl.len(),
             stack: self.stack.len(),
+            flow_roots: self.flow_roots.len(),
             eval_depth: self.lisp_eval_depth,
         });
         self.handlers.len() - 1
     }
 
     pub fn pop_handler(&mut self, index: usize) {
+        if let Some(h) = self.handlers.get(index) {
+            let level = h.flow_roots;
+            self.flow_roots.truncate(level);
+        }
         self.handlers.truncate(index);
+    }
+
+    pub fn finish_catch<T>(&mut self, level: usize, result: LispResult<T>) -> LispResult<T> {
+        if result.is_ok() {
+            self.flow_roots.truncate(level);
+        }
+        result
     }
 
     pub fn catch_all<F>(&mut self, body: F) -> LispResult
@@ -899,7 +923,7 @@ impl Lisp {
             }
             Err(flow) if flow.target() == index || flow.target() == UNCAUGHT => {
                 let flow = self.unwind_to_handler(index, flow)?;
-                self.pop_handler(index);
+                self.handlers.truncate(index);
                 Err(flow)
             }
             Err(flow) => Err(flow),
@@ -921,6 +945,8 @@ impl Lisp {
         self.stack.truncate(mark);
         result?;
         self.stack.truncate(handler.stack);
+        self.flow_roots.truncate(handler.flow_roots);
+        self.flow_roots.extend_from_slice(&[a, b]);
         self.lisp_eval_depth = handler.eval_depth;
         Ok(flow)
     }
@@ -967,6 +993,7 @@ impl Lisp {
             roots.push(entry.pattern.translate);
         }
         roots.extend_from_slice(&self.stack);
+        roots.extend_from_slice(&self.flow_roots);
         for binding in &self.specpdl {
             match *binding {
                 SpecBinding::Let { symbol, old } | SpecBinding::LetDefault { symbol, old } => {

@@ -21,6 +21,7 @@ pub struct WindowFlags {
     pub redisplay: bool,
     pub suspend_auto_hscroll: bool,
     pub preserve_vscroll_p: bool,
+    pub cursor_off_p: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1194,7 +1195,7 @@ fn f_window_list_1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.window_list_1(arg(args, 0), arg(args, 1), arg(args, 2))
 }
 
-fn f_get_buffer_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_get_buffer_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (buffer_or_name, all_frames) = (arg(args, 0), arg(args, 1));
     let buffer = if buffer_or_name.is_nil() {
         lisp.current_buffer

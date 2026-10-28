@@ -53,6 +53,7 @@ pub struct Handler {
     pub kind: HandlerKind,
     pub specpdl: usize,
     pub stack: usize,
+    pub flow_roots: usize,
     pub eval_depth: i64,
 }
 

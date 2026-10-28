@@ -46,6 +46,7 @@ fn run(args: &[String]) -> i32 {
         Ok(_) => 0,
         Err(flow) => {
             let condition = lisp.flow_condition(&flow);
+            lisp.stack.push(condition);
             let message = match lisp.error_message_string(condition) {
                 Ok(m) => m,
                 Err(_) => lisp.prin1_to_string(condition),

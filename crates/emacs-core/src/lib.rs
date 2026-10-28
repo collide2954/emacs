@@ -56,6 +56,7 @@ pub mod timefns;
 pub mod treesit;
 pub mod value;
 pub mod w32fns;
+pub mod w32proc;
 pub mod window;
 pub mod xdisp;
 pub mod xfaces;

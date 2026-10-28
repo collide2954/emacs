@@ -1,5 +1,3 @@
-use std::io::Write;
-
 use num_bigint::BigInt;
 use num_traits::Signed;
 
@@ -9,8 +7,9 @@ use crate::lisp::Lisp;
 use crate::object::{LispString, PropRun};
 use crate::subr::Subr;
 use crate::symbols as sym;
+use crate::syntax::S_WORD;
 use crate::textprop::{f_next_single_char_property_change, f_previous_single_char_property_change};
-use crate::value::Value;
+use crate::value::{MOST_POSITIVE_FIXNUM, Value};
 
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("char-to-string", 1, 1, f_char_to_string),
@@ -116,6 +115,8 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("beginning-of-line", 0, 1, f_beginning_of_line).interactive("^p"),
     Subr::fixed("end-of-line", 0, 1, f_end_of_line).interactive("^p"),
     Subr::fixed("delete-char", 1, 2, f_delete_char).interactive("p\nP"),
+    Subr::fixed("self-insert-command", 1, 2, f_self_insert_command)
+        .interactive("(list (prefix-numeric-value current-prefix-arg) last-command-event)"),
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
@@ -128,6 +129,7 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::USER_REAL_LOGIN_NAME, Value::NIL);
     lisp.defvar(sym::OPERATING_SYSTEM_RELEASE, Value::NIL);
     lisp.defvar(sym::UNDO_AUTO__LAST_BOUNDARY_CAUSE, Value::NIL);
+    lisp.defvar(sym::POST_SELF_INSERT_HOOK, Value::NIL);
 }
 
 impl Lisp {
@@ -316,17 +318,6 @@ impl Lisp {
 
     pub fn current_message_value(&self) -> Value {
         self.plain_value(sym::CURRENT_MESSAGE_INTERNAL)
-    }
-
-    pub fn message_string(&mut self, s: Value) -> LispResult<()> {
-        if self.noninteractive() {
-            let text = self.string_to_rust(s);
-            let _ = self.stderr.write_all(text.as_bytes());
-            let _ = self.stderr.write_all(b"\n");
-            let _ = self.stderr.flush();
-        }
-        self.set_plain_value(sym::CURRENT_MESSAGE_INTERNAL, s);
-        Ok(())
     }
 
     pub fn format_string(&mut self, args: &[Value], message: bool) -> LispResult {
@@ -676,8 +667,7 @@ fn f_following_char(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     if b.pt >= b.zv {
         return Ok(Value::fixnum(0));
     }
-    let pt = b.pt;
-    Ok(Value::fixnum(lisp.char_at_pos(pt) as i64))
+    Ok(Value::fixnum(b.text.char_at_byte(b.pt_byte) as i64))
 }
 
 fn f_preceding_char(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
@@ -685,8 +675,13 @@ fn f_preceding_char(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     if b.pt <= b.begv {
         return Ok(Value::fixnum(0));
     }
-    let pt = b.pt;
-    Ok(Value::fixnum(lisp.char_at_pos(pt - 1) as i64))
+    let c = if b.text.multibyte {
+        let pos = b.pt_byte - b.text.prev_char_len(b.pt_byte);
+        b.text.char_at_byte(pos)
+    } else {
+        b.text.byte_at(b.pt_byte - 1) as u32
+    };
+    Ok(Value::fixnum(c as i64))
 }
 
 fn f_bobp(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
@@ -756,7 +751,7 @@ fn login_name() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-fn f_user_login_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_user_login_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if !args[0].is_nil() {
         return Ok(Value::NIL);
     }
@@ -773,7 +768,7 @@ fn f_user_real_login_name(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.string(&name))
 }
 
-fn f_user_uid(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_user_uid(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::fixnum(1000))
 }
 
@@ -1101,18 +1096,13 @@ fn f_ngettext(_lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 pub(crate) fn f_message(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    if args[0].is_nil()
-        || (args[0].is_string() && lisp.string_chars(args[0]) == 0 && args.len() == 1)
-    {
-        lisp.set_plain_value(sym::CURRENT_MESSAGE_INTERNAL, Value::NIL);
+    if args[0].is_nil() || (args[0].is_string() && lisp.string_bytes(args[0]).is_empty()) {
+        lisp.message3(Value::NIL)?;
         return Ok(args[0]);
     }
-    let s = lisp.format_string(args, true)?;
-    lisp.stack.push(s);
-    let r = lisp.message_string(s);
-    lisp.stack.pop();
-    r?;
-    Ok(s)
+    let val = f_format_message(lisp, args)?;
+    lisp.message3(val)?;
+    Ok(val)
 }
 
 fn f_current_message(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
@@ -1146,7 +1136,7 @@ pub(crate) fn f_format(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.format_string(args, false)
 }
 
-fn f_format_message(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_format_message(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.format_string(args, true)
 }
 
@@ -1258,17 +1248,220 @@ fn f_end_of_line(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_delete_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = lisp.check_fixnum(args[0])?;
-    let b = lisp.cur();
-    let pt = b.pt as i64;
-    let (from, to) = if n < 0 { (pt + n, pt) } else { (pt, pt + n) };
-    if from < b.begv as i64 {
-        return Err(lisp.signal(sym::BEGINNING_OF_BUFFER, Value::NIL));
+    if n.abs() < 2 {
+        lisp.call0(sym::UNDO_AUTO_AMALGAMATE)?;
     }
-    if to > b.zv as i64 {
-        return Err(lisp.signal(sym::END_OF_BUFFER, Value::NIL));
+    let pt = lisp.cur().pt as i64;
+    let pos = pt + n;
+    if args[1].is_nil() {
+        if n < 0 {
+            if pos < lisp.cur().begv as i64 {
+                return Err(lisp.signal(sym::BEGINNING_OF_BUFFER, Value::NIL));
+            }
+            lisp.del_range(pos as usize, pt as usize)?;
+        } else {
+            if pos > lisp.cur().zv as i64 {
+                return Err(lisp.signal(sym::END_OF_BUFFER, Value::NIL));
+            }
+            lisp.del_range(pt as usize, pos as usize)?;
+        }
+    } else {
+        lisp.funcall(sym::KILL_FORWARD_CHARS, &[args[0]])?;
     }
-    lisp.del_range(from as usize, to as usize)?;
     Ok(Value::NIL)
+}
+
+fn f_self_insert_command(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let n = lisp.check_fixnum(args[0])?;
+    let c = if args[1].is_nil() {
+        lisp.find_symbol_value(sym::LAST_COMMAND_EVENT)
+    } else {
+        lisp.set(sym::LAST_COMMAND_EVENT, args[1])?;
+        args[1]
+    };
+    if n < 0 {
+        return Err(lisp.error(&format!("Negative repetition argument {n}")));
+    }
+    if n < 2 {
+        lisp.call0(sym::UNDO_AUTO_AMALGAMATE)?;
+    }
+    match c.as_fixnum() {
+        Some(ch) if (0..=character::MAX_CHAR as i64).contains(&ch) => {
+            let table = lisp.find_symbol_value(sym::TRANSLATION_TABLE_FOR_INPUT);
+            let character = lisp.translate_char(table, ch as u32);
+            let val = lisp.internal_self_insert(character, n)?;
+            if val == 2 {
+                lisp.set(sym::UNDO_AUTO__THIS_COMMAND_AMALGAMATING, Value::NIL)?;
+            }
+            let f = lisp.frames.selected_frame;
+            lisp.frame_make_pointer_invisible(f);
+        }
+        _ => lisp.bitch_at_user()?,
+    }
+    Ok(Value::NIL)
+}
+
+fn unibyte_to_char(c: u32) -> u32 {
+    if character::ascii_char_p(c) {
+        c
+    } else {
+        character::byte8_to_char(c as u8)
+    }
+}
+
+impl Lisp {
+    fn internal_self_insert(&mut self, mut c: u32, mut n: i64) -> LispResult<i32> {
+        let mut hairy = 0;
+        let mut chars_to_delete: i64 = 0;
+        let mut spaces_to_insert: i64 = 0;
+        let overwrite = self.find_symbol_value(sym::OVERWRITE_MODE);
+        if !self
+            .find_symbol_value(sym::BEFORE_CHANGE_FUNCTIONS)
+            .is_nil()
+            || !self.find_symbol_value(sym::AFTER_CHANGE_FUNCTIONS).is_nil()
+        {
+            hairy = 1;
+        }
+        let multibyte = self.cur().text.multibyte;
+        let mut str = Vec::with_capacity(character::MAX_MULTIBYTE_LENGTH);
+        if multibyte {
+            character::push_char(&mut str, c);
+            if str.len() == 1 {
+                c = str[0] as u32;
+            }
+        } else {
+            str.push(if character::single_byte_char_p(c) {
+                c as u8
+            } else {
+                character::char_to_byte8(c)
+            });
+        }
+        if !overwrite.is_nil() && self.cur().pt < self.cur().zv {
+            let c2 = self.cur().text.char_at_byte(self.cur().pt_byte);
+            if overwrite == sym::OVERWRITE_MODE_BINARY {
+                chars_to_delete = n;
+            } else if c != 10 && c2 != 10 {
+                let cwidth = self.char_width_of(c) as i64;
+                if cwidth != 0 {
+                    let pos = self.cur().pt;
+                    let pos_byte = self.cur().pt_byte;
+                    let curcol = self.current_column()?;
+                    if n <= (MOST_POSITIVE_FIXNUM - curcol) / cwidth {
+                        let target_clm = curcol + n * cwidth;
+                        let actual_clm = crate::indent::f_move_to_column(
+                            self,
+                            &[Value::fixnum(target_clm), Value::NIL],
+                        )?
+                        .as_fixnum()
+                        .expect("column");
+                        chars_to_delete = (self.cur().pt - pos) as i64;
+                        if actual_clm > target_clm {
+                            let b = self.cur();
+                            let actual = b.pt_byte - b.text.prev_char_len(b.pt_byte);
+                            if b.text.byte_at(actual) == b'\t' {
+                                chars_to_delete -= 1;
+                            } else {
+                                spaces_to_insert = actual_clm - target_clm;
+                            }
+                        }
+                        self.set_pt_both(pos, pos_byte);
+                    }
+                }
+            }
+            hairy = 2;
+        }
+        let synt = self.syntax_class(c);
+        if !self.find_symbol_value(sym::ABBREV_MODE).is_nil()
+            && synt != S_WORD
+            && self.find_symbol_value(sym::BUFFER_READ_ONLY).is_nil()
+            && self.cur().pt > self.cur().begv
+        {
+            let prev = f_preceding_char(self, &[])?.as_fixnum().expect("char") as u32;
+            let prev = if multibyte {
+                prev
+            } else {
+                unibyte_to_char(prev)
+            };
+            if self.syntax_class(prev) == S_WORD {
+                let modiff = self.cur().text.modiff;
+                let s = self.call0(sym::EXPAND_ABBREV)?;
+                if s.is_symbol() && !s.is_nil() {
+                    let function = self.heap.symbol_ref(s).function;
+                    if !function.is_nil() && function.is_symbol() {
+                        let prop = self.get(function, sym::NO_SELF_INSERT);
+                        if !prop.is_nil() {
+                            return Ok(1);
+                        }
+                    }
+                }
+                if self.cur().text.modiff != modiff {
+                    hairy = 2;
+                }
+            }
+        }
+        if chars_to_delete != 0 {
+            let mc = if !multibyte && character::single_byte_char_p(c) {
+                unibyte_to_char(c)
+            } else {
+                c
+            };
+            let mut string = crate::alloc::f_make_string(
+                self,
+                &[Value::fixnum(n), Value::fixnum(mc as i64), Value::NIL],
+            )?;
+            if spaces_to_insert != 0 {
+                self.stack.push(string);
+                let tem = crate::alloc::f_make_string(
+                    self,
+                    &[
+                        Value::fixnum(spaces_to_insert),
+                        Value::fixnum(b' ' as i64),
+                        Value::NIL,
+                    ],
+                );
+                self.stack.pop();
+                string = self.concat_to_string(&[string, tem?])?;
+            }
+            let pt = self.cur().pt;
+            let to = pt.saturating_add(chars_to_delete as usize);
+            self.replace_range_chars(pt, to, string)?;
+            f_forward_char(self, &[Value::fixnum(n)])?;
+        } else if n > 1 {
+            let mut strn = Vec::with_capacity(str.len() * n as usize);
+            let nchars = n as usize;
+            while n > 0 {
+                strn.extend_from_slice(&str);
+                n -= 1;
+            }
+            self.insert_internal(&strn, nchars, &[], true, false)?;
+        } else if n > 0 {
+            self.insert_internal(&str, 1, &[], true, false)?;
+        }
+        let auto_fill_chars = self.find_symbol_value(sym::AUTO_FILL_CHARS);
+        let fill = if self.is_char_table(auto_fill_chars) {
+            !self.char_table_ref(auto_fill_chars, c).is_nil()
+        } else {
+            c == b' ' as u32 || c == 10
+        };
+        if fill && !self.find_symbol_value(sym::AUTO_FILL_FUNCTION).is_nil() && n > 0 {
+            if c == 10 {
+                let b = self.cur();
+                let (pt, pt_byte) = (b.pt - 1, b.pt_byte - 1);
+                self.set_pt_both(pt, pt_byte);
+            }
+            let auto_fill_result = self.call0(sym::INTERNAL_AUTO_FILL)?;
+            let b = self.cur();
+            if c == 10 && b.pt < b.zv && b.text.byte_at(b.pt_byte) == b'\n' {
+                let (pt, pt_byte) = (b.pt + 1, b.pt_byte + 1);
+                self.set_pt_both(pt, pt_byte);
+            }
+            if !auto_fill_result.is_nil() {
+                hairy = 2;
+            }
+        }
+        self.run_hook(sym::POST_SELF_INSERT_HOOK)?;
+        Ok(hairy)
+    }
 }
 
 struct Spec {

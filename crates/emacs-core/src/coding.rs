@@ -1780,7 +1780,7 @@ fn f_coding_system_base(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.attr(attrs, ATTR_BASE_NAME))
 }
 
-fn f_coding_system_plist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_coding_system_plist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let cs = if args[0].is_nil() {
         sym::NO_CONVERSION
     } else {

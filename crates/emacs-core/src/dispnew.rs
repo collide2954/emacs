@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use crate::buffer::f_buffer_modified_p;
 use crate::error::LispResult;
 use crate::keyboard::Kvar;
@@ -6,12 +8,84 @@ use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
 
-pub const SUBRS: &[Subr] = &[Subr::fixed(
-    "frame-or-buffer-changed-p",
-    0,
-    1,
-    f_frame_or_buffer_changed_p,
-)];
+pub const SUBRS: &[Subr] = &[
+    Subr::fixed(
+        "frame-or-buffer-changed-p",
+        0,
+        1,
+        f_frame_or_buffer_changed_p,
+    ),
+    Subr::fixed("ding", 0, 1, f_ding),
+    Subr::fixed("internal-show-cursor", 2, 2, f_internal_show_cursor),
+    Subr::fixed("internal-show-cursor-p", 0, 1, f_internal_show_cursor_p),
+];
+
+fn f_internal_show_cursor(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    if !lisp.xdisp.redisplaying_p {
+        let w = lisp.decode_any_window(args[0])?;
+        lisp.window_mut(w).flags.cursor_off_p = args[1].is_nil();
+    }
+    Ok(Value::NIL)
+}
+
+fn f_internal_show_cursor_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_any_window(args[0])?;
+    Ok(if lisp.window(w).flags.cursor_off_p {
+        Value::NIL
+    } else {
+        sym::T
+    })
+}
+
+fn f_ding(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    if !args[0].is_nil() {
+        if lisp.noninteractive() {
+            putchar_bell();
+        } else {
+            let f = lisp.frames.selected_frame;
+            lisp.ring_bell(f)?;
+        }
+    } else {
+        lisp.bitch_at_user()?;
+    }
+    Ok(Value::NIL)
+}
+
+fn putchar_bell() {
+    let _ = std::io::stdout().write_all(b"\x07");
+}
+
+impl Lisp {
+    pub fn bitch_at_user(&mut self) -> LispResult<()> {
+        if self.noninteractive() {
+            putchar_bell();
+            Ok(())
+        } else if !self.find_symbol_value(sym::EXECUTING_KBD_MACRO).is_nil() {
+            let msg = self.string("Keyboard macro terminated by a command ringing the bell");
+            Err(self.signal_list(sym::USER_ERROR, &[msg]))
+        } else {
+            let f = self.frames.selected_frame;
+            self.ring_bell(f)
+        }
+    }
+
+    pub fn ring_bell(&mut self, f: Value) -> LispResult<()> {
+        let function = self.find_symbol_value(sym::RING_BELL_FUNCTION);
+        if !function.is_nil() {
+            self.set_plain_value(sym::RING_BELL_FUNCTION, Value::NIL);
+            self.stack.push(function);
+            let r = self.call0(function);
+            self.stack.pop();
+            r?;
+            self.set_plain_value(sym::RING_BELL_FUNCTION, function);
+            Ok(())
+        } else {
+            match self.terminal(self.frame(f).terminal).kind {
+                crate::terminal::OutputMethod::Initial => Ok(()),
+            }
+        }
+    }
+}
 
 fn listed_buffers(lisp: &Lisp) -> Vec<Value> {
     lisp.buffers

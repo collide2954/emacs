@@ -798,12 +798,7 @@ impl Lisp {
     }
 
     fn invalid_event_message(&mut self, c: Value) -> LispResult<()> {
-        let text = format!(
-            "Key sequence contains invalid event {}",
-            self.princ_to_string(c)
-        );
-        let s = self.string(&text);
-        self.message_string(s)
+        self.message_with_string("Key sequence contains invalid event %s", c, true)
     }
 
     pub fn define_key(

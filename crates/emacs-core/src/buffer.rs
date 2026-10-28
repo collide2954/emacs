@@ -529,6 +529,66 @@ pub const PER_BUFFER_VARS: &[PerBufferSpec] = &[
     per_buffer!(sym::TEXT_CONVERSION_STYLE, nil, Value::NIL),
 ];
 
+fn emacs_wd() -> std::io::Result<Vec<u8>> {
+    let dir = std::env::current_dir()?;
+    #[cfg(windows)]
+    let bytes = crate::fileio::normalize_slashes(&dir.to_string_lossy()).into_bytes();
+    #[cfg(unix)]
+    let bytes = std::os::unix::ffi::OsStrExt::as_bytes(dir.as_os_str()).to_vec();
+    #[cfg(unix)]
+    if bytes.first() == Some(&b'(') {
+        return Err(std::io::Error::from_raw_os_error(2));
+    }
+    Ok(bytes)
+}
+
+fn is_directory_sep(c: u8) -> bool {
+    c == b'/' || (cfg!(windows) && c == b'\\')
+}
+
+pub fn init_buffer(lisp: &mut Lisp) {
+    use std::io::Write;
+    let scratch = lisp.string("*scratch*");
+    let scratch = lisp
+        .get_buffer_create(scratch, false)
+        .expect("scratch buffer");
+    f_set_buffer(lisp, &[scratch]).expect("select scratch buffer");
+    if lisp
+        .default_value_unchecked(sym::ENABLE_MULTIBYTE_CHARACTERS)
+        .is_nil()
+    {
+        f_set_buffer_multibyte(lisp, &[Value::NIL]).expect("unibyte scratch buffer");
+    }
+    let current = lisp.current_buffer;
+    match emacs_wd() {
+        Err(e) => {
+            let _ = writeln!(lisp.stderr, "Error getting directory: {e}");
+            lisp.buffer_local_set(current, sym::DEFAULT_DIRECTORY, Value::NIL);
+        }
+        Ok(mut pwd) => {
+            if !pwd.last().is_some_and(|&c| is_directory_sep(c)) {
+                pwd.push(b'/');
+            }
+            let dirname = lisp.make_string_from_bytes(pwd, false);
+            lisp.buffer_local_set(current, sym::DEFAULT_DIRECTORY, dirname);
+            let temp = crate::fileio::f_find_file_name_handler(lisp, &[dirname, sym::T])
+                .expect("find-file-name-handler");
+            if !temp.is_nil() && lisp.string_bytes(dirname) != b"/" {
+                let slash_colon = lisp.string("/:");
+                let dir = lisp
+                    .concat_to_string(&[slash_colon, dirname])
+                    .expect("concat directory");
+                lisp.buffer_local_set(current, sym::DEFAULT_DIRECTORY, dir);
+            }
+        }
+    }
+    let temp = lisp.get_minibuffer(0).expect("minibuffer");
+    let dir = lisp
+        .buffer_local_get(current, sym::DEFAULT_DIRECTORY)
+        .unwrap_or(Value::NIL);
+    lisp.buffer_local_set(temp, sym::DEFAULT_DIRECTORY, dir);
+}
+
 pub fn init_vars(lisp: &mut Lisp) {
     for &(symbol, default, predicate, always_local, permanent) in PER_BUFFER_VARS {
         let value = default(lisp);

@@ -57,7 +57,7 @@ fn f_ignore(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_make_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_make_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = lisp.check_fixnat(args[0])? as usize;
     let c = lisp.check_character(args[1])?;
     let multibyte = !args[2].is_nil();

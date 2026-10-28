@@ -831,6 +831,7 @@ impl Lisp {
             }
         }
         self.stack.truncate(base);
+        self.flow_roots.push(error);
         Err(Flow::Signal {
             error,
             target: found,
@@ -947,22 +948,18 @@ impl Lisp {
     pub fn throw(&mut self, tag: Value, value: Value) -> Flow {
         if !tag.is_nil() {
             for (index, h) in self.handlers.iter().enumerate().rev() {
-                match h.kind {
-                    HandlerKind::CatchAll | HandlerKind::CatchAllDebuggable => {
-                        return Flow::Throw {
-                            tag,
-                            value,
-                            target: index,
-                        };
-                    }
-                    HandlerKind::Catch(t) if self.eq(t, tag) => {
-                        return Flow::Throw {
-                            tag,
-                            value,
-                            target: index,
-                        };
-                    }
-                    _ => {}
+                let caught = match h.kind {
+                    HandlerKind::CatchAll | HandlerKind::CatchAllDebuggable => true,
+                    HandlerKind::Catch(t) => self.eq(t, tag),
+                    _ => false,
+                };
+                if caught {
+                    self.flow_roots.extend_from_slice(&[tag, value]);
+                    return Flow::Throw {
+                        tag,
+                        value,
+                        target: index,
+                    };
                 }
             }
         }
@@ -997,11 +994,7 @@ impl Lisp {
             Err(flow @ Flow::Throw { target, value, .. }) if target == index => {
                 self.unwind_to_handler(index, flow)?;
                 self.pop_handler(index);
-                self.stack.truncate(
-                    self.handlers
-                        .get(index)
-                        .map_or(self.stack.len(), |h| h.stack),
-                );
+                self.stack.pop();
                 Ok(value)
             }
             Err(flow) => Err(flow),
@@ -1025,9 +1018,11 @@ impl Lisp {
                 Ok(v)
             }
             Err(flow @ Flow::Signal { error, target }) if target == index => {
+                let level = self.handlers[index].flow_roots;
                 self.unwind_to_handler(index, flow)?;
-                self.pop_handler(index);
-                handler(self, error)
+                self.handlers.truncate(index);
+                let r = handler(self, error);
+                self.finish_catch(level, r)
             }
             Err(flow) => Err(flow),
         }
@@ -1947,24 +1942,38 @@ impl Lisp {
             self.push_handler(HandlerKind::ConditionCase(condition));
         }
         let result = self.eval(bodyform);
-        let (val, handler_body) = match result {
+        let (val, handler_body, level) = match result {
             Ok(val) => {
-                self.handlers.truncate(first_handler);
+                self.pop_handler(first_handler);
                 if success_handler.is_nil() {
                     return Ok(val);
                 }
-                (val, self.xcdr(success_handler))
+                (val, self.xcdr(success_handler), None)
             }
             Err(flow @ Flow::Signal { error, target })
                 if target >= first_handler && target < first_handler + clauses.len() =>
             {
+                let level = self.handlers[first_handler].flow_roots;
                 self.unwind_to_handler(target, flow)?;
                 self.handlers.truncate(first_handler);
                 let chosen = clauses[clauses.len() - 1 - (target - first_handler)];
-                (error, self.xcdr(chosen))
+                (error, self.xcdr(chosen), Some(level))
             }
             Err(flow) => return Err(flow),
         };
+        let r = self.run_condition_case_handler(var, val, handler_body);
+        match level {
+            Some(level) => self.finish_catch(level, r),
+            None => r,
+        }
+    }
+
+    fn run_condition_case_handler(
+        &mut self,
+        var: Value,
+        val: Value,
+        handler_body: Value,
+    ) -> LispResult {
         if var.is_nil() {
             return self.progn(handler_body);
         }
@@ -2011,7 +2020,7 @@ fn f_handler_bind_1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     }
     let ret = lisp.call0(bodyfun);
     if ret.is_ok() {
-        lisp.handlers.truncate(first);
+        lisp.pop_handler(first);
     }
     ret
 }
