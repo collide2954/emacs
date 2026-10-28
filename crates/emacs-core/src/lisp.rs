@@ -48,6 +48,7 @@ pub enum SpecBinding {
 
 pub struct Lisp {
     pub heap: Heap,
+    pub startup_noninteractive: bool,
     pub obarray: Value,
     pub specpdl: Vec<SpecBinding>,
     pub handlers: Vec<Handler>,
@@ -98,6 +99,7 @@ pub struct Lisp {
     pub subr_docs: std::collections::HashMap<usize, i64>,
     pub compositions: crate::composite::Compositions,
     pub syntax: crate::syntax::Syntax,
+    pub frame_and_buffer_state: Value,
     pub pending_funcalls: Value,
 }
 
@@ -145,6 +147,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::xfaces::SUBRS,
     crate::doc::SUBRS,
     crate::composite::SUBRS,
+    crate::dispnew::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -193,7 +196,7 @@ pub const ALL_INITS: &[InitFn] = &[
 ];
 
 fn init_emacs_vars(lisp: &mut Lisp) {
-    lisp.defvar_bool(sym::NONINTERACTIVE, true);
+    lisp.defvar_bool(sym::NONINTERACTIVE, lisp.startup_noninteractive);
     let version = lisp.string("31.0.50");
     lisp.defvar(sym::EMACS_VERSION, version);
     lisp.defvar(sym::STANDARD_SYNTAX_TABLE_INTERNAL, Value::NIL);
@@ -213,7 +216,12 @@ fn init_first_buffers(lisp: &mut Lisp) {
 
 impl Lisp {
     pub fn new() -> Lisp {
+        Lisp::new_with(true)
+    }
+
+    pub fn new_with(noninteractive: bool) -> Lisp {
         let mut lisp = Lisp {
+            startup_noninteractive: noninteractive,
             heap: Heap::new(),
             obarray: Value::NIL,
             specpdl: Vec::new(),
@@ -265,6 +273,7 @@ impl Lisp {
             subr_docs: std::collections::HashMap::new(),
             compositions: crate::composite::Compositions::default(),
             syntax: crate::syntax::Syntax::default(),
+            frame_and_buffer_state: Value::NIL,
             pending_funcalls: Value::NIL,
         };
         lisp.init_symbols();
@@ -932,6 +941,7 @@ impl Lisp {
         self.fontsets.roots(&mut roots);
         self.compositions.roots(&mut roots);
         self.syntax.roots(&mut roots);
+        roots.push(self.frame_and_buffer_state);
         roots.push(self.pending_funcalls);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);

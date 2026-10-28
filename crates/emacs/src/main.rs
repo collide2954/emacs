@@ -3,7 +3,6 @@ use std::io::Write;
 use emacs_core::emacs::find_source_root;
 use emacs_core::lisp::Lisp;
 use emacs_core::symbols as sym;
-use emacs_core::value::Value;
 
 const STACK_SIZE: usize = 1 << 30;
 
@@ -20,14 +19,13 @@ fn main() {
 }
 
 fn run(args: &[String]) -> i32 {
-    let mut lisp = Lisp::new();
     let batch = args.iter().skip(1).any(|a| {
         matches!(
             a.as_str(),
             "--batch" | "-batch" | "--script" | "-script" | "-x"
         )
     });
-    let _ = lisp.set(sym::NONINTERACTIVE, if batch { sym::T } else { Value::NIL });
+    let mut lisp = Lisp::new_with(batch);
     lisp.set_command_line_args(args);
     match find_source_root() {
         Some(root) => lisp.set_source_directory(&root),

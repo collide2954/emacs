@@ -1,6 +1,59 @@
 mod common;
 
-use common::check;
+use common::{check, eval, on_big_stack};
+use emacs_core::lisp::Lisp;
+
+#[test]
+fn realized_faces() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new_with(false);
+        for (source, expected) in [
+            (
+                "(internal-get-lisp-face-attribute 'default :foreground (selected-frame))",
+                "\"unspecified-fg\"",
+            ),
+            (
+                "(internal-get-lisp-face-attribute 'default :background (selected-frame))",
+                "\"unspecified-bg\"",
+            ),
+            (
+                "(list (internal-get-lisp-face-attribute 'default :family (selected-frame)) (internal-get-lisp-face-attribute 'default :height (selected-frame)) (internal-get-lisp-face-attribute 'default :weight (selected-frame)))",
+                "(\"default\" 1 normal)",
+            ),
+            (
+                "(vectorp (internal-lisp-face-p 'mode-line-active (selected-frame)))",
+                "t",
+            ),
+            ("(display-supports-face-attributes-p '(:underline t))", "t"),
+            (
+                "(display-supports-face-attributes-p '(:underline nil))",
+                "nil",
+            ),
+            (
+                "(display-supports-face-attributes-p '(:weight bold))",
+                "nil",
+            ),
+            (
+                "(display-supports-face-attributes-p '(:underline (:style dots)))",
+                "nil",
+            ),
+            (
+                "(display-supports-face-attributes-p '(:underline (:style wave)))",
+                "t",
+            ),
+            (
+                "(progn (internal-make-lisp-face 'xr) (internal-set-lisp-face-attribute 'xr :foreground 'reset (selected-frame)) (aref (face-attributes-as-vector '(xr)) 9))",
+                "\"unspecified-fg\"",
+            ),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+    });
+    check(&[(
+        "(display-supports-face-attributes-p '(:underline t))",
+        "nil",
+    )]);
+}
 
 #[test]
 fn lisp_faces() {

@@ -1447,7 +1447,7 @@ fn f_buffer_local_variables(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.list(&items))
 }
 
-fn f_buffer_modified_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_buffer_modified_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let b = lisp.decode_buffer(args[0])?;
     let t = &lisp.buffer(b).text;
     if t.save_modiff < t.modiff {

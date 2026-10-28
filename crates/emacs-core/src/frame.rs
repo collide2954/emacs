@@ -215,6 +215,9 @@ impl Frame {
             self.tool_bar_items,
             self.terminal,
         ]);
+        if let Some(cache) = &self.face_cache {
+            cache.trace(out);
+        }
     }
 
     pub fn window_p(&self) -> bool {
@@ -860,6 +863,9 @@ impl Lisp {
         self.terminal_mut(terminal).reference_count += 1;
         self.set_menu_bar_lines(frame, Value::fixnum(1));
         self.set_tab_bar_lines(frame, Value::fixnum(0));
+        if !self.noninteractive() {
+            self.init_frame_faces(frame)?;
+        }
         self.frames.last_nonminibuf_frame = frame;
         let f = self.frame_mut(frame);
         f.flags.can_set_window_size = true;

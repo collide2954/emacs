@@ -65,9 +65,244 @@ const XLFD_POINT_SIZE: i32 = 7;
 const FACE_TTY_DEFAULT_COLOR: i64 = -1;
 const CLEAR_FONT_TABLE_COUNT: i32 = 100;
 
+pub const DEFAULT_FACE_ID: usize = 0;
+pub const MODE_LINE_ACTIVE_FACE_ID: usize = 1;
+pub const MODE_LINE_INACTIVE_FACE_ID: usize = 2;
+pub const TOOL_BAR_FACE_ID: usize = 3;
+pub const FRINGE_FACE_ID: usize = 4;
+pub const HEADER_LINE_ACTIVE_FACE_ID: usize = 5;
+pub const HEADER_LINE_INACTIVE_FACE_ID: usize = 6;
+pub const SCROLL_BAR_FACE_ID: usize = 7;
+pub const BORDER_FACE_ID: usize = 8;
+pub const CURSOR_FACE_ID: usize = 9;
+pub const MOUSE_FACE_ID: usize = 10;
+pub const MENU_FACE_ID: usize = 11;
+pub const VERTICAL_BORDER_FACE_ID: usize = 12;
+pub const WINDOW_DIVIDER_FACE_ID: usize = 13;
+pub const WINDOW_DIVIDER_FIRST_PIXEL_FACE_ID: usize = 14;
+pub const WINDOW_DIVIDER_LAST_PIXEL_FACE_ID: usize = 15;
+pub const INTERNAL_BORDER_FACE_ID: usize = 16;
+pub const CHILD_FRAME_BORDER_FACE_ID: usize = 17;
+pub const TAB_BAR_FACE_ID: usize = 18;
+pub const TAB_LINE_ACTIVE_FACE_ID: usize = 19;
+pub const TAB_LINE_INACTIVE_FACE_ID: usize = 20;
+pub const MARGIN_FACE_ID: usize = 21;
+pub const BASIC_FACE_ID_SENTINEL: usize = 22;
+
+const FACE_CACHE_BUCKETS_SIZE: usize = 1009;
+
+const BASIC_FACES: [(Value, usize); 21] = [
+    (sym::MODE_LINE_ACTIVE, MODE_LINE_ACTIVE_FACE_ID),
+    (sym::MODE_LINE_INACTIVE, MODE_LINE_INACTIVE_FACE_ID),
+    (sym::TOOL_BAR, TOOL_BAR_FACE_ID),
+    (sym::FRINGE, FRINGE_FACE_ID),
+    (sym::HEADER_LINE_ACTIVE, HEADER_LINE_ACTIVE_FACE_ID),
+    (sym::HEADER_LINE_INACTIVE, HEADER_LINE_INACTIVE_FACE_ID),
+    (sym::SCROLL_BAR, SCROLL_BAR_FACE_ID),
+    (sym::BORDER, BORDER_FACE_ID),
+    (sym::CURSOR, CURSOR_FACE_ID),
+    (sym::MOUSE, MOUSE_FACE_ID),
+    (sym::MENU, MENU_FACE_ID),
+    (sym::VERTICAL_BORDER, VERTICAL_BORDER_FACE_ID),
+    (sym::WINDOW_DIVIDER, WINDOW_DIVIDER_FACE_ID),
+    (
+        sym::WINDOW_DIVIDER_FIRST_PIXEL,
+        WINDOW_DIVIDER_FIRST_PIXEL_FACE_ID,
+    ),
+    (
+        sym::WINDOW_DIVIDER_LAST_PIXEL,
+        WINDOW_DIVIDER_LAST_PIXEL_FACE_ID,
+    ),
+    (sym::INTERNAL_BORDER, INTERNAL_BORDER_FACE_ID),
+    (sym::CHILD_FRAME_BORDER, CHILD_FRAME_BORDER_FACE_ID),
+    (sym::TAB_BAR, TAB_BAR_FACE_ID),
+    (sym::TAB_LINE_ACTIVE, TAB_LINE_ACTIVE_FACE_ID),
+    (sym::TAB_LINE_INACTIVE, TAB_LINE_INACTIVE_FACE_ID),
+    (sym::MARGIN, MARGIN_FACE_ID),
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FaceBoxType {
+    #[default]
+    NoBox,
+    SimpleBox,
+    RaisedBox,
+    SunkenBox,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FaceUnderlineType {
+    #[default]
+    NoUnderline,
+    Single,
+    DoubleLine,
+    Wave,
+    Dots,
+    Dashes,
+}
+
+#[derive(Clone, Debug)]
+pub struct Face {
+    pub lface: [Value; LFACE_VECTOR_SIZE],
+    pub id: usize,
+    pub foreground: u64,
+    pub background: u64,
+    pub underline_color: u64,
+    pub overline_color: u64,
+    pub strike_through_color: u64,
+    pub box_color: u64,
+    pub font: Value,
+    pub fontset: i32,
+    pub box_vertical_line_width: i32,
+    pub box_horizontal_line_width: i32,
+    pub underline_pixels_above_descent_line: i32,
+    pub box_type: FaceBoxType,
+    pub underline: FaceUnderlineType,
+    pub use_box_color_for_shadows_p: bool,
+    pub overline_p: bool,
+    pub strike_through_p: bool,
+    pub foreground_defaulted_p: bool,
+    pub background_defaulted_p: bool,
+    pub underline_defaulted_p: bool,
+    pub overline_color_defaulted_p: bool,
+    pub strike_through_color_defaulted_p: bool,
+    pub box_color_defaulted_p: bool,
+    pub underline_at_descent_line_p: bool,
+    pub tty_bold_p: bool,
+    pub tty_italic_p: bool,
+    pub tty_reverse_p: bool,
+    pub tty_strike_through_p: bool,
+    pub tty_overline_p: bool,
+    pub colors_copied_bitwise_p: bool,
+    pub overstrike: bool,
+    pub hash: u64,
+    pub ascii_face: usize,
+}
+
+impl Face {
+    fn make_realized(attr: [Value; LFACE_VECTOR_SIZE]) -> Face {
+        Face {
+            lface: attr,
+            id: 0,
+            foreground: 0,
+            background: 0,
+            underline_color: 0,
+            overline_color: 0,
+            strike_through_color: 0,
+            box_color: 0,
+            font: Value::NIL,
+            fontset: 0,
+            box_vertical_line_width: 0,
+            box_horizontal_line_width: 0,
+            underline_pixels_above_descent_line: 0,
+            box_type: FaceBoxType::NoBox,
+            underline: FaceUnderlineType::NoUnderline,
+            use_box_color_for_shadows_p: false,
+            overline_p: false,
+            strike_through_p: false,
+            foreground_defaulted_p: false,
+            background_defaulted_p: false,
+            underline_defaulted_p: false,
+            overline_color_defaulted_p: false,
+            strike_through_color_defaulted_p: false,
+            box_color_defaulted_p: false,
+            underline_at_descent_line_p: false,
+            tty_bold_p: false,
+            tty_italic_p: false,
+            tty_reverse_p: false,
+            tty_strike_through_p: false,
+            tty_overline_p: false,
+            colors_copied_bitwise_p: false,
+            overstrike: false,
+            hash: 0,
+            ascii_face: usize::MAX,
+        }
+    }
+
+    fn is_ascii(&self) -> bool {
+        self.ascii_face == self.id
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FaceCache {
+    pub buckets: Vec<Vec<usize>>,
+    pub faces_by_id: Vec<Option<Box<Face>>>,
     pub menu_face_changed_p: bool,
+}
+
+impl FaceCache {
+    pub fn used(&self) -> usize {
+        self.faces_by_id.len()
+    }
+
+    pub fn face(&self, id: usize) -> Option<&Face> {
+        self.faces_by_id.get(id).and_then(|f| f.as_deref())
+    }
+
+    pub fn trace(&self, out: &mut Vec<Value>) {
+        for face in self.faces_by_id.iter().flatten() {
+            out.extend_from_slice(&face.lface);
+            out.push(face.font);
+        }
+    }
+
+    fn cache_face(&mut self, mut face: Face, hash: u64) -> usize {
+        let i = (hash % FACE_CACHE_BUCKETS_SIZE as u64) as usize;
+        face.hash = hash;
+        let id = self
+            .faces_by_id
+            .iter()
+            .position(|f| f.is_none())
+            .unwrap_or(self.faces_by_id.len());
+        let ascii = face.ascii_face == usize::MAX;
+        face.id = id;
+        if ascii {
+            face.ascii_face = id;
+            self.buckets[i].insert(0, id);
+        } else {
+            self.buckets[i].push(id);
+        }
+        if id == self.faces_by_id.len() {
+            self.faces_by_id.push(Some(Box::new(face)));
+        } else {
+            self.faces_by_id[id] = Some(Box::new(face));
+        }
+        id
+    }
+
+    fn uncache_face(&mut self, id: usize) {
+        if let Some(face) = self.face(id) {
+            let i = (face.hash % FACE_CACHE_BUCKETS_SIZE as u64) as usize;
+            self.buckets[i].retain(|&x| x != id);
+            self.faces_by_id[id] = None;
+        }
+    }
+}
+
+fn hash_string_case_insensitive(lisp: &Lisp, string: Value) -> u64 {
+    if !string.is_string() {
+        return 0;
+    }
+    let mut hash: u64 = 0;
+    for &b in lisp.string_bytes(string) {
+        if b == 0 {
+            break;
+        }
+        hash = (hash << 1) ^ b.to_ascii_lowercase() as u64;
+    }
+    hash
+}
+
+fn lface_hash(lisp: &Lisp, v: &[Value; LFACE_VECTOR_SIZE]) -> u64 {
+    hash_string_case_insensitive(lisp, v[LFACE_FAMILY_INDEX])
+        ^ hash_string_case_insensitive(lisp, v[LFACE_FOUNDRY_INDEX])
+        ^ hash_string_case_insensitive(lisp, v[LFACE_FOREGROUND_INDEX])
+        ^ hash_string_case_insensitive(lisp, v[LFACE_BACKGROUND_INDEX])
+        ^ v[LFACE_WEIGHT_INDEX].bits()
+        ^ v[LFACE_SLANT_INDEX].bits()
+        ^ v[LFACE_SWIDTH_INDEX].bits()
+        ^ v[LFACE_HEIGHT_INDEX].bits()
 }
 
 pub struct Faces {
@@ -809,11 +1044,6 @@ impl Lisp {
         Ok(cycle_found)
     }
 
-    fn realized_default_face_attrs(&mut self, f: Option<Value>) -> LispResult<[Value; N]> {
-        let _ = f;
-        Err(self.error("Cannot realize default face"))
-    }
-
     fn merge_named_face(
         &mut self,
         w: Option<Value>,
@@ -852,7 +1082,11 @@ impl Lisp {
                     let d = match deflt {
                         Some(d) => d,
                         None => {
-                            let d = self.realized_default_face_attrs(f)?;
+                            let frame = f.expect("merging a reset attribute needs a frame");
+                            let d = self
+                                .face_from_id(frame, DEFAULT_FACE_ID)
+                                .expect("default face is not realized")
+                                .lface;
                             deflt = Some(d);
                             d
                         }
@@ -1406,8 +1640,372 @@ impl Lisp {
 
     fn make_face_cache(&self) -> crate::xfaces::FaceCache {
         FaceCache {
+            buckets: vec![Vec::new(); FACE_CACHE_BUCKETS_SIZE],
+            faces_by_id: Vec::new(),
             menu_face_changed_p: self.faces.menu_face_changed_default,
         }
+    }
+
+    pub fn face_from_id(&self, f: Value, id: usize) -> Option<&Face> {
+        self.frame(f).face_cache.as_ref().and_then(|c| c.face(id))
+    }
+
+    fn face_cache_mut(&mut self, f: Value) -> &mut FaceCache {
+        self.frame_mut(f)
+            .face_cache
+            .as_deref_mut()
+            .expect("frame has no face cache")
+    }
+
+    fn set_frame_garbaged(&mut self, f: Value) {
+        self.frames.frame_garbaged = true;
+        self.fset_redisplay(f);
+        self.frame_mut(f).flags.garbaged = true;
+    }
+
+    pub fn init_frame_faces(&mut self, f: Value) -> LispResult<()> {
+        if self.frame(f).face_cache.is_none() {
+            let cache = self.make_face_cache();
+            self.frame_mut(f).face_cache = Some(Box::new(cache));
+        }
+        if !self.realize_basic_faces(f)? {
+            panic!("cannot realize the basic faces of a new frame");
+        }
+        Ok(())
+    }
+
+    pub fn recompute_basic_faces(&mut self, f: Value) -> LispResult<()> {
+        if let Some(used) = self.frame(f).face_cache.as_ref().map(|c| c.used()) {
+            let non_basic_faces_cached = used > BASIC_FACE_ID_SENTINEL;
+            self.clear_face_cache(false);
+            if !self.realize_basic_faces(f)? {
+                panic!("cannot realize the basic faces of a frame");
+            }
+            if non_basic_faces_cached {
+                self.frame_mut(f).flags.face_change = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn free_realized_faces(&mut self, f: Value) {
+        let used = self.frame(f).face_cache.as_ref().map_or(0, |c| c.used());
+        if used == 0 {
+            return;
+        }
+        let cache = self.face_cache_mut(f);
+        cache.faces_by_id.clear();
+        for bucket in &mut cache.buckets {
+            bucket.clear();
+        }
+        if self.is_window(self.frame(f).root_window) {
+            self.fset_redisplay(f);
+        }
+    }
+
+    fn realize_face(
+        &mut self,
+        f: Value,
+        attrs: [Value; N],
+        former_face_id: Option<usize>,
+    ) -> usize {
+        if let Some(former) = former_face_id
+            && self.face_cache_mut(f).used() > former
+        {
+            self.face_cache_mut(f).uncache_face(former);
+            self.set_frame_garbaged(f);
+        }
+        let face = match self.frame(f).output_method {
+            crate::terminal::OutputMethod::Initial => Face::make_realized(attrs),
+        };
+        let hash = lface_hash(self, &attrs);
+        self.face_cache_mut(f).cache_face(face, hash)
+    }
+
+    fn lookup_face(&mut self, f: Value, attrs: &[Value; N]) -> LispResult<usize> {
+        let hash = lface_hash(self, attrs);
+        let i = (hash % FACE_CACHE_BUCKETS_SIZE as u64) as usize;
+        let ids = self.face_cache_mut(f).buckets[i].clone();
+        for id in ids {
+            let Some(face) = self.face_from_id(f, id) else {
+                continue;
+            };
+            if !face.is_ascii() {
+                break;
+            }
+            let (face_hash, lface) = (face.hash, face.lface);
+            if face_hash == hash && lface_equal_p(self, &lface, attrs)? {
+                return Ok(id);
+            }
+        }
+        Ok(self.realize_face(f, *attrs, None))
+    }
+
+    pub fn lookup_named_face(
+        &mut self,
+        w: Option<Value>,
+        f: Value,
+        symbol: Value,
+        signal_p: bool,
+    ) -> LispResult<i64> {
+        if self.face_from_id(f, DEFAULT_FACE_ID).is_none() && !self.realize_basic_faces(f)? {
+            return Ok(-1);
+        }
+        let default_lface = self
+            .face_from_id(f, DEFAULT_FACE_ID)
+            .expect("default face is not realized")
+            .lface;
+        let base = self.stack.len();
+        let r = (|| -> LispResult<i64> {
+            let symbol_attrs = self.attrs_push(sym::UNSPECIFIED);
+            let mut points = MergePoints::new();
+            if !self.get_lface_attributes(
+                w,
+                Some(f),
+                symbol,
+                symbol_attrs,
+                signal_p,
+                &mut points,
+            )? {
+                return Ok(-1);
+            }
+            let attrs = self.attrs_push_from(&default_lface);
+            for i in 1..N {
+                if resetp(self.at(symbol_attrs, i)) {
+                    let v = self.at(attrs, i);
+                    self.set_at(symbol_attrs, i, v);
+                }
+            }
+            self.merge_face_vectors(w, Some(f), symbol_attrs, attrs, &mut points)?;
+            let merged = self.attrs_snapshot(attrs);
+            Ok(self.lookup_face(f, &merged)? as i64)
+        })();
+        self.stack.truncate(base);
+        r
+    }
+
+    pub fn lookup_basic_face(
+        &mut self,
+        w: Option<Value>,
+        f: Value,
+        face_id: usize,
+    ) -> LispResult<usize> {
+        let alist = self.find_symbol_value(sym::FACE_REMAPPING_ALIST);
+        if alist.is_nil() {
+            return Ok(face_id);
+        }
+        let name = if face_id == DEFAULT_FACE_ID {
+            sym::DEFAULT
+        } else {
+            BASIC_FACES
+                .iter()
+                .find(|&&(_, id)| id == face_id)
+                .map(|&(name, _)| name)
+                .expect("not a basic face id")
+        };
+        let mapping = self.assq(name, alist);
+        if mapping.is_nil() {
+            let base = self.stack.len();
+            let face_attrs = self.attrs_push(sym::UNSPECIFIED);
+            let mut points = MergePoints::new();
+            let ok = self.get_lface_attributes(w, Some(f), name, face_attrs, false, &mut points);
+            let inherit = self.at(face_attrs, LFACE_INHERIT_INDEX);
+            self.stack.truncate(base);
+            if !ok? || inherit.is_nil() || unspecifiedp(inherit) {
+                return Ok(face_id);
+            }
+        }
+        let remapped_face_id = self.lookup_named_face(w, f, name, false)?;
+        if remapped_face_id < 0 {
+            return Ok(face_id);
+        }
+        Ok(remapped_face_id as usize)
+    }
+
+    pub fn realize_basic_faces(&mut self, f: Value) -> LispResult<bool> {
+        if !self.realize_default_face(f)? {
+            return Ok(false);
+        }
+        let count = self.specpdl.len();
+        let r = (|| -> LispResult<()> {
+            self.specbind(sym::FACE_REMAPPING_ALIST, Value::NIL)?;
+            for (symbol, id) in BASIC_FACES {
+                self.realize_named_face(f, symbol, id)?;
+            }
+            Ok(())
+        })();
+        let u = self.unbind_to(count);
+        r?;
+        u?;
+        let cache = self.face_cache_mut(f);
+        if cache.menu_face_changed_p {
+            cache.menu_face_changed_p = false;
+        }
+        Ok(true)
+    }
+
+    fn realize_default_face(&mut self, f: Value) -> LispResult<bool> {
+        let mut lface = self.lface_from_face_name(Some(f), sym::DEFAULT, false)?;
+        if lface.is_nil() {
+            lface = f_internal_make_lisp_face(self, &[sym::DEFAULT, f])?;
+        }
+        if self.frame(f).window_p() {
+            unreachable!("window-system frames need set_lface_from_font");
+        }
+        let family = self.string("default");
+        self.lface_aset(lface, LFACE_FAMILY_INDEX, family);
+        self.lface_aset(lface, LFACE_FOUNDRY_INDEX, family);
+        self.lface_aset(lface, LFACE_SWIDTH_INDEX, sym::NORMAL);
+        self.lface_aset(lface, LFACE_HEIGHT_INDEX, Value::fixnum(1));
+        for (i, value) in [
+            (LFACE_WEIGHT_INDEX, sym::NORMAL),
+            (LFACE_SLANT_INDEX, sym::NORMAL),
+            (LFACE_FONTSET_INDEX, Value::NIL),
+            (LFACE_EXTEND_INDEX, Value::NIL),
+            (LFACE_UNDERLINE_INDEX, Value::NIL),
+            (LFACE_OVERLINE_INDEX, Value::NIL),
+            (LFACE_STRIKE_THROUGH_INDEX, Value::NIL),
+            (LFACE_BOX_INDEX, Value::NIL),
+            (LFACE_INVERSE_INDEX, Value::NIL),
+        ] {
+            if unspecifiedp(self.lface_aref(lface, i)) {
+                self.lface_aset(lface, i, value);
+            }
+        }
+        for (i, param, unspecified) in [
+            (
+                LFACE_FOREGROUND_INDEX,
+                sym::FOREGROUND_COLOR,
+                "unspecified-fg",
+            ),
+            (
+                LFACE_BACKGROUND_INDEX,
+                sym::BACKGROUND_COLOR,
+                "unspecified-bg",
+            ),
+        ] {
+            if unspecifiedp(self.lface_aref(lface, i)) {
+                let params = self.frame(f).param_alist;
+                let color = self.assq(param, params);
+                if color.is_cons() && self.xcdr(color).is_string() {
+                    let value = self.xcdr(color);
+                    self.lface_aset(lface, i, value);
+                } else if self.frame(f).window_p() {
+                    return Ok(false);
+                } else {
+                    let value = self.string(unspecified);
+                    self.lface_aset(lface, i, value);
+                }
+            }
+        }
+        if unspecifiedp(self.lface_aref(lface, LFACE_STIPPLE_INDEX)) {
+            self.lface_aset(lface, LFACE_STIPPLE_INDEX, Value::NIL);
+        }
+        let attrs = self.lface_contents(lface);
+        let count = self.specpdl.len();
+        self.specbind(sym::INHIBIT_REDISPLAY, sym::T)?;
+        self.realize_face(f, attrs, Some(DEFAULT_FACE_ID));
+        self.unbind_to(count)?;
+        Ok(true)
+    }
+
+    fn realize_named_face(&mut self, f: Value, symbol: Value, id: usize) -> LispResult<()> {
+        let base = self.stack.len();
+        let r = self.realize_named_face_1(f, symbol, id);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn realize_named_face_1(&mut self, f: Value, symbol: Value, id: usize) -> LispResult<()> {
+        let lface = self.lface_from_face_name(Some(f), symbol, false)?;
+        let attrs = self.attrs_push(sym::UNSPECIFIED);
+        self.get_lface_attributes_no_remap(Some(f), sym::DEFAULT, attrs, true)?;
+        if lface.is_nil() {
+            f_internal_make_lisp_face(self, &[symbol, f])?;
+        }
+        let symbol_attrs = self.attrs_push(sym::UNSPECIFIED);
+        self.get_lface_attributes_no_remap(Some(f), symbol, symbol_attrs, true)?;
+        for i in 1..N {
+            if resetp(self.at(symbol_attrs, i)) {
+                let v = self.at(attrs, i);
+                self.set_at(symbol_attrs, i, v);
+            }
+        }
+        let mut points = MergePoints::new();
+        self.merge_face_vectors(None, Some(f), symbol_attrs, attrs, &mut points)?;
+        let merged = self.attrs_snapshot(attrs);
+        self.realize_face(f, merged, Some(id));
+        Ok(())
+    }
+
+    fn gui_supports_face_attributes_p(
+        &mut self,
+        f: Value,
+        attrs: &[Value; N],
+        def_attrs: &[Value; N],
+        def_font: Value,
+    ) -> LispResult<bool> {
+        let mut lattrs = *attrs;
+        for i in 1..N {
+            if resetp(attrs[i]) {
+                lattrs[i] = def_attrs[i];
+            }
+        }
+        for i in [
+            LFACE_UNDERLINE_INDEX,
+            LFACE_INVERSE_INDEX,
+            LFACE_EXTEND_INDEX,
+            LFACE_FOREGROUND_INDEX,
+            LFACE_DISTANT_FOREGROUND_INDEX,
+            LFACE_BACKGROUND_INDEX,
+            LFACE_STIPPLE_INDEX,
+            LFACE_OVERLINE_INDEX,
+            LFACE_STRIKE_THROUGH_INDEX,
+            LFACE_BOX_INDEX,
+        ] {
+            if !unspecifiedp(lattrs[i]) && face_attr_equal_p(self, lattrs[i], def_attrs[i])? {
+                return Ok(false);
+            }
+        }
+        if [
+            LFACE_FAMILY_INDEX,
+            LFACE_FOUNDRY_INDEX,
+            LFACE_HEIGHT_INDEX,
+            LFACE_WEIGHT_INDEX,
+            LFACE_SLANT_INDEX,
+            LFACE_SWIDTH_INDEX,
+        ]
+        .iter()
+        .any(|&i| !unspecifiedp(lattrs[i]))
+        {
+            let base = self.stack.len();
+            let r = (|| -> LispResult<usize> {
+                let merged = self.attrs_push_from(def_attrs);
+                let from = self.attrs_push_from(attrs);
+                let mut points = MergePoints::new();
+                self.merge_face_vectors(None, Some(f), from, merged, &mut points)?;
+                let merged = self.attrs_snapshot(merged);
+                self.lookup_face(f, &merged)
+            })();
+            self.stack.truncate(base);
+            let face_id = r?;
+            let Some(face) = self.face_from_id(f, face_id) else {
+                return Err(self.error("Cannot make face"));
+            };
+            let font = face.font;
+            if font == def_font || font.is_nil() {
+                return Ok(false);
+            }
+            unreachable!("faces with fonts exist only on window-system frames");
+        }
+        let val = attrs[LFACE_UNDERLINE_INDEX];
+        if !unspecifiedp(val) && self.car_safe(val) == sym::K_STYLE {
+            let style = self.car_safe(self.cdr_safe(val));
+            if !(style == sym::LINE || style == sym::WAVE) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub fn clear_face_cache(&mut self, clear_fonts_p: bool) {
@@ -1427,7 +2025,12 @@ impl Lisp {
 
     fn free_all_realized_faces(&mut self, frame: Value) {
         if frame.is_nil() {
+            for f in self.frame_list_vec() {
+                self.free_realized_faces(f);
+            }
             self.windows.windows_or_buffers_changed = 58;
+        } else {
+            self.free_realized_faces(frame);
         }
     }
 
@@ -2212,13 +2815,27 @@ fn f_display_supports_face_attributes_p(lisp: &mut Lisp, args: &[Value]) -> Lisp
     };
     lisp.check_live_frame(frame)?;
     let base = lisp.stack.len();
-    let attrs = lisp.attrs_push(sym::UNSPECIFIED);
-    let mut points = MergePoints::new();
-    let r = lisp.merge_face_ref(None, Some(frame), attributes, attrs, true, &mut points, 0);
+    let r = (|| -> LispResult<bool> {
+        let attrs = lisp.attrs_push(sym::UNSPECIFIED);
+        let mut points = MergePoints::new();
+        lisp.merge_face_ref(None, Some(frame), attributes, attrs, true, &mut points, 0)?;
+        if lisp.face_from_id(frame, DEFAULT_FACE_ID).is_none()
+            && !lisp.realize_basic_faces(frame)?
+        {
+            return Err(lisp.error("Cannot realize default face"));
+        }
+        let def_face = lisp
+            .face_from_id(frame, DEFAULT_FACE_ID)
+            .expect("default face is not realized");
+        let (def_attrs, def_font) = (def_face.lface, def_face.font);
+        if lisp.frame(frame).termcap_p() {
+            unreachable!("tty frames need tty_supports_face_attributes_p");
+        }
+        let attrs = lisp.attrs_snapshot(attrs);
+        lisp.gui_supports_face_attributes_p(frame, &attrs, &def_attrs, def_font)
+    })();
     lisp.stack.truncate(base);
-    r?;
-    lisp.realized_default_face_attrs(Some(frame))?;
-    Ok(Value::NIL)
+    Ok(lisp.bool(r?))
 }
 
 fn f_color_distance(lisp: &mut Lisp, args: &[Value]) -> LispResult {

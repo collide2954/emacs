@@ -138,7 +138,7 @@ impl Lisp {
         }
     }
 
-    fn vector_set(&mut self, v: Value, i: usize, val: Value) {
+    pub(crate) fn vector_set(&mut self, v: Value, i: usize, val: Value) {
         if let Vectorlike::Vector(items) = self.heap.vectorlike_mut(v) {
             items[i] = val;
         }
