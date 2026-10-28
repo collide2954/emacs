@@ -83,10 +83,18 @@ writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
 
 `emacs --batch` loads every preloaded file in `loadup.el`, including the `w32-*` files and
 `cus-start.el`, and runs `Snarf-documentation`. Startup (`init_buffer` gives `*scratch*`
-its `default-directory`) then runs `command-line` to the end and calls `kill-emacs`.
-`kill-emacs` is still an early approximation: it lacks `shut_down_emacs` and `do-auto-save`
-(`set-buffer-auto-saved` and `recent-auto-save-p` are stubs), and it exits with 1 for a
-non-integer ARG where C exits successfully.
+its `default-directory`) then runs `command-line` to the end, where `command-line-1`
+reports "Unknown option ‘--batch’" and calls `kill-emacs`. The cause is `crates/emacs`'s
+`main.rs`: it puts every argument into `command-line-args`, while C's `main` consumes the
+options it handles (`argmatch`, `sort_args`, `skip_args`) and leaves only the rest for
+Lisp. Porting that argument handling from `emacs.c` is the next step. After it:
+
+- `kill-emacs` is still an early approximation: it lacks `shut_down_emacs` and
+  `do-auto-save`, and it exits with 1 for a non-integer ARG where C exits successfully.
+- `set-buffer-auto-saved` and `recent-auto-save-p` are stubs.
+- `do-auto-save` needs `safe_run_hooks`, the echo-area message stack (`push_message`,
+  `restore_message`), `auto_saving` in `write-region`, `record_auto_save`, and `sleep-for`
+  and `sit-for`, which in turn need `wait_reading_process_output` from `process.c`.
 
 `emacs` without `--batch` stops while loading `window.el`. This is expected for now: the
 preloaded Lisp loads from source, so eager macro-expansion autoloads `flymake-log`, and
