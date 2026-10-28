@@ -38,8 +38,30 @@ impl Minibuf {
 }
 
 pub const SUBRS: &[Subr] = &[
+    Subr::fixed("active-minibuffer-window", 0, 0, f_active_minibuffer_window),
+    Subr::fixed("set-minibuffer-window", 1, 1, f_set_minibuffer_window),
     Subr::fixed("minibufferp", 0, 2, f_minibufferp),
     Subr::fixed("innermost-minibuffer-p", 0, 1, f_innermost_minibuffer_p),
+    Subr::fixed(
+        "minibuffer-innermost-command-loop-p",
+        0,
+        1,
+        f_minibuffer_innermost_command_loop_p,
+    ),
+    Subr::fixed("abort-minibuffers", 0, 0, f_abort_minibuffers).interactive(""),
+    Subr::fixed("minibuffer-prompt-end", 0, 0, f_minibuffer_prompt_end),
+    Subr::fixed("minibuffer-contents", 0, 0, f_minibuffer_contents),
+    Subr::fixed(
+        "minibuffer-contents-no-properties",
+        0,
+        0,
+        f_minibuffer_contents_no_properties,
+    ),
+    Subr::fixed("read-from-minibuffer", 1, 7, f_read_from_minibuffer),
+    Subr::fixed("read-string", 1, 5, f_read_string),
+    Subr::fixed("read-command", 1, 2, f_read_command),
+    Subr::fixed("read-variable", 1, 2, f_read_variable),
+    Subr::fixed("read-buffer", 1, 4, f_read_buffer),
     Subr::fixed("minibuffer-depth", 0, 0, f_minibuffer_depth),
     Subr::fixed("minibuffer-prompt", 0, 0, f_minibuffer_prompt),
     Subr::fixed("try-completion", 2, 3, f_try_completion),
@@ -237,6 +259,493 @@ fn f_innermost_minibuffer_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let tail = crate::fns::f_nthcdr(lisp, &[n, lisp.minibuf.minibuffer_list])?;
     let innermost = lisp.car_safe(tail);
     Ok(lisp.bool(buffer == innermost))
+}
+
+impl Lisp {
+    fn nth_minibuffer(&mut self, depth: i64) -> LispResult {
+        let list = self.minibuf.minibuffer_list;
+        let tail = crate::fns::f_nthcdr(self, &[Value::fixnum(depth), list])?;
+        self.car(tail)
+    }
+
+    fn minibuf_c_loop_level(&self, depth: i64) -> i64 {
+        self.nth(depth as usize, self.minibuf.command_loop_level_list)
+            .as_fixnum()
+            .unwrap_or(0)
+    }
+
+    fn string_to_object(&mut self, val: Value, defalt: Value) -> LispResult {
+        let mut val = val;
+        if val.is_string() && self.string_chars(val) == 0 {
+            if defalt.is_string() {
+                val = defalt;
+            } else if defalt.is_cons() && self.xcar(defalt).is_string() {
+                val = self.xcar(defalt);
+            }
+        }
+        let expr_and_pos = crate::lread::f_read_from_string(self, &[val, Value::NIL, Value::NIL])?;
+        let pos = self.cdr(expr_and_pos)?.as_fixnum().unwrap_or(0) as usize;
+        if pos != self.string_chars(val) {
+            let bytes = self.string_bytes(val);
+            let pos_byte = if self.string_multibyte(val) {
+                crate::character::char_offset_to_byte(bytes, pos)
+            } else {
+                pos
+            };
+            if bytes[pos_byte..]
+                .iter()
+                .any(|&c| c != b' ' && c != b'\t' && c != b'\n')
+            {
+                let msg = self.string("Trailing garbage following expression");
+                return Err(self.signal_list(sym::INVALID_READ_SYNTAX, &[msg]));
+            }
+        }
+        self.car(expr_and_pos)
+    }
+
+    fn read_minibuf_noninteractive(
+        &mut self,
+        prompt: Value,
+        expflag: bool,
+        defalt: Value,
+    ) -> LispResult {
+        use std::io::{Read, Write};
+        let hide_char = match self.plain_value(sym::READ_HIDE_CHAR).as_fixnum() {
+            Some(n) if (0..=crate::character::MAX_CHAR as i64).contains(&n) => n as u8,
+            _ => 0,
+        };
+        let bytes = self.string_bytes(prompt).to_vec();
+        let _ = self.stdout.write_all(&bytes);
+        let _ = self.stdout.flush();
+        let mut line = Vec::new();
+        let mut last = None;
+        loop {
+            let mut byte = [0u8; 1];
+            match self.stdin.read(&mut byte) {
+                Ok(1) => {
+                    if byte[0] == b'\n' || byte[0] == b'\r' {
+                        last = Some(byte[0]);
+                        break;
+                    }
+                    if hide_char != 0 {
+                        let _ = self.stdout.write_all(&[hide_char]);
+                    }
+                    line.push(byte[0]);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                _ => break,
+            }
+        }
+        if hide_char != 0 {
+            let _ = self.stdout.write_all(b"\n");
+        }
+        if line.is_empty() && last.is_none() {
+            let msg = self.string("Error reading from stdin");
+            return Err(self.signal_list(sym::END_OF_FILE, &[msg]));
+        }
+        let val = self.make_string(&line);
+        if expflag {
+            let defalt = if defalt.is_cons() {
+                self.xcar(defalt)
+            } else {
+                defalt
+            };
+            return self.string_to_object(val, defalt);
+        }
+        Ok(val)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_minibuf(
+        &mut self,
+        map: Value,
+        initial: Value,
+        prompt: Value,
+        expflag: bool,
+        histvar: Value,
+        histpos: Value,
+        defalt: Value,
+        allow_props: bool,
+        inherit_input_method: bool,
+    ) -> LispResult {
+        let count = self.specpdl.len();
+        let r = self.read_minibuf_1(
+            map,
+            initial,
+            prompt,
+            expflag,
+            histvar,
+            histpos,
+            defalt,
+            allow_props,
+            inherit_input_method,
+        );
+        self.unbind_to_value(count, r)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_minibuf_1(
+        &mut self,
+        map: Value,
+        initial: Value,
+        prompt: Value,
+        expflag: bool,
+        histvar: Value,
+        histpos: Value,
+        defalt: Value,
+        allow_props: bool,
+        inherit_input_method: bool,
+    ) -> LispResult {
+        self.specbind(sym::MINIBUFFER_DEFAULT, defalt)?;
+        self.specbind(sym::INHIBIT_READ_ONLY, Value::NIL)?;
+        let this_command = self.plain_value(sym::THIS_COMMAND);
+        self.specbind(sym::CURRENT_MINIBUFFER_COMMAND, this_command)?;
+        let completing_file_name = self.plain_value(sym::MINIBUFFER_COMPLETING_FILE_NAME);
+        self.specbind(sym::MINIBUFFER_COMPLETING_FILE_NAME, completing_file_name)?;
+        if completing_file_name == sym::LAMBDA {
+            self.set_plain_value(sym::MINIBUFFER_COMPLETING_FILE_NAME, Value::NIL);
+        }
+        let mut initial = initial;
+        let mut pos = 0;
+        if !initial.is_nil() {
+            if initial.is_cons() {
+                let backup_n = self.xcdr(initial);
+                initial = self.xcar(initial);
+                self.check_string(initial)?;
+                if !backup_n.is_nil() {
+                    let n = self.check_fixnum(backup_n)?;
+                    let len = self.string_chars(initial) as i64;
+                    pos = if n < 1 { -len } else { n - 1 - len };
+                }
+            } else {
+                self.check_string(initial)?;
+            }
+        }
+        let prompt = if prompt.is_string() {
+            prompt
+        } else {
+            self.empty_unibyte
+        };
+        if !self.var_true(sym::ENABLE_RECURSIVE_MINIBUFFERS) && self.minibuf.minibuf_level > 0 {
+            let str = self.string("Command attempted to use minibuffer while in minibuffer");
+            if self.windows.selected_window == self.windows.minibuf_window {
+                return Err(self.signal_list(sym::USER_ERROR, &[str]));
+            }
+            return Err(self.throw(sym::EXIT, str));
+        }
+        if self.noninteractive() && self.plain_value(sym::EXECUTING_KBD_MACRO).is_nil() {
+            return self.read_minibuf_noninteractive(prompt, expflag, defalt);
+        }
+        self.read_minibuf_interactive(
+            map,
+            initial,
+            pos,
+            prompt,
+            expflag,
+            histvar,
+            histpos,
+            defalt,
+            allow_props,
+            inherit_input_method,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn read_minibuf_interactive(
+        &mut self,
+        _map: Value,
+        _initial: Value,
+        _pos: i64,
+        _prompt: Value,
+        _expflag: bool,
+        _histvar: Value,
+        _histpos: Value,
+        _defalt: Value,
+        _allow_props: bool,
+        _inherit_input_method: bool,
+    ) -> LispResult {
+        Err(self.error("Interactive minibuffer input needs the keyboard command loop"))
+    }
+}
+
+fn f_active_minibuffer_window(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    if lisp.minibuf.minibuf_level == 0 {
+        return Ok(Value::NIL);
+    }
+    let level = lisp.minibuf.minibuf_level;
+    let innermost = lisp.nth_minibuffer(level)?;
+    assert!(
+        !innermost.is_nil(),
+        "no buffer for the innermost minibuffer"
+    );
+    for frame in lisp.frames.list.clone() {
+        if !lisp.frame_live_p(frame) {
+            continue;
+        }
+        let mw = lisp.frame(frame).minibuffer_window;
+        if lisp.window_live_p(mw) && lisp.window(mw).contents == innermost {
+            return Ok(mw);
+        }
+    }
+    Ok(lisp.windows.minibuf_window)
+}
+
+fn f_set_minibuffer_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let window = args[0];
+    if !lisp.is_window(window) {
+        return Err(lisp.wrong_type(sym::WINDOWP, window));
+    }
+    if !lisp.window(window).mini {
+        return Err(lisp.error("Window is not a minibuffer window"));
+    }
+    lisp.windows.minibuf_window = window;
+    Ok(window)
+}
+
+fn f_minibuffer_innermost_command_loop_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let buffer = if args[0].is_nil() {
+        lisp.current_buffer
+    } else {
+        args[0]
+    };
+    let depth = lisp.this_minibuffer_depth(buffer);
+    let r = depth != 0 && lisp.minibuf_c_loop_level(depth) == lisp.minibuf.command_loop_level;
+    Ok(lisp.bool(r))
+}
+
+fn f_abort_minibuffers(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let minibuf_depth = lisp.this_minibuffer_depth(Value::NIL);
+    if minibuf_depth == 0 {
+        return Err(lisp.error("Not in a minibuffer"));
+    }
+    if f_minibuffer_innermost_command_loop_p(lisp, &[Value::NIL])?.is_nil() {
+        return Err(lisp.error("Not in most nested command loop"));
+    }
+    if minibuf_depth < lisp.minibuf.minibuf_level {
+        let fmt = lisp.string("Abort %s minibuffer levels? ");
+        let levels = Value::fixnum(lisp.minibuf.minibuf_level - minibuf_depth + 1);
+        let question = crate::editfns::f_format(lisp, &[fmt, levels])?;
+        if !lisp.funcall(sym::YES_OR_NO_P, &[question])?.is_nil() {
+            lisp.funcall(sym::MINIBUFFER_QUIT_RECURSIVE_EDIT, &[levels])?;
+        }
+    } else {
+        lisp.funcall(sym::MINIBUFFER_QUIT_RECURSIVE_EDIT, &[])?;
+    }
+    Ok(Value::NIL)
+}
+
+fn minibuffer_prompt_end(lisp: &mut Lisp) -> LispResult<usize> {
+    let beg = lisp.cur().begv;
+    if lisp
+        .memq(lisp.current_buffer, lisp.minibuf.minibuffer_list)
+        .is_nil()
+    {
+        return Ok(beg);
+    }
+    let begv = Value::fixnum(beg as i64);
+    let (_, end) = lisp.find_field(begv, Value::NIL, Value::NIL, Value::NIL)?;
+    if end == lisp.cur().zv
+        && lisp
+            .get_char_property(begv, sym::FIELD, Value::NIL)?
+            .is_nil()
+    {
+        Ok(beg)
+    } else {
+        Ok(end)
+    }
+}
+
+fn f_minibuffer_prompt_end(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    Ok(Value::fixnum(minibuffer_prompt_end(lisp)? as i64))
+}
+
+fn f_minibuffer_contents(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let prompt_end = minibuffer_prompt_end(lisp)?;
+    let zv = lisp.cur().zv;
+    Ok(lisp.buffer_substring_value(prompt_end, zv, true))
+}
+
+fn f_minibuffer_contents_no_properties(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let prompt_end = minibuffer_prompt_end(lisp)?;
+    let zv = lisp.cur().zv;
+    Ok(lisp.buffer_substring_value(prompt_end, zv, false))
+}
+
+fn f_read_from_minibuffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (prompt, initial_contents, keymap, read, hist, default_value, inherit_input_method) = (
+        args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+    );
+    if lisp.var_true(sym::INHIBIT_INTERACTION) {
+        return Err(lisp.signal(sym::INHIBITED_INTERACTION, Value::NIL));
+    }
+    lisp.check_string(prompt)?;
+    let keymap = if keymap.is_nil() {
+        lisp.plain_value(sym::MINIBUFFER_LOCAL_MAP)
+    } else {
+        lisp.get_keymap(keymap, true, false)?
+    };
+    let (mut histvar, mut histpos) = if hist.is_symbol() {
+        (hist, Value::NIL)
+    } else {
+        (lisp.car_safe(hist), lisp.cdr_safe(hist))
+    };
+    if histvar.is_nil() {
+        histvar = sym::MINIBUFFER_HISTORY;
+    }
+    if histpos.is_nil() {
+        histpos = Value::fixnum(0);
+    }
+    let allow_props = lisp.var_true(sym::MINIBUFFER_ALLOW_TEXT_PROPERTIES);
+    lisp.read_minibuf(
+        keymap,
+        initial_contents,
+        prompt,
+        !read.is_nil(),
+        histvar,
+        histpos,
+        default_value,
+        allow_props,
+        !inherit_input_method.is_nil(),
+    )
+}
+
+fn f_read_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (prompt, initial_input, history, default_value, inherit_input_method) =
+        (args[0], args[1], args[2], args[3], args[4]);
+    let count = lisp.specpdl.len();
+    let r = (|| -> LispResult {
+        lisp.specbind(sym::MINIBUFFER_COMPLETION_TABLE, Value::NIL)?;
+        let mut val = f_read_from_minibuffer(
+            lisp,
+            &[
+                prompt,
+                initial_input,
+                Value::NIL,
+                Value::NIL,
+                history,
+                default_value,
+                inherit_input_method,
+            ],
+        )?;
+        if val.is_string() && lisp.string_chars(val) == 0 && !default_value.is_nil() {
+            val = if default_value.is_cons() {
+                lisp.xcar(default_value)
+            } else {
+                default_value
+            };
+        }
+        Ok(val)
+    })();
+    lisp.unbind_to_value(count, r)
+}
+
+fn default_string(lisp: &Lisp, default_value: Value) -> Value {
+    if default_value.is_nil() {
+        Value::NIL
+    } else if default_value.is_symbol() {
+        lisp.symbol_name(default_value)
+    } else {
+        default_value
+    }
+}
+
+fn f_read_command(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let default_string = default_string(lisp, args[1]);
+    let obarray = lisp.plain_value(sym::OBARRAY);
+    let name = f_completing_read(
+        lisp,
+        &[
+            args[0],
+            obarray,
+            sym::COMMANDP,
+            sym::T,
+            Value::NIL,
+            Value::NIL,
+            default_string,
+            Value::NIL,
+        ],
+    )?;
+    if name.is_nil() {
+        return Ok(name);
+    }
+    crate::lread::f_intern(lisp, &[name, Value::NIL])
+}
+
+fn f_read_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let default_string = default_string(lisp, args[1]);
+    let obarray = lisp.plain_value(sym::OBARRAY);
+    let name = f_completing_read(
+        lisp,
+        &[
+            args[0],
+            obarray,
+            sym::CUSTOM_VARIABLE_P,
+            sym::T,
+            Value::NIL,
+            sym::CUSTOM_VARIABLE_HISTORY,
+            default_string,
+            Value::NIL,
+        ],
+    )?;
+    if name.is_nil() {
+        return Ok(name);
+    }
+    crate::lread::f_intern(lisp, &[name, Value::NIL])
+}
+
+fn f_read_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (mut prompt, mut def, require_match, predicate) = (args[0], args[1], args[2], args[3]);
+    if lisp.is_buffer(def) {
+        def = lisp.buffer(def).name;
+    }
+    let count = lisp.specpdl.len();
+    let r = (|| -> LispResult {
+        let ignore_case = lisp.var_true(sym::READ_BUFFER_COMPLETION_IGNORE_CASE);
+        let ignore_case = lisp.bool(ignore_case);
+        lisp.specbind(sym::COMPLETION_IGNORE_CASE, ignore_case)?;
+        let function = lisp.plain_value(sym::READ_BUFFER_FUNCTION);
+        if function.is_nil() {
+            if !def.is_nil() {
+                if prompt.is_string() {
+                    let s = lisp.string_bytes(prompt).to_vec();
+                    let mut len = s.len();
+                    if len >= 2 && s[len - 2] == b':' && s[len - 1] == b' ' {
+                        len -= 2;
+                    } else if len >= 1 && (s[len - 1] == b':' || s[len - 1] == b' ') {
+                        len -= 1;
+                    }
+                    let data = s[..len].to_vec();
+                    let string = if lisp.string_multibyte(prompt) {
+                        let chars = crate::character::chars_in_multibyte(&data);
+                        crate::object::LispString::multibyte(data, chars)
+                    } else {
+                        crate::object::LispString::unibyte(data)
+                    };
+                    prompt = lisp.heap.string(string);
+                }
+                let shown = if def.is_cons() { lisp.xcar(def) } else { def };
+                prompt = lisp.funcall(sym::FORMAT_PROMPT, &[prompt, shown])?;
+            }
+            f_completing_read(
+                lisp,
+                &[
+                    prompt,
+                    sym::INTERNAL_COMPLETE_BUFFER,
+                    predicate,
+                    require_match,
+                    Value::NIL,
+                    sym::BUFFER_NAME_HISTORY,
+                    def,
+                    Value::NIL,
+                ],
+            )
+        } else if predicate.is_nil() {
+            lisp.funcall(function, &[prompt, def, require_match])
+        } else {
+            lisp.funcall(function, &[prompt, def, require_match, predicate])
+        }
+    })();
+    lisp.unbind_to_value(count, r)
 }
 
 fn f_minibuffer_depth(lisp: &mut Lisp, _args: &[Value]) -> LispResult {

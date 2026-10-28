@@ -1139,7 +1139,7 @@ fn f_propertize(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(string)
 }
 
-fn f_format(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_format(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.format_string(args, false)
 }
 

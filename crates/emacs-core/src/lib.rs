@@ -30,6 +30,7 @@ pub mod keyboard;
 pub mod keymap;
 pub mod lisp;
 pub mod lread;
+pub mod macros;
 pub mod marker;
 pub mod minibuf;
 pub mod object;
