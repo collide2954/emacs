@@ -248,7 +248,18 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-display-table", 0, 1, f_window_display_table),
     Subr::fixed("set-window-display-table", 2, 2, f_set_window_display_table),
     Subr::fixed("window-margins", 0, 1, f_window_margins),
+    Subr::fixed("next-window", 0, 3, f_next_window),
+    Subr::fixed("previous-window", 0, 3, f_previous_window),
+    Subr::fixed("window-list", 0, 3, f_window_list),
+    Subr::fixed("window-list-1", 0, 3, f_window_list_1),
+    Subr::fixed("get-buffer-window", 0, 2, f_get_buffer_window),
 ];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum WindowLoop {
+    GetBufferWindow,
+    ReplaceBufferInWindowsSafely,
+}
 
 pub fn init_vars(lisp: &mut Lisp) {
     lisp.put(sym::SCROLL_UP, sym::SCROLL_COMMAND, sym::T);
@@ -392,6 +403,320 @@ impl Lisp {
         } else {
             Err(self.wrong_type(sym::WINDOWP, window))
         }
+    }
+
+    fn collect_windows(&self, w: Value, out: &mut Vec<Value>) {
+        let mut w = w;
+        loop {
+            let contents = self.window(w).contents;
+            if self.is_window(contents) {
+                self.collect_windows(contents, out);
+            } else {
+                out.push(w);
+            }
+            let next = self.window(w).next;
+            if next.is_nil() {
+                break;
+            }
+            w = next;
+        }
+    }
+
+    pub fn foreach_window_list(&self, f: Value) -> Vec<Value> {
+        let mut out = Vec::new();
+        let root = self.frame(f).root_window;
+        if self.is_window(root) {
+            self.collect_windows(root, &mut out);
+        }
+        out
+    }
+
+    pub fn window_list(&mut self) -> LispResult {
+        if !self.windows.window_list.is_cons() {
+            let count = self.specpdl.len();
+            self.windows.window_list = Value::NIL;
+            self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+            let mut all = Vec::new();
+            for frame in self.frame_list_vec() {
+                all.extend(self.foreach_window_list(frame));
+            }
+            self.windows.window_list = self.list(&all);
+            self.unbind_to(count)?;
+        }
+        Ok(self.windows.window_list)
+    }
+
+    fn candidate_window_p(
+        &self,
+        window: Value,
+        owindow: Value,
+        minibuf: Value,
+        all_frames: Value,
+    ) -> bool {
+        let w = self.window(window);
+        let f = self.frame(w.frame);
+        let same_terminal =
+            || self.frame(w.frame).terminal == self.frame(self.frames.selected_frame).terminal;
+        let excluded_mini = w.mini
+            && (minibuf == sym::LAMBDA || (self.window_live_p(minibuf) && minibuf != window));
+        if !self.is_buffer(w.contents) || excluded_mini {
+            false
+        } else if all_frames == sym::T {
+            true
+        } else if all_frames.is_nil() {
+            w.frame == self.window(owindow).frame
+        } else if all_frames == sym::VISIBLE {
+            f.flags.visible && same_terminal()
+        } else if all_frames == Value::fixnum(0) {
+            (f.flags.visible || f.flags.iconified) && same_terminal()
+        } else if self.is_window(all_frames) {
+            let aw = self.window(all_frames);
+            (aw.frame == w.frame
+                || (f.minibuffer_window == all_frames && aw.frame == f.focus_frame))
+                && (minibuf == sym::T || !self.is_minibuffer(0, aw.contents))
+        } else if self.is_frame(all_frames) {
+            all_frames == w.frame
+        } else {
+            true
+        }
+    }
+
+    fn decode_next_window_args(
+        &mut self,
+        window: Value,
+        minibuf: Value,
+        all_frames: Value,
+    ) -> LispResult<(Value, Value, Value)> {
+        let window = self.decode_live_window(window)?;
+        let miniwin = self.frame(self.window(window).frame).minibuffer_window;
+        let mut minibuf = minibuf;
+        if self.window_live_p(miniwin) && minibuf.is_nil() {
+            let contents = self.window(miniwin).contents;
+            minibuf = if self.this_minibuffer_depth(contents) != 0 {
+                miniwin
+            } else {
+                sym::LAMBDA
+            };
+        } else if minibuf != sym::T {
+            minibuf = sym::LAMBDA;
+        }
+        let mut all_frames = all_frames;
+        if all_frames.is_nil() {
+            all_frames = if self.window_live_p(miniwin) && minibuf != sym::LAMBDA {
+                miniwin
+            } else {
+                Value::NIL
+            };
+        } else if all_frames == sym::VISIBLE
+            || all_frames == Value::fixnum(0)
+            || self.is_frame(all_frames)
+        {
+        } else if all_frames != sym::T {
+            all_frames = Value::NIL;
+        }
+        Ok((window, minibuf, all_frames))
+    }
+
+    fn next_window(
+        &mut self,
+        window: Value,
+        minibuf: Value,
+        all_frames: Value,
+        next_p: bool,
+    ) -> LispResult {
+        let count = self.specpdl.len();
+        let (mut window, minibuf, all_frames) =
+            self.decode_next_window_args(window, minibuf, all_frames)?;
+        if self.is_frame(all_frames) && all_frames != self.window(window).frame {
+            return f_frame_first_window(self, &[all_frames]);
+        }
+        self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+        let all = self.window_list()?;
+        if next_p {
+            let mut list = self.memq(window, all);
+            if list.is_cons() {
+                list = self.xcdr(list);
+                while list.is_cons() {
+                    if self.candidate_window_p(self.xcar(list), window, minibuf, all_frames) {
+                        break;
+                    }
+                    list = self.xcdr(list);
+                }
+            }
+            if !list.is_cons() {
+                list = self.windows.window_list;
+                while list.is_cons() && self.xcar(list) != window {
+                    if self.candidate_window_p(self.xcar(list), window, minibuf, all_frames) {
+                        break;
+                    }
+                    list = self.xcdr(list);
+                }
+            }
+            if list.is_cons() {
+                window = self.xcar(list);
+            }
+        } else {
+            let mut candidate = Value::NIL;
+            let mut list = all;
+            while list.is_cons() {
+                let w = self.xcar(list);
+                if w == window {
+                    if self.is_window(candidate) {
+                        break;
+                    }
+                } else if self.candidate_window_p(w, window, minibuf, all_frames) {
+                    candidate = w;
+                }
+                list = self.xcdr(list);
+            }
+            if self.is_window(candidate) {
+                window = candidate;
+            }
+        }
+        self.unbind_to(count)?;
+        Ok(window)
+    }
+
+    pub fn window_list_1(
+        &mut self,
+        window: Value,
+        minibuf: Value,
+        all_frames: Value,
+    ) -> LispResult {
+        let count = self.specpdl.len();
+        let (window, minibuf, all_frames) =
+            self.decode_next_window_args(window, minibuf, all_frames)?;
+        self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+        let all = self.window_list()?;
+        let mut items = Vec::new();
+        let mut tail = all;
+        while tail.is_cons() {
+            let w = self.xcar(tail);
+            if self.candidate_window_p(w, window, minibuf, all_frames) {
+                items.push(w);
+            }
+            tail = self.xcdr(tail);
+        }
+        if let Some(pos) = items.iter().position(|&w| w == window) {
+            items.rotate_left(pos);
+        }
+        let list = self.list(&items);
+        self.unbind_to(count)?;
+        Ok(list)
+    }
+
+    pub fn window_loop(
+        &mut self,
+        kind: WindowLoop,
+        obj: Value,
+        mini: bool,
+        frames: Value,
+    ) -> LispResult {
+        let f = if self.is_frame(frames) {
+            Some(frames)
+        } else if frames.is_nil() {
+            Some(self.frames.selected_frame)
+        } else {
+            None
+        };
+        let frame_arg = if f.is_some() {
+            sym::LAMBDA
+        } else if frames == Value::fixnum(0) || frames == sym::VISIBLE {
+            frames
+        } else {
+            sym::T
+        };
+        let window = if self.is_window(obj) {
+            obj
+        } else {
+            let frame = f.unwrap_or(self.frames.selected_frame);
+            self.frame(frame).selected_window
+        };
+        let windows =
+            self.window_list_1(window, if mini { sym::T } else { Value::NIL }, frame_arg)?;
+        let base = self.stack.len();
+        self.stack.push(windows);
+        let r = self.window_loop_1(kind, obj, mini, windows);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn window_loop_1(
+        &mut self,
+        kind: WindowLoop,
+        obj: Value,
+        mini: bool,
+        windows: Value,
+    ) -> LispResult {
+        let mut best_window = Value::NIL;
+        let mut frame_best_window_flag = false;
+        let mut windows = windows;
+        while windows.is_cons() {
+            let window = self.xcar(windows);
+            windows = self.xcdr(windows);
+            let is_mini = self.window(window).mini;
+            if !(!is_mini
+                || kind == WindowLoop::ReplaceBufferInWindowsSafely
+                || (mini && self.minibuf.minibuf_level > 0))
+            {
+                continue;
+            }
+            match kind {
+                WindowLoop::GetBufferWindow => {
+                    let w = self.window(window);
+                    if w.contents == obj && (!w.mini || window == self.windows.minibuf_window) {
+                        if window == self.windows.selected_window {
+                            return Ok(window);
+                        } else if w.frame == self.frames.selected_frame && !frame_best_window_flag {
+                            best_window = window;
+                            frame_best_window_flag = true;
+                        } else if best_window.is_nil() {
+                            best_window = window;
+                        }
+                    }
+                }
+                WindowLoop::ReplaceBufferInWindowsSafely => {
+                    if self.window(window).contents == obj {
+                        self.window_mut(window).dedicated = Value::NIL;
+                        let contents = self.window(window).contents;
+                        let other = self.other_buffer_safely(contents);
+                        self.set_window_buffer(window, other, false, false)?;
+                        let contents = self.window(window).contents;
+                        if window == self.windows.selected_window && contents == self.current_buffer
+                        {
+                            crate::buffer::f_set_buffer(self, &[contents])?;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(best_window)
+    }
+
+    pub fn replace_buffer_in_windows(&mut self, buffer: Value) -> LispResult<()> {
+        if !self
+            .heap
+            .symbol_ref(sym::REPLACE_BUFFER_IN_WINDOWS)
+            .function
+            .is_nil()
+        {
+            self.funcall(sym::REPLACE_BUFFER_IN_WINDOWS, &[buffer])?;
+        }
+        Ok(())
+    }
+
+    pub fn replace_buffer_in_windows_safely(&mut self, buffer: Value) -> LispResult<()> {
+        if self.buffer(buffer).window_count > 0 {
+            for frame in self.frame_list_vec() {
+                self.window_loop(
+                    WindowLoop::ReplaceBufferInWindowsSafely,
+                    buffer,
+                    true,
+                    frame,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn decode_valid_window(&mut self, window: Value) -> LispResult<Value> {
@@ -834,6 +1159,53 @@ fn f_minibuffer_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_window_minibuffer_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let w = lisp.decode_valid_window(arg(args, 0))?;
     Ok(lisp.bool(lisp.window(w).mini))
+}
+
+fn f_next_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    lisp.next_window(arg(args, 0), arg(args, 1), arg(args, 2), true)
+}
+
+fn f_previous_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    lisp.next_window(arg(args, 0), arg(args, 1), arg(args, 2), false)
+}
+
+fn f_window_list(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (mut frame, minibuf, mut window) = (arg(args, 0), arg(args, 1), arg(args, 2));
+    if window.is_nil() {
+        window = if lisp.is_frame(frame) {
+            lisp.frame(frame).selected_window
+        } else {
+            lisp.windows.selected_window
+        };
+    }
+    if !lisp.is_window(window) {
+        return Err(lisp.wrong_type(sym::WINDOWP, window));
+    }
+    if frame.is_nil() {
+        frame = lisp.frames.selected_frame;
+    }
+    if frame != lisp.window(window).frame {
+        return Err(lisp.error("Window is on a different frame"));
+    }
+    lisp.window_list_1(window, minibuf, frame)
+}
+
+fn f_window_list_1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    lisp.window_list_1(arg(args, 0), arg(args, 1), arg(args, 2))
+}
+
+fn f_get_buffer_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (buffer_or_name, all_frames) = (arg(args, 0), arg(args, 1));
+    let buffer = if buffer_or_name.is_nil() {
+        lisp.current_buffer
+    } else {
+        crate::buffer::f_get_buffer(lisp, &[buffer_or_name])?
+    };
+    if lisp.is_buffer(buffer) {
+        lisp.window_loop(WindowLoop::GetBufferWindow, buffer, true, all_frames)
+    } else {
+        Ok(Value::NIL)
+    }
 }
 
 fn f_frame_first_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {

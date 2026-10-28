@@ -807,14 +807,27 @@ impl Lisp {
                 }
             }
             SymbolValue::Forwarded(Forward::Kboard(slot)) => self.kboard_slot(*slot),
-            SymbolValue::Localized(l) => l.default,
+            SymbolValue::Localized(l) => self
+                .buffer_local_get(self.current_buffer, symbol)
+                .unwrap_or(l.default),
             SymbolValue::Alias(target) => self.plain_value(*target),
         }
     }
 
     pub fn set_plain_value(&mut self, symbol: Value, value: Value) {
-        if let SymbolValue::Plain(v) = &mut self.heap.symbol_mut(symbol).value {
-            *v = value;
+        let buffer = self.current_buffer;
+        let local = matches!(
+            self.heap.symbol_ref(symbol).value,
+            SymbolValue::Localized(_)
+        ) && self.buffer_local_get(buffer, symbol).is_some();
+        if local {
+            self.buffer_local_set(buffer, symbol, value);
+            return;
+        }
+        match &mut self.heap.symbol_mut(symbol).value {
+            SymbolValue::Plain(v) => *v = value,
+            SymbolValue::Localized(l) => l.default = value,
+            _ => {}
         }
     }
 

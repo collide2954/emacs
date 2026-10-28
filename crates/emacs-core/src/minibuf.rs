@@ -181,6 +181,30 @@ impl Lisp {
         false
     }
 
+    pub fn this_minibuffer_depth(&self, buffer: Value) -> i64 {
+        let buffer = if buffer.is_nil() {
+            self.current_buffer
+        } else {
+            buffer
+        };
+        let mut bufs = self.cdr_safe(self.minibuf.minibuffer_list);
+        for i in 1..=self.minibuf.minibuf_level {
+            if self.car_safe(bufs) == buffer {
+                return i;
+            }
+            bufs = self.cdr_safe(bufs);
+        }
+        0
+    }
+
+    pub fn is_minibuffer(&self, depth: i64, buf: Value) -> bool {
+        let mut tail = self.minibuf.minibuffer_list;
+        for _ in 0..depth {
+            tail = self.cdr_safe(tail);
+        }
+        !tail.is_nil() && self.car_safe(tail) == buf
+    }
+
     pub fn minibufferp(&self, buffer: Value, live: bool) -> bool {
         if live {
             self.live_minibuffer_p(buffer)
