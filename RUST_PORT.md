@@ -44,10 +44,10 @@ Ported but not yet complete (C kept):
 | `cmds.c` | `editfns.rs` | nothing |
 | `dired.c` | `dired.rs` | on Windows, inode, device and link count come from w32.c's fallback (std can't read them without `unsafe`) |
 | `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
-| `process.c` | `process.rs` | everything but `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask) |
+| `process.c` | `process.rs` | everything but `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask), and `wait_reading_process_output`, which is the subprocess-free variant C uses on MS-DOS (it runs timers and sleeps, and never wakes for keyboard input because there is no input queue yet) |
 | `term.c` | `term.rs` | `tty-frame-list-z-order`, `tty-frame-at` (need frame z-order); there is no tty frontend, so `decode_tty_terminal` never finds a tty |
 | `w32proc.c` | `w32proc.rs` | the DEFUNs (they need Win32 calls); it has the variables |
-| `keyboard.c` | `keyboard.rs` | everything except event modifier parsing |
+| `keyboard.c` | `keyboard.rs` | everything except event modifier parsing, the timer runner (`timer_check`) and `detect_input_pending`; there is no input event queue yet, so pending input means `quit-flag` or a kboard's `kbd_queue_has_data`, and idle timers never run because Emacs never becomes idle |
 | `syntax.c` | `syntax.rs` | the regex engine still ignores `syntax-table` text properties |
 | `indent.c` | `indent.rs` | `compute-motion`, `vertical-motion`, `line-number-display-width` (they need the display iterator); an image `display` spec signals an error |
 | `casefiddle.c` | `casefiddle.rs` | a real port; the current version is a placeholder using Rust's Unicode tables |
@@ -68,7 +68,8 @@ Window-system frames don't exist yet, so the face, font and composition code sto
 which gets plain realized faces as in C.
 
 `doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables,
-`frame-or-buffer-changed-p`, `ding` and `internal-show-cursor(-p)`. `filelock.rs`,
+`frame-or-buffer-changed-p`, `ding`, `internal-show-cursor(-p)`, `sleep-for` and `sit_for`
+(which never redisplays, as there is no redisplay yet). `filelock.rs`,
 `image.rs`, `gnutls.rs`, `treesit.rs`, `macros.rs` and `w32fns.rs` hold only those files'
 variables, which the unmodified Lisp needs (cus-start.el checks them). No image, GnuTLS or
 tree-sitter library is linked, so their version variables are -1.

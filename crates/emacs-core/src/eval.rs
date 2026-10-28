@@ -721,6 +721,42 @@ impl Lisp {
         }
     }
 
+    fn process_quit_flag(&mut self) -> LispResult<()> {
+        let flag = self.plain_value(sym::QUIT_FLAG);
+        self.set_plain_value(sym::QUIT_FLAG, Value::NIL);
+        if flag == sym::KILL_EMACS {
+            crate::emacs::f_kill_emacs(self, &[Value::NIL, Value::NIL])?;
+        }
+        let throw_on_input = self.plain_value(sym::THROW_ON_INPUT);
+        if throw_on_input == flag {
+            return Err(self.throw(throw_on_input, sym::T));
+        }
+        self.quit()
+    }
+
+    pub fn probably_quit(&mut self) -> LispResult<()> {
+        self.gc_inhibited += 1;
+        let r = if self.var_true(sym::QUIT_FLAG) && !self.var_true(sym::INHIBIT_QUIT) {
+            self.process_quit_flag()
+        } else {
+            Ok(())
+        };
+        self.gc_inhibited -= 1;
+        r
+    }
+
+    pub fn maybe_quit(&mut self) -> LispResult<()> {
+        if self.var_true(sym::QUIT_FLAG) {
+            self.probably_quit()?;
+        }
+        Ok(())
+    }
+
+    pub fn quit(&mut self) -> LispResult<()> {
+        self.signal_or_quit(sym::QUIT, Value::NIL, true)?;
+        Ok(())
+    }
+
     pub fn signal_or_quit(
         &mut self,
         error_symbol: Value,

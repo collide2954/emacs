@@ -821,6 +821,62 @@ pub fn init_vars(lisp: &mut Lisp) {
     }
 }
 
+pub type Timespec = (i64, i64);
+
+pub fn current_timespec() -> Timespec {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => (d.as_secs() as i64, i64::from(d.subsec_nanos())),
+        Err(e) => {
+            let d = e.duration();
+            timespec_sub((0, 0), (d.as_secs() as i64, i64::from(d.subsec_nanos())))
+        }
+    }
+}
+
+fn timespec_from_ns(ns: i128) -> Timespec {
+    let hz = i128::from(TIMESPEC_HZ);
+    let s = ns.div_euclid(hz);
+    if s > i128::from(i64::MAX) {
+        (i64::MAX, TIMESPEC_HZ - 1)
+    } else if s < i128::from(i64::MIN) {
+        (i64::MIN, 0)
+    } else {
+        (s as i64, ns.rem_euclid(hz) as i64)
+    }
+}
+
+fn timespec_ns(t: Timespec) -> i128 {
+    i128::from(t.0) * i128::from(TIMESPEC_HZ) + i128::from(t.1)
+}
+
+pub fn timespec_add(a: Timespec, b: Timespec) -> Timespec {
+    timespec_from_ns(timespec_ns(a) + timespec_ns(b))
+}
+
+pub fn timespec_sub(a: Timespec, b: Timespec) -> Timespec {
+    timespec_from_ns(timespec_ns(a) - timespec_ns(b))
+}
+
+pub fn dtotimespec(sec: f64) -> Timespec {
+    if sec.is_nan() || sec <= i64::MIN as f64 {
+        (i64::MIN, 0)
+    } else if sec >= 1.0 + i64::MAX as f64 {
+        (i64::MAX, TIMESPEC_HZ - 1)
+    } else {
+        let mut s = sec as i64;
+        let frac = TIMESPEC_HZ as f64 * (sec - s as f64);
+        let mut ns = frac as i64;
+        ns += i64::from((ns as f64) < frac);
+        s += ns / TIMESPEC_HZ;
+        ns %= TIMESPEC_HZ;
+        if ns < 0 {
+            s -= 1;
+            ns += TIMESPEC_HZ;
+        }
+        (s, ns)
+    }
+}
+
 struct TicksHz {
     ticks: BigInt,
     hz: BigInt,
@@ -828,6 +884,12 @@ struct TicksHz {
 
 fn floor_div(a: &BigInt, b: &BigInt) -> BigInt {
     a.div_floor(b)
+}
+
+fn ticks_hz_timespec(th: &TicksHz) -> Option<Timespec> {
+    let total = floor_div(&(&th.ticks * TIMESPEC_HZ), &th.hz);
+    let (sec, ns) = total.div_mod_floor(&BigInt::from(TIMESPEC_HZ));
+    Some((sec.to_i64()?, ns.to_i64()?))
 }
 
 fn double_integer_scale(d: f64) -> i64 {
@@ -956,6 +1018,36 @@ impl Lisp {
         }
     }
 
+    fn time_components(
+        &self,
+        high: Value,
+        low: Value,
+        usec: Value,
+        psec: Value,
+        hz: i64,
+    ) -> Option<TicksHz> {
+        let (Some(mut us), Some(mut ps)) = (usec.as_fixnum(), psec.as_fixnum()) else {
+            return None;
+        };
+        us += ps.div_euclid(1_000_000);
+        let s_from_us_ps = us.div_euclid(1_000_000);
+        ps = ps.rem_euclid(1_000_000);
+        us = us.rem_euclid(1_000_000);
+        let (Some(h), Some(l)) = (self.int_value(high), self.int_value(low)) else {
+            return None;
+        };
+        let s = (h << LO_TIME_BITS as usize) + l + s_from_us_ps;
+        let ticks = match hz {
+            TRILLION => s * TRILLION + us * 1_000_000 + ps,
+            1_000_000 => s * 1_000_000 + us,
+            _ => s,
+        };
+        Some(TicksHz {
+            ticks,
+            hz: BigInt::from(hz),
+        })
+    }
+
     fn decode_time_components(
         &mut self,
         high: Value,
@@ -964,26 +1056,21 @@ impl Lisp {
         psec: Value,
         hz: i64,
     ) -> LispResult<TicksHz> {
-        let (Some(mut us), Some(mut ps)) = (usec.as_fixnum(), psec.as_fixnum()) else {
-            return Err(self.time_spec_invalid());
-        };
-        us += ps.div_euclid(1_000_000);
-        let s_from_us_ps = us.div_euclid(1_000_000);
-        ps = ps.rem_euclid(1_000_000);
-        us = us.rem_euclid(1_000_000);
-        let (Some(h), Some(l)) = (self.int_value(high), self.int_value(low)) else {
-            return Err(self.time_spec_invalid());
-        };
-        let s = (h << LO_TIME_BITS as usize) + l + s_from_us_ps;
-        let ticks = match hz {
-            TRILLION => s * TRILLION + us * 1_000_000 + ps,
-            1_000_000 => s * 1_000_000 + us,
-            _ => s,
-        };
-        Ok(TicksHz {
-            ticks,
-            hz: BigInt::from(hz),
-        })
+        match self.time_components(high, low, usec, psec, hz) {
+            Some(t) => Ok(t),
+            None => Err(self.time_spec_invalid()),
+        }
+    }
+
+    pub fn list4_to_timespec(
+        &self,
+        high: Value,
+        low: Value,
+        usec: Value,
+        psec: Value,
+    ) -> Option<Timespec> {
+        let th = self.time_components(high, low, usec, psec, TRILLION)?;
+        ticks_hz_timespec(&th)
     }
 
     fn decode_lisp_time(&mut self, t: Value, secs_only: bool) -> LispResult<TicksHz> {
@@ -1044,11 +1131,9 @@ impl Lisp {
     }
 
     fn ticks_hz_to_timespec(&mut self, th: &TicksHz) -> LispResult<(i64, i64)> {
-        let total = floor_div(&(&th.ticks * TIMESPEC_HZ), &th.hz);
-        let (sec, ns) = total.div_mod_floor(&BigInt::from(TIMESPEC_HZ));
-        match (sec.to_i64(), ns.to_i64()) {
-            (Some(s), Some(n)) => Ok((s, n)),
-            _ => Err(self.time_overflow()),
+        match ticks_hz_timespec(th) {
+            Some(t) => Ok(t),
+            None => Err(self.time_overflow()),
         }
     }
 

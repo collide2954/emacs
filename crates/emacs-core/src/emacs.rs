@@ -1175,7 +1175,7 @@ fn f_daemon_initialized(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Err(lisp.error("This function can only be called if emacs is run as a daemon"))
 }
 
-fn f_kill_emacs(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_kill_emacs(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let arg = args[0];
     let hook = lisp.find_symbol_value(sym::KILL_EMACS_HOOK);
     if !hook.is_nil() && hook != sym::UNBOUND {

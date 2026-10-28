@@ -1,11 +1,14 @@
 use std::io::Write;
 
+use num_traits::{Signed, ToPrimitive};
+
 use crate::buffer::f_buffer_modified_p;
 use crate::error::LispResult;
 use crate::keyboard::Kvar;
 use crate::lisp::Lisp;
 use crate::subr::Subr;
 use crate::symbols as sym;
+use crate::timefns::{current_timespec, dtotimespec, timespec_add, timespec_sub};
 use crate::value::Value;
 
 pub const SUBRS: &[Subr] = &[
@@ -18,7 +21,78 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("ding", 0, 1, f_ding),
     Subr::fixed("internal-show-cursor", 2, 2, f_internal_show_cursor),
     Subr::fixed("internal-show-cursor-p", 0, 1, f_internal_show_cursor_p),
+    Subr::fixed("sleep-for", 1, 2, f_sleep_for),
 ];
+
+const WAIT_READING_MAX: i64 = i64::MAX;
+
+fn f_sleep_for(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let mut duration = crate::floatfns::float_arg(lisp, args[0])?;
+    if !args[1].is_nil() {
+        let milliseconds = lisp.check_fixnum(args[1])?;
+        duration += milliseconds as f64 / 1000.0;
+    }
+    if duration > 0.0 {
+        let mut t = dtotimespec(duration);
+        let tend = timespec_add(current_timespec(), t);
+        loop {
+            lisp.wait_reading_process_output(t.0, t.1, 0, Value::NIL)?;
+            t = timespec_sub(tend, current_timespec());
+            if t <= (0, 0) {
+                break;
+            }
+        }
+    }
+    Ok(Value::NIL)
+}
+
+impl Lisp {
+    pub fn sit_for(&mut self, timeout: Value, reading: bool) -> LispResult {
+        let sw = self.windows.selected_window;
+        let curbuf_eq_winbuf = self.current_buffer == self.window(sw).contents;
+        self.swallow_events()?;
+        if self.detect_input_pending_run_timers()?
+            || !self.find_symbol_value(sym::EXECUTING_KBD_MACRO).is_nil()
+        {
+            return Ok(Value::NIL);
+        }
+        let (sec, nsec) = if let Some(n) = timeout.as_fixnum() {
+            if n <= 0 {
+                return Ok(sym::T);
+            }
+            (n, 0)
+        } else if let Some(b) = self.bignum_ref(timeout) {
+            match b.to_i64() {
+                Some(n) if n <= 0 => return Ok(sym::T),
+                Some(n) => (n, 0),
+                None if b.is_negative() => return Ok(sym::T),
+                None => (WAIT_READING_MAX, 0),
+            }
+        } else if timeout.is_float() {
+            let seconds = self.heap.float_value(timeout);
+            if seconds.is_nan() || seconds <= 0.0 {
+                return Ok(sym::T);
+            }
+            dtotimespec(seconds)
+        } else if timeout == sym::T {
+            (0, 0)
+        } else {
+            return Err(self.wrong_type(sym::NUMBERP, timeout));
+        };
+        let nbytes =
+            self.wait_reading_process_output(sec, nsec, if reading { -1 } else { 1 }, Value::NIL)?;
+        if reading && curbuf_eq_winbuf {
+            let sw = self.windows.selected_window;
+            let buffer = self.window(sw).contents;
+            self.set_buffer_internal(buffer);
+        }
+        Ok(if nbytes > 0 || self.detect_input_pending()? {
+            Value::NIL
+        } else {
+            sym::T
+        })
+    }
+}
 
 fn f_internal_show_cursor(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if !lisp.xdisp.redisplaying_p {

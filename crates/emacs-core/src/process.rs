@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use num_bigint::BigInt;
 
 use crate::error::LispResult;
@@ -140,6 +142,96 @@ fn num_processors(mut query: NprocQuery) -> ULong {
         nproc_limit = nprocs.min(nproc_limit);
     }
     nproc_limit
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Wait {
+    Minimum,
+    Timeout,
+    Forever,
+}
+
+impl Lisp {
+    pub fn wait_reading_process_output(
+        &mut self,
+        time_limit: i64,
+        nsecs: i64,
+        read_kbd: i32,
+        wait_for_cell: Value,
+    ) -> LispResult<i32> {
+        let mut end_time = None;
+        let wait = if time_limit < 0 || nsecs < 0 {
+            Wait::Minimum
+        } else if time_limit > 0 || nsecs > 0 {
+            end_time = Instant::now().checked_add(
+                Duration::from_secs(time_limit as u64) + Duration::from_nanos(nsecs as u64),
+            );
+            Wait::Timeout
+        } else {
+            Wait::Forever
+        };
+        loop {
+            let mut timeout_reduced_for_timers = false;
+            if read_kbd >= 0 {
+                self.maybe_quit()?;
+            }
+            if !wait_for_cell.is_nil() && !self.xcar(wait_for_cell).is_nil() {
+                break;
+            }
+            let mut timeout = if wait == Wait::Timeout {
+                match end_time {
+                    Some(end) => {
+                        let now = Instant::now();
+                        if end <= now {
+                            break;
+                        }
+                        end - now
+                    }
+                    None => Duration::MAX,
+                }
+            } else {
+                Duration::from_secs(if wait < Wait::Timeout { 0 } else { 100_000 })
+            };
+            if wait_for_cell.is_nil() {
+                let timer_delay = self.timer_check()?;
+                if read_kbd != 0 && self.requeued_command_events_pending_p() {
+                    break;
+                }
+                if let Some((sec, nsec)) = timer_delay {
+                    let delay = Duration::new(sec.max(0) as u64, nsec as u32);
+                    if delay < timeout {
+                        timeout = delay;
+                        timeout_reduced_for_timers = true;
+                    }
+                }
+            }
+            if !(read_kbd != 0 && self.detect_input_pending()?) {
+                std::thread::sleep(timeout);
+            }
+            if wait < Wait::Forever && !timeout_reduced_for_timers {
+                break;
+            }
+            if read_kbd != 0 && self.detect_input_pending_run_timers()? {
+                self.swallow_events()?;
+                if self.detect_input_pending_run_timers()? {
+                    break;
+                }
+            }
+            if read_kbd != 0 && self.requeued_command_events_pending_p() {
+                break;
+            }
+            if !wait_for_cell.is_nil() && self.detect_input_pending()? {
+                self.swallow_events()?;
+                if self.detect_input_pending()? {
+                    break;
+                }
+            }
+            if !wait_for_cell.is_nil() && !self.xcar(wait_for_cell).is_nil() {
+                break;
+            }
+        }
+        Ok(-1)
+    }
 }
 
 fn f_num_processors(lisp: &mut Lisp, args: &[Value]) -> LispResult {

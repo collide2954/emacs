@@ -39,7 +39,7 @@ pub const SUBRS: &[Subr] = &[
 
 pub fn init_vars(_lisp: &mut Lisp) {}
 
-fn float_arg(lisp: &mut Lisp, v: Value) -> LispResult<f64> {
+pub(crate) fn float_arg(lisp: &mut Lisp, v: Value) -> LispResult<f64> {
     if v.is_float() {
         return Ok(lisp.heap.float_value(v));
     }

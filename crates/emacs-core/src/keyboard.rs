@@ -5,6 +5,7 @@ use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::subr::Subr;
 use crate::symbols as sym;
+use crate::timefns::{Timespec, current_timespec, timespec_sub};
 use crate::value::Value;
 
 pub const UP_MODIFIER: i64 = 1;
@@ -184,6 +185,194 @@ impl Lisp {
         self.single_kboard = true;
         self.record_unwind(restore_kboard_configuration, self.bool(was_locked));
         Ok(())
+    }
+}
+
+pub const READABLE_EVENTS_DO_TIMERS_NOW: i32 = 1 << 0;
+
+#[derive(Default)]
+pub struct Keyboard {
+    pub input_pending: bool,
+    pub timers_run: u32,
+    pub timer_idleness_start_time: Option<Timespec>,
+    pub last_auto_save: i64,
+}
+
+impl Lisp {
+    pub fn record_auto_save(&mut self) {
+        self.keyboard.last_auto_save = self.int_var(sym::NUM_NONMACRO_INPUT_EVENTS);
+    }
+
+    fn decode_timer(&self, timer: Value) -> Option<Timespec> {
+        if !(self.is_vector(timer) && self.vector_items(timer).len() == 10) {
+            return None;
+        }
+        let vec = self.vector_items(timer);
+        if !vec[0].is_nil() {
+            return None;
+        }
+        if !vec[2].is_fixnum() {
+            return None;
+        }
+        self.list4_to_timespec(vec[1], vec[2], vec[3], vec[8])
+    }
+
+    fn timer_check_2(
+        &mut self,
+        mut timers: Value,
+        mut idle_timers: Value,
+    ) -> LispResult<Option<Timespec>> {
+        while self.pending_funcalls.is_cons() {
+            let funcall = self.xcar(self.pending_funcalls);
+            self.pending_funcalls = self.xcdr(self.pending_funcalls);
+            let (function, args) = (self.xcar(funcall), self.xcdr(funcall));
+            self.safe_calln(sym::APPLY, &[function, args])?;
+        }
+        if !(timers.is_cons() || idle_timers.is_cons()) {
+            return Ok(None);
+        }
+        let now = current_timespec();
+        let idleness_now = match self.keyboard.timer_idleness_start_time {
+            Some(start) => timespec_sub(now, start),
+            None => (0, 0),
+        };
+        loop {
+            'step: {
+                let mut timer = Value::NIL;
+                let mut idle_timer = Value::NIL;
+                let mut timer_difference = None;
+                let mut idle_timer_difference = None;
+                let mut timer_ripe = false;
+                let mut idle_timer_ripe = false;
+                if timers.is_cons() {
+                    timer = self.xcar(timers);
+                    let Some(timer_time) = self.decode_timer(timer) else {
+                        timers = self.xcdr(timers);
+                        break 'step;
+                    };
+                    timer_ripe = timer_time <= now;
+                    timer_difference = Some(if timer_ripe {
+                        timespec_sub(now, timer_time)
+                    } else {
+                        timespec_sub(timer_time, now)
+                    });
+                }
+                if idle_timers.is_cons() {
+                    idle_timer = self.xcar(idle_timers);
+                    let Some(idle_timer_time) = self.decode_timer(idle_timer) else {
+                        idle_timers = self.xcdr(idle_timers);
+                        break 'step;
+                    };
+                    idle_timer_ripe = idle_timer_time <= idleness_now;
+                    idle_timer_difference = Some(if idle_timer_ripe {
+                        timespec_sub(idleness_now, idle_timer_time)
+                    } else {
+                        timespec_sub(idle_timer_time, idleness_now)
+                    });
+                }
+                let ordinary_first = match (timer_difference, idle_timer_difference) {
+                    (None, _) => false,
+                    (Some(_), None) => true,
+                    (Some(t), Some(i)) => {
+                        (!idle_timer_ripe && timer_ripe)
+                            || (idle_timer_ripe == timer_ripe
+                                && if timer_ripe { i < t } else { t < i })
+                    }
+                };
+                let (chosen_timer, difference, ripe) = if ordinary_first {
+                    (timer, timer_difference, timer_ripe)
+                } else {
+                    (idle_timer, idle_timer_difference, idle_timer_ripe)
+                };
+                if ripe {
+                    if self.vector_items(chosen_timer)[0].is_nil() {
+                        let count = self.specpdl.len();
+                        let old_deactivate_mark = self.bound_var(sym::DEACTIVATE_MARK);
+                        self.aset_value(chosen_timer, Value::fixnum(0), sym::T)?;
+                        self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+                        self.funcall(sym::TIMER_EVENT_HANDLER, &[chosen_timer])?;
+                        self.set_plain_value(sym::DEACTIVATE_MARK, old_deactivate_mark);
+                        self.keyboard.timers_run = self.keyboard.timers_run.wrapping_add(1);
+                        self.unbind_to(count)?;
+                    }
+                    return Ok(Some((0, 0)));
+                }
+                return Ok(difference);
+            }
+            if !(timers.is_cons() || idle_timers.is_cons()) {
+                break;
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn timer_check(&mut self) -> LispResult<Option<Timespec>> {
+        let tem = self.plain_value(sym::INHIBIT_QUIT);
+        self.set_plain_value(sym::INHIBIT_QUIT, sym::T);
+        let list = self.plain_value(sym::TIMER_LIST);
+        let timers = crate::fns::f_copy_sequence(self, &[list])?;
+        let base = self.stack.len();
+        self.stack.push(timers);
+        let idle_timers = if self.keyboard.timer_idleness_start_time.is_some() {
+            let list = self.plain_value(sym::TIMER_IDLE_LIST);
+            crate::fns::f_copy_sequence(self, &[list])?
+        } else {
+            Value::NIL
+        };
+        self.stack.push(idle_timers);
+        self.set_plain_value(sym::INHIBIT_QUIT, tem);
+        let nexttime = loop {
+            match self.timer_check_2(timers, idle_timers) {
+                Ok(Some((0, 0))) => {}
+                r => break r,
+            }
+        };
+        self.stack.truncate(base);
+        nexttime
+    }
+
+    fn readable_events(&mut self, flags: i32) -> LispResult<bool> {
+        if flags & READABLE_EVENTS_DO_TIMERS_NOW != 0 {
+            self.timer_check()?;
+        }
+        if self.single_kboard {
+            if self.kboards[self.current_kboard].kbd_queue_has_data {
+                return Ok(true);
+            }
+        } else if self.kboards.iter().any(|kb| kb.kbd_queue_has_data) {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn get_input_pending(&mut self, flags: i32) -> LispResult<bool> {
+        self.keyboard.input_pending =
+            self.var_true(sym::QUIT_FLAG) || self.readable_events(flags)?;
+        if !self.keyboard.input_pending {
+            self.keyboard.input_pending =
+                self.var_true(sym::QUIT_FLAG) || self.readable_events(flags)?;
+        }
+        Ok(self.keyboard.input_pending)
+    }
+
+    pub fn detect_input_pending(&mut self) -> LispResult<bool> {
+        Ok(self.keyboard.input_pending || self.get_input_pending(0)?)
+    }
+
+    pub fn detect_input_pending_run_timers(&mut self) -> LispResult<bool> {
+        if !self.keyboard.input_pending {
+            self.get_input_pending(READABLE_EVENTS_DO_TIMERS_NOW)?;
+        }
+        Ok(self.keyboard.input_pending)
+    }
+
+    pub fn swallow_events(&mut self) -> LispResult<()> {
+        self.get_input_pending(READABLE_EVENTS_DO_TIMERS_NOW)?;
+        Ok(())
+    }
+
+    pub fn requeued_command_events_pending_p(&self) -> bool {
+        self.plain_value(sym::UNREAD_COMMAND_EVENTS).is_cons()
     }
 }
 
