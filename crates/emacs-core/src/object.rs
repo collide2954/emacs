@@ -145,7 +145,7 @@ impl HashTable {
         self.index.get(&hash).map_or(&[], Vec::as_slice)
     }
 
-    pub fn insert_new(&mut self, hash: u64, key: Value, value: Value) {
+    pub fn insert_new(&mut self, hash: u64, key: Value, value: Value) -> usize {
         let slot = match self.free.pop() {
             Some(slot) => {
                 self.entries[slot] = Some((key, value));
@@ -160,6 +160,7 @@ impl HashTable {
         };
         self.index.entry(hash).or_default().push(slot);
         self.count += 1;
+        slot
     }
 
     pub fn remove_slot(&mut self, slot: usize) {

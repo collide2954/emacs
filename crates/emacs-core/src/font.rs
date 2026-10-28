@@ -109,6 +109,15 @@ pub const WIDTH_TABLE: &[(i64, &[&str])] = &[
     (200, &["ultra-expanded", "ultraexpanded", "wide"]),
 ];
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FontMetrics {
+    pub lbearing: i32,
+    pub rbearing: i32,
+    pub width: i32,
+    pub ascent: i32,
+    pub descent: i32,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FontKind {
     Spec,

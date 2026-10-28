@@ -1147,7 +1147,7 @@ impl Lisp {
     }
 }
 
-fn restore_point_unwind(lisp: &mut Lisp, location: Value) -> LispResult<()> {
+pub(crate) fn restore_point_unwind(lisp: &mut Lisp, location: Value) -> LispResult<()> {
     let pos = lisp.marker_position_checked(location)?;
     lisp.goto_char_internal(pos);
     lisp.unchain_marker(location);
@@ -1888,6 +1888,8 @@ fn insert_file_contents_notfound(
     if s.inserted > 0 && s.total > 0 && (s.visit.is_nil() || !s.replace.is_nil()) {
         let pt = lisp.cur().pt;
         lisp.signal_after_change(pt, 0, s.inserted)?;
+        let pt = lisp.cur().pt;
+        lisp.update_compositions(pt, pt, crate::composite::CHECK_BORDER)?;
     }
     Ok(())
 }

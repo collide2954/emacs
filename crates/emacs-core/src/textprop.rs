@@ -69,6 +69,19 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("text-property-not-all", 4, 5, f_text_property_not_all),
 ];
 
+pub fn init_vars(lisp: &mut Lisp) {
+    lisp.defvar(sym::DEFAULT_TEXT_PROPERTIES, Value::NIL);
+    lisp.defvar(sym::CHAR_PROPERTY_ALIAS_ALIST, Value::NIL);
+    lisp.defvar(sym::INHIBIT_POINT_MOTION_HOOKS, sym::T);
+    let syntax = lisp.cons(sym::SYNTAX_TABLE, sym::T);
+    lisp.stack.push(syntax);
+    let display = lisp.cons(sym::DISPLAY, sym::T);
+    lisp.stack.pop();
+    let nonsticky = lisp.list(&[syntax, display]);
+    lisp.defvar(sym::TEXT_PROPERTY_DEFAULT_NONSTICKY, nonsticky);
+    lisp.make_variable_buffer_local_builtin(sym::TEXT_PROPERTY_DEFAULT_NONSTICKY);
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Obj {
     Buffer(Value),
@@ -215,6 +228,44 @@ impl Lisp {
             }
         }
         Value::NIL
+    }
+
+    pub fn get_property_and_range(
+        &mut self,
+        pos: i64,
+        prop: Value,
+        object: Value,
+    ) -> LispResult<Option<(Value, usize, usize)>> {
+        let obj = self.decode_obj(object)?;
+        if self.obj_runs(obj).is_empty() || pos < 0 {
+            return Ok(None);
+        }
+        let pos = pos as usize;
+        let (lo, hi) = match obj {
+            Obj::Buffer(b) => (1, self.buffer(b).z()),
+            Obj::String(s) => (0, self.string_chars(s)),
+        };
+        if pos < lo || pos >= hi {
+            return Ok(None);
+        }
+        let segs = self.segments(obj, lo, hi);
+        let Some(i) = segs.iter().position(|s| s.start <= pos && pos < s.end) else {
+            return Ok(None);
+        };
+        let val = self.lookup_char_property(segs[i].plist, prop);
+        if val.is_nil() {
+            return Ok(None);
+        }
+        let mut first = i;
+        while first > 0 && self.lookup_char_property(segs[first - 1].plist, prop) == val {
+            first -= 1;
+        }
+        let mut last = first;
+        while last + 1 < segs.len() && self.lookup_char_property(segs[last + 1].plist, prop) == val
+        {
+            last += 1;
+        }
+        Ok(Some((val, segs[first].start, segs[last].end)))
     }
 
     pub fn text_property_at(&self, pos: usize, prop: Value) -> Value {
@@ -934,7 +985,7 @@ fn f_previous_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.property_change(args[0], args[1], args[2], None, false)
 }
 
-fn f_previous_single_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_previous_single_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.property_change(args[0], args[2], args[3], Some(args[1]), false)
 }
 
@@ -1116,7 +1167,7 @@ fn f_remove_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     remove_props(lisp, args[0], args[1], &props, args[3])
 }
 
-fn f_remove_list_of_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_remove_list_of_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let props = lisp.list_to_vec(args[2])?;
     remove_props(lisp, args[0], args[1], &props, args[3])
 }

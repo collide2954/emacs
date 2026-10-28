@@ -303,7 +303,9 @@ impl Lisp {
                 b.begv_byte += bytes.len();
             }
         }
-        self.signal_after_change(pt, 0, nchars)
+        self.signal_after_change(pt, 0, nchars)?;
+        let new_pt = self.cur().pt;
+        self.update_compositions(pt, new_pt, crate::composite::CHECK_BORDER)
     }
 
     pub fn insert_from_gap(
@@ -443,6 +445,7 @@ impl Lisp {
             b.begv_byte = b.text.char_to_byte(b.begv);
         }
         let r = self.signal_after_change(from, n, 0);
+        let r = r.and_then(|()| self.update_compositions(from, from, crate::composite::CHECK_HEAD));
         self.stack.pop();
         r?;
         Ok(deleted)

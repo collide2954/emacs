@@ -106,6 +106,52 @@ impl Lisp {
         }
     }
 
+    pub fn record_unwind_save_match_data(&mut self) -> LispResult<()> {
+        let data = self.match_data(Value::NIL, Value::NIL, Value::NIL)?;
+        self.record_unwind(restore_match_data_unwind, data);
+        Ok(())
+    }
+
+    pub fn fast_looking_at(
+        &mut self,
+        regexp: Value,
+        pos: usize,
+        limit: usize,
+        string: Value,
+    ) -> LispResult<isize> {
+        let multibyte = if string.is_string() {
+            self.string_multibyte(string)
+        } else {
+            self.cur().text.multibyte
+        };
+        let idx = self.compile_pattern(regexp, Value::NIL, false, multibyte)?;
+        let mut pattern = self.take_pattern(idx);
+        let len = if string.is_string() {
+            let pos_byte = self.string_char_to_byte_index(string, pos);
+            let limit_byte = self.string_char_to_byte_index(string, limit);
+            let env = self.regex_env(None);
+            let bytes = self.string_bytes(string);
+            regex::re_match(
+                &env,
+                &mut pattern,
+                Text::single(bytes),
+                pos_byte,
+                None,
+                limit_byte,
+            )
+        } else {
+            let b = self.cur();
+            let pos_byte = b.text.char_to_byte(pos) - b.begv_byte;
+            let limit_byte = b.text.char_to_byte(limit) - b.begv_byte;
+            let point = b.pt_byte - b.begv_byte;
+            let env = self.regex_env(Some(point));
+            let text = self.visible_text();
+            regex::re_match(&env, &mut pattern, text, pos_byte, None, limit_byte)
+        };
+        self.restore_pattern(idx, pattern);
+        Ok(len)
+    }
+
     pub fn bound_var(&self, symbol: Value) -> Value {
         let v = self.find_symbol_value(symbol);
         if v == sym::UNBOUND { Value::NIL } else { v }
@@ -1369,6 +1415,11 @@ impl Lisp {
         }
         self.check_fixnum(marker)
     }
+}
+
+fn restore_match_data_unwind(lisp: &mut Lisp, data: Value) -> LispResult<()> {
+    lisp.set_match_data(data, Value::NIL)?;
+    Ok(())
 }
 
 fn arg(args: &[Value], i: usize) -> Value {

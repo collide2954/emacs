@@ -63,6 +63,7 @@ const XLFD_SWIDTH: i32 = 4;
 const XLFD_POINT_SIZE: i32 = 7;
 
 const FACE_TTY_DEFAULT_COLOR: i64 = -1;
+const CLEAR_FONT_TABLE_COUNT: i32 = 100;
 
 #[derive(Clone, Debug)]
 pub struct FaceCache {
@@ -77,11 +78,13 @@ pub struct Faces {
     pub alternative_font_registry_alist: Value,
     pub font_sort_order: [i32; 4],
     pub tty_suppress_bold_inverse_default_colors_p: bool,
+    pub clear_font_table_count: i32,
 }
 
 impl Default for Faces {
     fn default() -> Self {
         Faces {
+            clear_font_table_count: 0,
             lface_id_to_name: Vec::new(),
             face_change: false,
             menu_face_changed_default: false,
@@ -212,6 +215,7 @@ pub const SUBRS: &[Subr] = &[
         f_tty_suppress_bold_inverse_default_colors,
     ),
     Subr::fixed("bitmap-spec-p", 1, 1, f_bitmap_spec_p),
+    Subr::fixed("clear-face-cache", 0, 1, f_clear_face_cache),
     Subr::fixed(
         "color-values-from-color-spec",
         1,
@@ -1406,6 +1410,21 @@ impl Lisp {
         }
     }
 
+    pub fn clear_face_cache(&mut self, clear_fonts_p: bool) {
+        let thorough = clear_fonts_p || {
+            self.faces.clear_font_table_count += 1;
+            self.faces.clear_font_table_count == CLEAR_FONT_TABLE_COUNT
+        };
+        if thorough {
+            self.faces.clear_font_table_count = 0;
+        }
+        for frame in self.frame_list_vec() {
+            if self.frame(frame).window_p() {
+                unreachable!("window-system frames need clear_font_cache and clear_face_gcs");
+            }
+        }
+    }
+
     fn free_all_realized_faces(&mut self, frame: Value) {
         if frame.is_nil() {
             self.windows.windows_or_buffers_changed = 58;
@@ -2330,6 +2349,13 @@ fn f_internal_set_alternative_font_registry_alist(lisp: &mut Lisp, args: &[Value
     lisp.faces.alternative_font_registry_alist = alist;
     lisp.free_all_realized_faces(Value::NIL);
     Ok(alist)
+}
+
+pub(crate) fn f_clear_face_cache(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    lisp.clear_face_cache(!arg(args, 0).is_nil());
+    lisp.faces.face_change = true;
+    lisp.windows.windows_or_buffers_changed = 53;
+    Ok(Value::NIL)
 }
 
 fn f_tty_suppress_bold_inverse_default_colors(lisp: &mut Lisp, args: &[Value]) -> LispResult {

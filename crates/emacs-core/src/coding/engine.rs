@@ -1070,29 +1070,6 @@ impl Lisp {
         Ok(carryover)
     }
 
-    fn compose_text(
-        &mut self,
-        start: usize,
-        end: usize,
-        components: Value,
-        object: Value,
-    ) -> LispResult<()> {
-        let len = Value::fixnum((end - start) as i64);
-        let inner = self.cons(len, components);
-        let prop = self.cons(inner, Value::NIL);
-        crate::textprop::f_put_text_property(
-            self,
-            &[
-                Value::fixnum(start as i64),
-                Value::fixnum(end as i64),
-                sym::COMPOSITION,
-                prop,
-                object,
-            ],
-        )?;
-        Ok(())
-    }
-
     fn produce_composition(
         &mut self,
         coding: &CodingSystem,
@@ -1130,7 +1107,7 @@ impl Lisp {
                 self.vector(args)
             }
         };
-        self.compose_text(pos, to, components, coding.dst_object)
+        self.compose_text(pos, to, components, Value::NIL, coding.dst_object)
     }
 
     fn produce_annotation(&mut self, coding: &CodingSystem, mut pos: usize) -> LispResult<()> {
@@ -1850,6 +1827,11 @@ impl Lisp {
                 0
             };
             self.signal_after_change(coding.dst_pos, deleted, coding.produced_char)?;
+            self.update_compositions(
+                coding.dst_pos,
+                coding.dst_pos + coding.produced_char,
+                crate::composite::CHECK_ALL,
+            )?;
         }
         if !post_read.is_nil() {
             let prev_z = self.cur().z();
@@ -2053,6 +2035,11 @@ impl Lisp {
             self.set_buffer_internal(dst_object);
             let deleted = if same_buffer { to - from } else { 0 };
             self.signal_after_change(coding.dst_pos, deleted, coding.produced_char)?;
+            self.update_compositions(
+                coding.dst_pos,
+                coding.dst_pos + coding.produced_char,
+                crate::composite::CHECK_ALL,
+            )?;
             self.set_buffer_internal(current);
         }
         if let Some(saved) = saved {
@@ -2071,28 +2058,6 @@ impl Lisp {
         }
         self.set_plain_value(sym::DEACTIVATE_MARK, old_deactivate_mark);
         Ok(())
-    }
-
-    pub fn safe_calln(&mut self, function: Value, args: &[Value]) -> LispResult {
-        let mut call = vec![function];
-        call.extend_from_slice(args);
-        let list = self.list(&call);
-        self.stack.push(list);
-        let r = self.condition_case_internal(
-            sym::T,
-            |l| {
-                let items = l.list_to_vec(list)?;
-                l.funcall(items[0], &items[1..])
-            },
-            |l, err| {
-                let form = l.prin1_to_string(list);
-                let e = l.prin1_to_string(err);
-                l.message_raw(&format!("Error during redisplay: {form} signaled {e}"));
-                Ok(Value::NIL)
-            },
-        );
-        self.stack.pop();
-        r
     }
 }
 

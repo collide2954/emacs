@@ -107,18 +107,6 @@ pub const SUBRS: &[Subr] = &[
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
-    lisp.defvar(sym::TEXT_PROPERTY_DEFAULT_NONSTICKY, Value::NIL);
-    let alist = lisp.list(&[]);
-    let pair1 = lisp.cons(sym::SYNTAX_TABLE, sym::T);
-    let pair2 = lisp.cons(sym::DISPLAY, sym::T);
-    let pair3 = lisp.cons(sym::COMPOSITION, sym::T);
-    let pair4 = lisp.cons(sym::CURSOR, sym::T);
-    let _ = alist;
-    let nonsticky = lisp.list(&[pair1, pair2, pair3, pair4]);
-    lisp.set_plain_value(sym::TEXT_PROPERTY_DEFAULT_NONSTICKY, nonsticky);
-    lisp.defvar(sym::CHAR_PROPERTY_ALIAS_ALIST, Value::NIL);
-    lisp.defvar(sym::DEFAULT_TEXT_PROPERTIES, Value::NIL);
-    lisp.defvar(sym::INHIBIT_POINT_MOTION_HOOKS, sym::T);
     lisp.defvar(sym::INHIBIT_FIELD_TEXT_MOTION, Value::NIL);
     lisp.defvar(sym::BUFFER_ACCESS_FONTIFY_FUNCTIONS, Value::NIL);
     lisp.defvar(sym::BUFFER_ACCESS_FONTIFIED_PROPERTY, Value::NIL);

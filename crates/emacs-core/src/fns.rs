@@ -806,6 +806,16 @@ impl Lisp {
         Ok(value)
     }
 
+    pub fn hash_put(&mut self, table: Value, key: Value, value: Value) -> LispResult<usize> {
+        let test = self.hash_table(table).test;
+        let hash = self.hash_key(test, key)?;
+        Ok(self.hash_table_mut(table).insert_new(hash, key, value))
+    }
+
+    pub fn hash_remove_slot(&mut self, table: Value, slot: usize) {
+        self.hash_table_mut(table).remove_slot(slot);
+    }
+
     pub fn make_hash_table_with(&mut self, test: Value, weakness: Weakness) -> Value {
         self.heap
             .vectorlike(Vectorlike::HashTable(Box::new(HashTable::new(
@@ -1287,7 +1297,7 @@ pub(crate) fn f_concat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.concat_to_string(args)
 }
 
-fn f_vconcat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_vconcat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let mut items = Vec::new();
     for &arg in args {
         items.extend(lisp.sequence_elements(arg)?);

@@ -14,6 +14,7 @@ pub struct Xdisp {
 pub fn init_vars(lisp: &mut Lisp) {
     let name = lisp.string("*Messages*");
     lisp.defvar(sym::MESSAGES_BUFFER_NAME, name);
+    lisp.defvar_bool(sym::INHIBIT_REDISPLAY, false);
 }
 
 impl Lisp {

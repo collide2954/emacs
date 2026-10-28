@@ -95,6 +95,7 @@ pub struct Lisp {
     pub fontsets: crate::fontset::Fontsets,
     pub xdisp: crate::xdisp::Xdisp,
     pub subr_docs: std::collections::HashMap<usize, i64>,
+    pub compositions: crate::composite::Compositions,
     pub pending_funcalls: Value,
 }
 
@@ -141,6 +142,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::fontset::SUBRS,
     crate::xfaces::SUBRS,
     crate::doc::SUBRS,
+    crate::composite::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -158,6 +160,8 @@ pub const ALL_INITS: &[InitFn] = &[
     init_emacs_vars,
     crate::buffer::init_vars,
     crate::editfns::init_vars,
+    crate::textprop::init_vars,
+    crate::composite::init_vars,
     crate::doc::init_vars,
     crate::fileio::init_vars,
     crate::emacs::init_vars,
@@ -255,6 +259,7 @@ impl Lisp {
             fontsets: crate::fontset::Fontsets::default(),
             xdisp: crate::xdisp::Xdisp::default(),
             subr_docs: std::collections::HashMap::new(),
+            compositions: crate::composite::Compositions::default(),
             pending_funcalls: Value::NIL,
         };
         lisp.init_symbols();
@@ -920,6 +925,7 @@ impl Lisp {
         self.faces.roots(&mut roots);
         self.fonts.roots(&mut roots);
         self.fontsets.roots(&mut roots);
+        self.compositions.roots(&mut roots);
         roots.push(self.pending_funcalls);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);

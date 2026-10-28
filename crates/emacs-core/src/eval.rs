@@ -137,6 +137,33 @@ impl Lisp {
         self.specpdl.push(SpecBinding::Unwind(f, arg));
     }
 
+    pub fn safe_funcall(&mut self, args: &[Value]) -> LispResult {
+        let count = self.specpdl.len();
+        self.specbind(sym::INHIBIT_REDISPLAY, sym::T)?;
+        let list = self.list(args);
+        self.stack.push(list);
+        let r = self.condition_case_internal(
+            sym::T,
+            |l| {
+                let items = l.list_to_vec(list)?;
+                l.funcall(items[0], &items[1..])
+            },
+            |l, err| {
+                l.add_to_log("Error muted by safe_call: %S signaled %S", &[list, err])?;
+                Ok(Value::NIL)
+            },
+        );
+        self.stack.pop();
+        self.unbind_to_value(count, r)
+    }
+
+    pub fn safe_calln(&mut self, function: Value, args: &[Value]) -> LispResult {
+        let mut call = Vec::with_capacity(args.len() + 1);
+        call.push(function);
+        call.extend_from_slice(args);
+        self.safe_funcall(&call)
+    }
+
     pub fn specbind(&mut self, symbol: Value, value: Value) -> LispResult<()> {
         let symbol = self.check_symbol(symbol)?;
         let mut target = symbol;

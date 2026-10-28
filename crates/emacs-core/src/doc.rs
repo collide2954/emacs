@@ -184,13 +184,10 @@ impl Lisp {
             let name = self.find_symbol_value(sym::INTERNAL_DOC_FILE_NAME);
             f_snarf_documentation(self, &[name])?;
         } else {
-            let saved = self.match_data(Value::NIL, Value::NIL, Value::NIL)?;
-            self.stack.push(saved);
+            let count = self.specpdl.len();
+            self.record_unwind_save_match_data()?;
             let r = self.funcall(sym::LOAD, &[file, sym::T, sym::T, sym::T, Value::NIL]);
-            let restore = self.set_match_data(saved, Value::NIL);
-            self.stack.pop();
-            r?;
-            restore?;
+            self.unbind_to_value(count, r)?;
         }
         Ok(())
     }

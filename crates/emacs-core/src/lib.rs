@@ -10,6 +10,7 @@ pub mod charfns;
 pub mod charset;
 pub mod chartab;
 pub mod coding;
+pub mod composite;
 pub mod data;
 pub mod dispnew;
 pub mod doc;
