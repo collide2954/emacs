@@ -12,9 +12,152 @@ pub struct Xdisp {
 }
 
 pub fn init_vars(lisp: &mut Lisp) {
+    lisp.defvar_bool(sym::SCROLL_MINIBUFFER_CONSERVATIVELY, true);
+    lisp.defvar_bool(sym::INHIBIT_MESSAGE, false);
     let name = lisp.string("*Messages*");
     lisp.defvar(sym::MESSAGES_BUFFER_NAME, name);
-    lisp.defvar_bool(sym::INHIBIT_REDISPLAY, false);
+    lisp.defvar_bool(sym::X_STRETCH_CURSOR, false);
+    lisp.defvar(sym::SHOW_TRAILING_WHITESPACE, Value::NIL);
+    lisp.defvar(sym::MODE_LINE_COMPACT, Value::NIL);
+    lisp.defvar(sym::NOBREAK_CHAR_DISPLAY, sym::T);
+    lisp.defvar_bool(sym::NOBREAK_CHAR_ASCII_DISPLAY, false);
+    lisp.defvar(sym::VOID_TEXT_AREA_POINTER, sym::ARROW);
+    lisp.defvar(sym::INHIBIT_REDISPLAY, Value::NIL);
+    lisp.defvar(sym::GLOBAL_MODE_STRING, Value::NIL);
+    lisp.defvar(sym::OVERLAY_ARROW_POSITION, Value::NIL);
+    let arrow = lisp.string("=>");
+    lisp.defvar(sym::OVERLAY_ARROW_STRING, arrow);
+    let arrows = lisp.list(&[sym::OVERLAY_ARROW_POSITION]);
+    lisp.defvar(sym::OVERLAY_ARROW_VARIABLE_LIST, arrows);
+    lisp.defvar_int(sym::SCROLL_STEP, 0);
+    lisp.defvar_int(sym::SCROLL_CONSERVATIVELY, 0);
+    lisp.defvar_int(sym::SCROLL_MARGIN, 0);
+    let margin = lisp.float(0.25);
+    lisp.defvar(sym::MAXIMUM_SCROLL_MARGIN, margin);
+    let ppi = lisp.float(72.0);
+    lisp.defvar(sym::DISPLAY_PIXELS_PER_INCH, ppi);
+    lisp.defvar_int(sym::DEBUG_END_POS, 0);
+    lisp.defvar(sym::TRUNCATE_PARTIAL_WIDTH_WINDOWS, Value::fixnum(50));
+    lisp.defvar_bool(sym::WORD_WRAP_BY_CATEGORY, false);
+    lisp.defvar(sym::LINE_NUMBER_DISPLAY_LIMIT, Value::NIL);
+    lisp.defvar_int(sym::LINE_NUMBER_DISPLAY_LIMIT_WIDTH, 200);
+    lisp.defvar_bool(sym::HIGHLIGHT_NONSELECTED_WINDOWS, false);
+    lisp.defvar_bool(sym::MULTIPLE_FRAMES, false);
+    let empty = lisp.empty_unibyte;
+    let at = lisp.string("%b - GNU Emacs at ");
+    lisp.stack.push(at);
+    let icon_title_name_format = lisp.list(&[empty, at, sym::SYSTEM_NAME]);
+    lisp.stack.push(icon_title_name_format);
+    let b = lisp.string("%b");
+    let format = lisp.list(&[sym::MULTIPLE_FRAMES, b, icon_title_name_format]);
+    lisp.stack.truncate(lisp.stack.len() - 2);
+    lisp.defvar(sym::FRAME_TITLE_FORMAT, format);
+    lisp.defvar(sym::ICON_TITLE_FORMAT, format);
+    lisp.defvar(sym::MESSAGE_LOG_MAX, Value::fixnum(1000));
+    lisp.defvar(sym::WINDOW_SCROLL_FUNCTIONS, Value::NIL);
+    lisp.defvar(sym::MOUSE_AUTOSELECT_WINDOW, Value::NIL);
+    lisp.defvar(sym::AUTO_RESIZE_TAB_BARS, sym::T);
+    lisp.defvar_bool(sym::AUTO_RAISE_TAB_BAR_BUTTONS, true);
+    lisp.defvar(sym::AUTO_RESIZE_TOOL_BARS, sym::T);
+    lisp.defvar_bool(sym::AUTO_RAISE_TOOL_BAR_BUTTONS, true);
+    lisp.defvar(sym::MAKE_CURSOR_LINE_FULLY_VISIBLE, sym::T);
+    lisp.defvar_bool(sym::MAKE_WINDOW_START_VISIBLE, false);
+    lisp.make_variable_buffer_local_builtin(sym::MAKE_WINDOW_START_VISIBLE);
+    lisp.defvar_bool(sym::TAB_BAR_TRUNCATE, false);
+    lisp.defvar(sym::TAB_BAR_BORDER, sym::INTERNAL_BORDER_WIDTH);
+    lisp.defvar(sym::TAB_BAR_BUTTON_MARGIN, Value::fixnum(1));
+    lisp.defvar_int(sym::TAB_BAR_BUTTON_RELIEF, 1);
+    lisp.defvar(sym::TOOL_BAR_BORDER, sym::INTERNAL_BORDER_WIDTH);
+    lisp.defvar(sym::TOOL_BAR_BUTTON_MARGIN, Value::fixnum(4));
+    lisp.defvar_int(sym::TOOL_BAR_BUTTON_RELIEF, 1);
+    lisp.defvar(sym::TOOL_BAR_STYLE, Value::NIL);
+    lisp.defvar_int(sym::TOOL_BAR_MAX_LABEL_SIZE, 14);
+    lisp.defvar(sym::FONTIFICATION_FUNCTIONS, Value::NIL);
+    lisp.make_variable_buffer_local_builtin(sym::FONTIFICATION_FUNCTIONS);
+    lisp.defvar_bool(sym::UNIBYTE_DISPLAY_VIA_LANGUAGE_ENVIRONMENT, false);
+    let height = lisp.float(0.25);
+    lisp.defvar(sym::MAX_MINI_WINDOW_HEIGHT, height);
+    lisp.defvar(sym::RESIZE_MINI_WINDOWS, Value::NIL);
+    lisp.defvar(sym::BLINK_CURSOR_ALIST, Value::NIL);
+    lisp.defvar(sym::AUTO_HSCROLL_MODE, sym::T);
+    lisp.defvar_int(sym::HSCROLL_MARGIN, 5);
+    lisp.defvar(sym::HSCROLL_STEP, Value::fixnum(0));
+    lisp.defvar_bool(sym::MESSAGE_TRUNCATE_LINES, false);
+    lisp.defvar(sym::MENU_BAR_UPDATE_HOOK, Value::NIL);
+    lisp.defvar(sym::MENU_UPDATING_FRAME, Value::NIL);
+    lisp.defvar_bool(sym::INHIBIT_MENUBAR_UPDATE, false);
+    for symbol in [
+        sym::WRAP_PREFIX,
+        sym::LINE_PREFIX,
+        sym::DISPLAY_LINE_NUMBERS,
+        sym::DISPLAY_LINE_NUMBERS_WIDTH,
+    ] {
+        lisp.defvar(symbol, Value::NIL);
+        lisp.make_variable_buffer_local_builtin(symbol);
+    }
+    lisp.defvar(sym::DISPLAY_LINE_NUMBERS_CURRENT_ABSOLUTE, sym::T);
+    lisp.defvar_bool(sym::DISPLAY_LINE_NUMBERS_WIDEN, false);
+    lisp.make_variable_buffer_local_builtin(sym::DISPLAY_LINE_NUMBERS_WIDEN);
+    lisp.defvar_int(sym::DISPLAY_LINE_NUMBERS_OFFSET, 0);
+    lisp.make_variable_buffer_local_builtin(sym::DISPLAY_LINE_NUMBERS_OFFSET);
+    lisp.defvar_bool(sym::DISPLAY_FILL_COLUMN_INDICATOR, false);
+    lisp.make_variable_buffer_local_builtin(sym::DISPLAY_FILL_COLUMN_INDICATOR);
+    lisp.defvar(sym::DISPLAY_FILL_COLUMN_INDICATOR_COLUMN, sym::T);
+    lisp.make_variable_buffer_local_builtin(sym::DISPLAY_FILL_COLUMN_INDICATOR_COLUMN);
+    lisp.defvar(sym::DISPLAY_FILL_COLUMN_INDICATOR_CHARACTER, Value::NIL);
+    lisp.make_variable_buffer_local_builtin(sym::DISPLAY_FILL_COLUMN_INDICATOR_CHARACTER);
+    lisp.defvar_int(sym::DISPLAY_LINE_NUMBERS_MAJOR_TICK, 0);
+    lisp.defvar_int(sym::DISPLAY_LINE_NUMBERS_MINOR_TICK, 0);
+    for symbol in [
+        sym::INHIBIT_EVAL_DURING_REDISPLAY,
+        sym::INHIBIT_FREE_REALIZED_FACES,
+        sym::INHIBIT_BIDI_MIRRORING,
+        sym::BIDI_INHIBIT_BPA,
+        sym::INHIBIT_TRY_WINDOW_ID,
+        sym::INHIBIT_TRY_WINDOW_REUSING,
+        sym::INHIBIT_TRY_CURSOR_MOVEMENT,
+    ] {
+        lisp.defvar_bool(symbol, false);
+    }
+    lisp.defvar_int(sym::OVERLINE_MARGIN, 2);
+    lisp.defvar_int(sym::UNDERLINE_MINIMUM_OFFSET, 1);
+    lisp.defvar_bool(sym::UNDERLINE_LINE_SCALING_FLAG, false);
+    lisp.defvar_bool(sym::OVERLINE_LINE_SCALING_FLAG, false);
+    lisp.defvar_bool(sym::STRIKE_THROUGH_LINE_SCALING_FLAG, false);
+    lisp.defvar_bool(sym::DISPLAY_HOURGLASS, true);
+    lisp.defvar(sym::HOURGLASS_DELAY, Value::fixnum(1));
+    let ignore = lisp.intern("ignore");
+    lisp.defvar(sym::PRE_REDISPLAY_FUNCTION, ignore);
+    lisp.put(
+        sym::GLYPHLESS_CHAR_DISPLAY,
+        sym::CHAR_TABLE_EXTRA_SLOTS,
+        Value::fixnum(1),
+    );
+    let glyphless = lisp
+        .make_char_table(sym::GLYPHLESS_CHAR_DISPLAY, Value::NIL)
+        .expect("glyphless-char-display");
+    lisp.char_table_mut(glyphless).extras[0] = sym::EMPTY_BOX;
+    lisp.defvar(sym::GLYPHLESS_CHAR_DISPLAY, glyphless);
+    let mirror = lisp
+        .make_char_table(Value::NIL, Value::NIL)
+        .expect("special-mirror-table");
+    lisp.defvar(sym::SPECIAL_MIRROR_TABLE, mirror);
+    lisp.defvar(sym::DEBUG_ON_MESSAGE, Value::NIL);
+    lisp.defvar(sym::SET_MESSAGE_FUNCTION, Value::NIL);
+    lisp.defvar(sym::CLEAR_MESSAGE_FUNCTION, Value::NIL);
+    let all_windows = lisp.make_hash_table_with(sym::EQL, crate::object::Weakness::None);
+    lisp.defvar(sym::REDISPLAY__ALL_WINDOWS_CAUSE, all_windows);
+    let mode_lines = lisp.make_hash_table_with(sym::EQL, crate::object::Weakness::None);
+    lisp.defvar(sym::REDISPLAY__MODE_LINES_CAUSE, mode_lines);
+    lisp.defvar_bool(sym::REDISPLAY__INHIBIT_BIDI, true);
+    lisp.defvar_bool(sym::DISPLAY_RAW_BYTES_AS_HEX, false);
+    lisp.defvar_bool(sym::MOUSE_FINE_GRAINED_TRACKING, false);
+    lisp.defvar_bool(sym::TAB_BAR__DRAGGING_IN_PROGRESS, false);
+    lisp.defvar_bool(sym::REDISPLAY_SKIP_INITIAL_FRAME, true);
+    lisp.defvar_bool(sym::REDISPLAY_SKIP_FONTIFICATION_ON_INPUT, false);
+    lisp.defvar_bool(sym::REDISPLAY_ADHOC_SCROLL_IN_RESIZE_MINI_WINDOWS, true);
+    lisp.defvar_bool(sym::COMPOSITION_BREAK_AT_POINT, false);
+    lisp.defvar_int(sym::MAX_REDISPLAY_TICKS, 0);
 }
 
 impl Lisp {

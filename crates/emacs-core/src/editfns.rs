@@ -116,7 +116,6 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::USER_REAL_LOGIN_NAME, Value::NIL);
     lisp.defvar(sym::OPERATING_SYSTEM_RELEASE, Value::NIL);
     lisp.defvar(sym::UNDO_AUTO__LAST_BOUNDARY_CAUSE, Value::NIL);
-    lisp.defvar(sym::MESSAGE_LOG_MAX, Value::fixnum(1000));
 }
 
 impl Lisp {
