@@ -100,10 +100,11 @@ other registry defaults are missing on Windows and `set-locale-environment` leav
 `default-directory`, which therefore keeps C's raw `GetCurrentDirectory` form
 (`C:\Users\...\`).
 
-`emacs` without `--batch` stops while loading `window.el`. This is expected for now: the
-preloaded Lisp loads from source, so eager macro-expansion autoloads `flymake-log`, and
-`project.el`'s `defcustom` reaches `locate-user-emacs-file` before `user-emacs-directory`
-is set. C Emacs never meets this, because it runs `loadup.el` only in batch to make the
+`emacs` without `--batch` stops while loading `elisp-mode.el` with
+`(wrong-type-argument stringp nil)`. This is expected for now: the preloaded Lisp loads
+from source, so eager macro-expansion of `flymake-log` loads `flymake.el`, which requires
+`project.el`, whose `defcustom` calls `locate-user-emacs-file` before
+`user-emacs-directory` is set (outside batch mode that function checks the directory). C Emacs never meets this, because it runs `loadup.el` only in batch to make the
 dump and an interactive start restores the dump. Interactive startup needs the heap
 snapshot (the pdumper replacement) or byte-compiled Lisp.
 
