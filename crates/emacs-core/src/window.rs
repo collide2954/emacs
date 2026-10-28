@@ -254,7 +254,34 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-list", 0, 3, f_window_list),
     Subr::fixed("window-list-1", 0, 3, f_window_list_1),
     Subr::fixed("get-buffer-window", 0, 2, f_get_buffer_window),
+    Subr::fixed("set-window-buffer", 2, 3, f_set_window_buffer),
 ];
+
+fn f_set_window_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (window, buffer_or_name, keep_margins) = (args[0], args[1], args[2]);
+    let window = lisp.decode_live_window(window)?;
+    let buffer = crate::buffer::f_get_buffer(lisp, &[buffer_or_name])?;
+    lisp.check_buffer(buffer)?;
+    if !lisp.buffer_live_p(buffer) {
+        return Err(lisp.error("Attempt to display deleted buffer"));
+    }
+    let tem = lisp.window(window).contents;
+    if tem.is_nil() {
+        return Err(lisp.error("Window is deleted"));
+    }
+    if tem != buffer {
+        if lisp.window(window).dedicated == sym::T {
+            let name = lisp.buffer(tem).name;
+            let name = lisp.string_to_rust(name);
+            return Err(lisp.error(&format!("Window is dedicated to `{name}'")));
+        }
+        lisp.window_mut(window).dedicated = Value::NIL;
+        lisp.funcall(sym::RECORD_WINDOW_BUFFER, &[window])?;
+    }
+    lisp.unshow_buffer(window)?;
+    lisp.set_window_buffer(window, buffer, true, !keep_margins.is_nil())?;
+    Ok(Value::NIL)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WindowLoop {
@@ -1034,6 +1061,30 @@ impl Lisp {
         if !samebuf && !self.window(window).mini && !self.window(window).flags.pseudo_window_p {
             let f = self.window(window).frame;
             self.frame_mut(f).flags.window_change = true;
+        }
+        Ok(())
+    }
+
+    fn unshow_buffer(&mut self, w: Value) -> LispResult<()> {
+        let buf = self.window(w).contents;
+        let start = self.window(w).start;
+        let last_window_start = self.marker_position_checked(start)?;
+        self.buffer_mut(buf).last_window_start = last_window_start;
+        let selected = self.windows.selected_window;
+        let lsw = self.buffer(buf).last_selected_window;
+        let lsw_is_window = self.is_window(lsw);
+        if buf != self.window(selected).contents
+            && !(lsw_is_window && w != lsw && buf == self.window(lsw).contents)
+        {
+            let pointm = self.window(w).pointm;
+            let charpos = self.marker_position_checked(pointm)?;
+            let bytepos = self.marker_byte_position_checked(pointm)?;
+            let b = self.buffer_mut(buf);
+            b.pt = charpos.clamp(b.begv, b.zv);
+            b.pt_byte = bytepos.clamp(b.begv_byte, b.zv_byte);
+        }
+        if lsw_is_window && w == lsw {
+            self.buffer_mut(buf).last_selected_window = Value::NIL;
         }
         Ok(())
     }

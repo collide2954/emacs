@@ -33,6 +33,29 @@ fn initial_terminal_and_frame() {
 }
 
 #[test]
+fn frame_visibility() {
+    check(&[
+        ("(eq (make-frame-visible) (selected-frame))", "t"),
+        (
+            "(progn (setq buffer-display-time nil) (make-frame-visible) (null buffer-display-time))",
+            "nil",
+        ),
+        (
+            "(make-frame-invisible)",
+            "error: (error \"Attempt to make invisible the sole visible or iconified frame\")",
+        ),
+        ("(make-frame-invisible nil t)", "nil"),
+        ("(iconify-frame)", "nil"),
+        ("(raise-frame)", "nil"),
+        ("(lower-frame)", "nil"),
+        (
+            "(make-frame-visible 'x)",
+            "error: (wrong-type-argument frame-live-p x)",
+        ),
+    ]);
+}
+
+#[test]
 fn frame_parameters_round_trip() {
     check(&[
         ("(modify-frame-parameters nil '((foo . 1)))", "nil"),

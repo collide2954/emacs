@@ -1,6 +1,7 @@
 mod common;
 
-use common::check;
+use common::{check, eval, on_big_stack};
+use emacs_core::lisp::Lisp;
 
 #[test]
 fn special_forms() {
@@ -212,6 +213,68 @@ fn deep_recursion_is_reported() {
         ),
         ("(+ 1 1)", "2"),
     ]);
+}
+
+#[test]
+fn caught_errors_stay_rooted() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        let flow = lisp
+            .eval_string("(signal 'error (list (concat \"a\" \"b\")))")
+            .expect_err("signal");
+        let condition = lisp.flow_condition(&flow);
+        lisp.garbage_collect();
+        assert!(lisp.heap.is_live(condition));
+        assert_eq!(lisp.prin1_to_string(condition), "(error \"ab\")");
+        let live = lisp
+            .condition_case_internal(
+                emacs_core::symbols::ERROR,
+                |l| {
+                    let s = l.string("cd");
+                    Err(l.signal_list(emacs_core::symbols::ERROR, &[s]))
+                },
+                |l, err| {
+                    l.garbage_collect();
+                    let live = l.heap.is_live(err) && l.heap.is_live(l.xcdr(err));
+                    Ok(l.bool(live))
+                },
+            )
+            .expect("handled");
+        assert_eq!(lisp.prin1_to_string(live), "t");
+    });
+}
+
+#[test]
+fn nonlocal_exits_survive_collection() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        lisp.gc_stress = true;
+        for (source, expected) in [
+            (
+                "(condition-case e (unwind-protect (signal 'error (list (concat \"a\" \"b\"))) (make-list 100 (concat \"x\" \"y\"))) (error (car (cdr e))))",
+                "\"ab\"",
+            ),
+            (
+                "(catch 'tag (unwind-protect (throw 'tag (concat \"c\" \"d\")) (condition-case nil (signal 'error (list (concat \"e\" \"f\"))) (error nil))))",
+                "\"cd\"",
+            ),
+            (
+                "(condition-case e (unwind-protect (signal 'error (list (concat \"g\" \"h\"))) (condition-case nil (signal 'error (list 1)) (error (make-list 10 1)))) (error (car (cdr e))))",
+                "\"gh\"",
+            ),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+        let level = lisp.flow_roots.len();
+        for _ in 0..50 {
+            eval(
+                &mut lisp,
+                "(condition-case nil (signal 'error (list 1)) (error nil))",
+            );
+            eval(&mut lisp, "(catch 'x (throw 'x 1))");
+        }
+        assert_eq!(lisp.flow_roots.len(), level);
+    });
 }
 
 #[test]

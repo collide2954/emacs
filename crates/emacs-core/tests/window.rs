@@ -18,6 +18,44 @@ fn window_variables() {
 }
 
 #[test]
+fn set_window_buffer() {
+    check(&[
+        (
+            "(progn (fset 'record-window-buffer (function (lambda (w) (setq recorded w)))) nil)",
+            "nil",
+        ),
+        ("(set-window-buffer nil (get-buffer-create \"sw\"))", "nil"),
+        (
+            "(list (buffer-name (window-buffer)) (eq recorded (selected-window)))",
+            "(\"sw\" t)",
+        ),
+        ("(setq recorded nil)", "nil"),
+        ("(set-window-buffer nil \"sw\")", "nil"),
+        ("recorded", "nil"),
+        ("(set-window-dedicated-p nil t)", "t"),
+        (
+            "(set-window-buffer nil \"*scratch*\")",
+            "error: (error \"Window is dedicated to `sw'\")",
+        ),
+        ("(set-window-dedicated-p nil 'weak)", "weak"),
+        ("(set-window-buffer nil \"*scratch*\")", "nil"),
+        ("(window-dedicated-p)", "nil"),
+        (
+            "(set-window-buffer nil \"no such\")",
+            "error: (wrong-type-argument bufferp nil)",
+        ),
+        (
+            "(let ((b (get-buffer-create \"dead\"))) (kill-buffer b) (set-window-buffer nil b))",
+            "error: (error \"Attempt to display deleted buffer\")",
+        ),
+        (
+            "(progn (save-current-buffer (set-buffer \" *Minibuf-0*\") (insert \"abc\")) (set-window-buffer (minibuffer-window) \"sw\") (save-current-buffer (set-buffer \" *Minibuf-0*\") (point)))",
+            "1",
+        ),
+    ]);
+}
+
+#[test]
 fn window_cycling() {
     check(&[
         ("(window-list)", "(#<window 1 on *scratch*>)"),

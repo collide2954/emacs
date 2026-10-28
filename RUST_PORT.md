@@ -82,8 +82,11 @@ writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
 `charprop.el` files still need `unidata-gen.el` run by a working Emacs.
 
 `emacs --batch` loads every preloaded file in `loadup.el`, including the `w32-*` files and
-`cus-start.el`, and runs `Snarf-documentation`. Startup (`init_buffer` now gives
-`*scratch*` its `default-directory`) then stops on `set-window-buffer` (`window.c`).
+`cus-start.el`, and runs `Snarf-documentation`. Startup (`init_buffer` gives `*scratch*`
+its `default-directory`) then runs `command-line` to the end and calls `kill-emacs`.
+`kill-emacs` is still an early approximation: it lacks `shut_down_emacs` and `do-auto-save`
+(`set-buffer-auto-saved` and `recent-auto-save-p` are stubs), and it exits with 1 for a
+non-integer ARG where C exits successfully.
 
 `emacs` without `--batch` stops while loading `window.el`. This is expected for now: the
 preloaded Lisp loads from source, so eager macro-expansion autoloads `flymake-log`, and

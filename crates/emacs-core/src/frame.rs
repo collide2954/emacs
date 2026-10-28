@@ -399,7 +399,113 @@ pub const SUBRS: &[Subr] = &[
         f_set_frame_window_state_change,
     ),
     Subr::fixed("frame-scale-factor", 0, 1, f_frame_scale_factor),
+    Subr::fixed("make-frame-visible", 0, 1, f_make_frame_visible).interactive(""),
+    Subr::fixed("make-frame-invisible", 0, 2, f_make_frame_invisible).interactive(""),
+    Subr::fixed("iconify-frame", 0, 1, f_iconify_frame).interactive(""),
+    Subr::fixed("raise-frame", 0, 1, f_raise_frame).interactive(""),
+    Subr::fixed("lower-frame", 0, 1, f_lower_frame).interactive(""),
 ];
+
+impl Lisp {
+    pub fn frame_window_p(&self, f: Value) -> bool {
+        match self.frame(f).output_method {
+            OutputMethod::Initial => false,
+        }
+    }
+
+    fn is_tty_child_frame(&self, f: Value) -> bool {
+        match self.frame(f).output_method {
+            OutputMethod::Initial => false,
+        }
+    }
+
+    fn other_frames(&self, f: Value, invisible: bool, force: bool) -> bool {
+        self.frames.list.iter().any(|&f1| {
+            if f1 == f {
+                return false;
+            }
+            let fl = &self.frame(f1).flags;
+            !fl.tooltip
+                && self.frame_parent_frame(f1).is_nil()
+                && (invisible || self.get_frame_param(f1, sym::DELETE_BEFORE).is_nil())
+                && (fl.visible
+                    || fl.iconified
+                    || (!invisible
+                        && (force || (self.frame_window_p(f1) && !self.frame_window_p(f)))))
+        })
+    }
+
+    fn make_frame_visible_1(&mut self, window: Value) -> LispResult<()> {
+        let mut window = window;
+        while !window.is_nil() {
+            let contents = self.window(window).contents;
+            if self.is_window(contents) {
+                self.make_frame_visible_1(contents)?;
+            } else {
+                let now = crate::timefns::f_current_time(self, &[])?;
+                self.buffer_local_set(contents, sym::BUFFER_DISPLAY_TIME, now);
+            }
+            window = self.window(window).next;
+        }
+        Ok(())
+    }
+}
+
+fn f_make_frame_visible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(arg(args, 0))?;
+    if lisp.frame_window_p(f) || lisp.is_tty_child_frame(f) {
+        unreachable!();
+    }
+    let root = lisp.frame(f).root_window;
+    lisp.make_frame_visible_1(root)?;
+    Ok(f)
+}
+
+fn f_make_frame_invisible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(arg(args, 0))?;
+    if arg(args, 1).is_nil() && !lisp.other_frames(f, true, false) {
+        return Err(lisp.error("Attempt to make invisible the sole visible or iconified frame"));
+    }
+    if lisp.frame_window_p(f) || lisp.is_tty_child_frame(f) {
+        unreachable!();
+    }
+    lisp.windows.windows_or_buffers_changed = 16;
+    Ok(Value::NIL)
+}
+
+fn f_iconify_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let frame = arg(args, 0);
+    let f = lisp.decode_live_frame(frame)?;
+    if !lisp.frame_parent_frame(f).is_nil() {
+        let iconify_child_frame = lisp.find_symbol_value(sym::ICONIFY_CHILD_FRAME);
+        if iconify_child_frame.is_nil() {
+            return Ok(Value::NIL);
+        } else if lisp.frame_window_p(f) && iconify_child_frame == sym::ICONIFY_TOP_LEVEL {
+            unreachable!();
+        } else if iconify_child_frame == sym::MAKE_INVISIBLE {
+            f_make_frame_invisible(lisp, &[frame, Value::NIL])?;
+            return Ok(Value::NIL);
+        }
+    }
+    match lisp.frame(f).output_method {
+        OutputMethod::Initial => Ok(Value::NIL),
+    }
+}
+
+fn f_raise_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(arg(args, 0))?;
+    f_make_frame_visible(lisp, &[f])?;
+    match lisp.frame(f).output_method {
+        OutputMethod::Initial => Ok(Value::NIL),
+    }
+}
+
+fn f_lower_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(arg(args, 0))?;
+    match lisp.frame(f).output_method {
+        OutputMethod::Initial => Ok(Value::NIL),
+    }
+}
 
 pub fn init_vars(lisp: &mut Lisp) {
     for (i, &parameter) in FRAME_PARMS.iter().enumerate() {

@@ -5,7 +5,17 @@ use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
 
-pub const SUBRS: &[Subr] = &[Subr::fixed("invisible-p", 1, 1, f_invisible_p)];
+pub const SUBRS: &[Subr] = &[
+    Subr::fixed("invisible-p", 1, 1, f_invisible_p),
+    Subr::fixed("set-buffer-redisplay", 4, 4, f_set_buffer_redisplay),
+];
+
+fn f_set_buffer_redisplay(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let b = lisp.current_buffer;
+    lisp.bset_update_mode_line(b);
+    lisp.buffer_mut(b).prevent_redisplay_optimizations_p = true;
+    Ok(Value::NIL)
+}
 
 pub const REDISPLAY_SOME: i64 = 2;
 

@@ -100,6 +100,14 @@ impl Lisp {
         Ok(m.charpos)
     }
 
+    pub fn marker_byte_position_checked(&mut self, marker: Value) -> LispResult<usize> {
+        let m = *self.marker(marker);
+        if m.buffer.is_nil() {
+            return Err(self.error("Marker does not point anywhere"));
+        }
+        Ok(m.bytepos)
+    }
+
     pub fn make_marker_at(&mut self, pos: usize, buffer: Value, insertion_type: bool) -> Value {
         let m = self.make_marker_object();
         self.set_marker_position(m, pos, buffer);
