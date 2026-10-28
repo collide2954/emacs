@@ -266,3 +266,25 @@ fn printing() {
         ),
     ]);
 }
+
+#[test]
+fn equal_cycles() {
+    check(&[
+        (
+            "(let ((a (list 1 2)) (b (list 1 2))) (setcdr (cdr a) a) (setcdr (cdr b) b) (equal a b))",
+            "t",
+        ),
+        (
+            "(let ((a (list nil)) (b (list nil))) (setcar a a) (setcar b b) (equal a b))",
+            "t",
+        ),
+        (
+            "(let ((a (list 1))) (setcdr a a) (equal a '(1 1 1)))",
+            "nil",
+        ),
+        (
+            "(let ((a (list 1 2)) (b (list 1 3))) (setcdr (cdr a) a) (setcdr (cdr b) b) (equal a b))",
+            "nil",
+        ),
+    ]);
+}

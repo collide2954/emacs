@@ -88,6 +88,14 @@ enum Obj {
     String(Value),
 }
 
+pub(crate) struct IntervalRun {
+    pub value: Value,
+    pub start: i64,
+    pub end: i64,
+    pub at_first: bool,
+    pub at_last: bool,
+}
+
 impl Lisp {
     fn decode_obj(&mut self, object: Value) -> LispResult<Obj> {
         if object.is_nil() {
@@ -266,6 +274,53 @@ impl Lisp {
             last += 1;
         }
         Ok(Some((val, segs[first].start, segs[last].end)))
+    }
+
+    pub(crate) fn interval_run(
+        &mut self,
+        position: i64,
+        object: Value,
+        prop: Value,
+    ) -> LispResult<Option<IntervalRun>> {
+        if object == sym::T {
+            return Ok(None);
+        }
+        let obj = self.decode_obj(object)?;
+        let (beg, end) = self.obj_limits(obj);
+        if position < beg as i64 || position > end as i64 {
+            let p = Value::fixnum(position);
+            return Err(self.args_out_of_range(p, p));
+        }
+        if beg == end || self.obj_runs(obj).is_empty() {
+            return Ok(None);
+        }
+        let (lo, hi) = match obj {
+            Obj::Buffer(b) => (1, self.buffer(b).z()),
+            Obj::String(s) => (0, self.string_chars(s)),
+        };
+        let segs = self.segments(obj, lo, hi);
+        let pos = position as usize;
+        let i = segs
+            .iter()
+            .position(|s| s.start <= pos && pos < s.end)
+            .unwrap_or(segs.len() - 1);
+        let val = self.lookup_char_property(segs[i].plist, prop);
+        let mut first = i;
+        while first > 0 && self.lookup_char_property(segs[first - 1].plist, prop) == val {
+            first -= 1;
+        }
+        let mut last = i;
+        while last + 1 < segs.len() && self.lookup_char_property(segs[last + 1].plist, prop) == val
+        {
+            last += 1;
+        }
+        Ok(Some(IntervalRun {
+            value: val,
+            start: segs[first].start as i64,
+            end: segs[last].end as i64,
+            at_first: first == 0,
+            at_last: last + 1 == segs.len(),
+        }))
     }
 
     pub fn text_property_at(&self, pos: usize, prop: Value) -> Value {
@@ -776,7 +831,7 @@ impl Lisp {
         Ok(())
     }
 
-    fn get_char_property_and_overlay(
+    pub(crate) fn get_char_property_and_overlay(
         &mut self,
         position: Value,
         prop: Value,
@@ -1106,11 +1161,14 @@ fn single_char_property_change(lisp: &mut Lisp, args: &[Value], forward: bool) -
     lisp.unbind_to_value(count, result)
 }
 
-fn f_next_single_char_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_next_single_char_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     single_char_property_change(lisp, args, true)
 }
 
-fn f_previous_single_char_property_change(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_previous_single_char_property_change(
+    lisp: &mut Lisp,
+    args: &[Value],
+) -> LispResult {
     single_char_property_change(lisp, args, false)
 }
 

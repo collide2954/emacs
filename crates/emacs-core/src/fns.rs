@@ -12,6 +12,10 @@ use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
 
+const FOR_EACH_TAIL_THRESHOLD: u64 = 4096;
+
+type EqualSeen = Option<std::collections::HashMap<Value, Vec<Value>>>;
+
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("identity", 1, 1, f_identity),
     Subr::fixed("random", 0, 1, f_random),
@@ -245,21 +249,75 @@ impl Lisp {
         props: bool,
         depth: usize,
     ) -> LispResult<bool> {
-        if depth > 200 {
-            return Err(self.error("Stack overflow in equal"));
+        let mut ht = None;
+        self.internal_equal_1(a, b, props, depth, &mut ht)
+    }
+
+    fn internal_equal_cycle(
+        &mut self,
+        mut o1: Value,
+        mut o2: Value,
+        props: bool,
+        depth: usize,
+        ht: &mut EqualSeen,
+    ) -> LispResult<bool> {
+        let mut tortoise = o1;
+        let mut steps: u64 = 0;
+        while o1.is_cons() {
+            if !o2.is_cons() {
+                return Ok(false);
+            }
+            let (c1, c2) = (self.xcar(o1), self.xcar(o2));
+            if !self.internal_equal_1(c1, c2, props, depth + 1, ht)? {
+                return Ok(false);
+            }
+            o2 = self.xcdr(o2);
+            if self.eq(self.xcdr(o1), o2) {
+                return Ok(true);
+            }
+            o1 = self.xcdr(o1);
+            if o1 == tortoise {
+                return Ok(true);
+            }
+            steps += 1;
+            if steps & (FOR_EACH_TAIL_THRESHOLD - 1) == 0 && steps.is_power_of_two() {
+                tortoise = o1;
+            }
         }
+        Ok(false)
+    }
+
+    fn internal_equal_1(
+        &mut self,
+        a: Value,
+        b: Value,
+        props: bool,
+        depth: usize,
+        ht: &mut EqualSeen,
+    ) -> LispResult<bool> {
         let mut a = a;
         let mut b = b;
+        let mut depth = depth;
         loop {
-            if a == b {
-                return Ok(true);
+            if depth > 10 {
+                if depth > 200 {
+                    return Err(self.error("Stack overflow in equal"));
+                }
+                let seen = ht.get_or_insert_with(std::collections::HashMap::new);
+                if a.is_cons() || a.is_vectorlike() {
+                    let o2s = seen.entry(a).or_default();
+                    if o2s.iter().any(|&o| self.eq(o, b)) {
+                        return Ok(true);
+                    }
+                    o2s.push(b);
+                }
             }
             if self.var_true(sym::SYMBOLS_WITH_POS_ENABLED) {
                 a = self.maybe_remove_pos_from_symbol(a);
                 b = self.maybe_remove_pos_from_symbol(b);
-                if a == b {
-                    return Ok(true);
-                }
+            }
+            if a == b {
+                return Ok(true);
             }
             if a.tag() != b.tag() {
                 return Ok(false);
@@ -268,12 +326,32 @@ impl Lisp {
                 return Ok(self.heap.float_value(a).to_bits() == self.heap.float_value(b).to_bits());
             }
             if a.is_cons() {
-                let (ca, cb) = (self.xcar(a), self.xcar(b));
-                if !self.internal_equal(ca, cb, props, depth + 1)? {
-                    return Ok(false);
+                let mut tortoise = a;
+                let mut steps: u64 = 0;
+                while a.is_cons() {
+                    if !b.is_cons() {
+                        return Ok(false);
+                    }
+                    let (ca, cb) = (self.xcar(a), self.xcar(b));
+                    if !self.internal_equal_1(ca, cb, props, depth + 1, ht)? {
+                        return Ok(false);
+                    }
+                    b = self.xcdr(b);
+                    if self.eq(self.xcdr(a), b) {
+                        return Ok(true);
+                    }
+                    a = self.xcdr(a);
+                    if a == tortoise {
+                        return Ok(
+                            b.is_cons() && self.internal_equal_cycle(b, a, props, depth, ht)?
+                        );
+                    }
+                    steps += 1;
+                    if steps & (FOR_EACH_TAIL_THRESHOLD - 1) == 0 && steps.is_power_of_two() {
+                        tortoise = a;
+                    }
                 }
-                a = self.xcdr(a);
-                b = self.xcdr(b);
+                depth += 1;
                 continue;
             }
             if a.is_string() {
@@ -343,7 +421,7 @@ impl Lisp {
                     }
                 };
                 for (x, y) in ia.into_iter().zip(ib) {
-                    if !self.internal_equal(x, y, props, depth + 1)? {
+                    if !self.internal_equal_1(x, y, props, depth + 1, ht)? {
                         return Ok(false);
                     }
                 }

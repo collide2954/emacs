@@ -249,7 +249,7 @@ impl Env<'_> {
         self.category_member(set, category)
     }
 
-    fn word_boundary_p(&self, c1: u32, c2: u32) -> bool {
+    pub(crate) fn word_boundary_p(&self, c1: u32, c2: u32) -> bool {
         let (mut tail, default_result) = if self.table_ref(self.char_script_table, c1)
             == self.table_ref(self.char_script_table, c2)
         {
@@ -349,7 +349,7 @@ impl Env<'_> {
         self.syntax(c) == S_WORD
     }
 
-    fn iswctype(&self, c: u32, cc: i32) -> bool {
+    pub(crate) fn iswctype(&self, c: u32, cc: i32) -> bool {
         match cc {
             RECC_ALNUM => self.isalnum(c),
             RECC_ALPHA => self.isalpha(c),
@@ -482,7 +482,7 @@ fn char_to_byte_safe(c: u32) -> i32 {
     }
 }
 
-fn char_leading_code(c: u32) -> usize {
+pub(crate) fn char_leading_code(c: u32) -> usize {
     character::char_string(c)[0] as usize
 }
 
@@ -524,7 +524,7 @@ fn charset_range_table_bits(buf: &[u8], p: usize) -> i32 {
     buf[p + 2 + size] as i32 + buf[p + 3 + size] as i32 * 0x100
 }
 
-fn wctype_parse(pat: &[u8], p: &mut usize) -> i32 {
+pub(crate) fn wctype_parse(pat: &[u8], p: &mut usize) -> i32 {
     let rest = &pat[*p..];
     if rest.len() < 4 || rest[0] != b'[' || rest[1] != b':' {
         return -1;

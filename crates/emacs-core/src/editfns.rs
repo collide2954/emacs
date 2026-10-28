@@ -9,6 +9,7 @@ use crate::lisp::Lisp;
 use crate::object::{LispString, PropRun};
 use crate::subr::Subr;
 use crate::symbols as sym;
+use crate::textprop::{f_next_single_char_property_change, f_previous_single_char_property_change};
 use crate::value::Value;
 
 pub const SUBRS: &[Subr] = &[
@@ -21,6 +22,17 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("region-beginning", 0, 0, f_region_beginning),
     Subr::fixed("region-end", 0, 0, f_region_end),
     Subr::fixed("mark-marker", 0, 0, f_mark_marker),
+    Subr::fixed("delete-field", 0, 1, f_delete_field),
+    Subr::fixed("field-string", 0, 1, f_field_string),
+    Subr::fixed(
+        "field-string-no-properties",
+        0,
+        1,
+        f_field_string_no_properties,
+    ),
+    Subr::fixed("field-beginning", 0, 3, f_field_beginning),
+    Subr::fixed("field-end", 0, 3, f_field_end),
+    Subr::fixed("constrain-to-field", 2, 5, f_constrain_to_field),
     Subr::fixed("pos-bol", 0, 1, f_pos_bol),
     Subr::fixed("line-beginning-position", 0, 1, f_line_beginning_position),
     Subr::fixed("pos-eol", 0, 1, f_pos_eol),
@@ -218,6 +230,84 @@ impl Lisp {
         let (pos, counted) = self.find_newline(b.pt, end, cnt);
         if counted == cnt { pos - 1 } else { pos }
     }
+
+    pub fn find_field(
+        &mut self,
+        pos: Value,
+        merge_at_boundary: Value,
+        beg_limit: Value,
+        end_limit: Value,
+    ) -> LispResult<(usize, usize)> {
+        let pos = if pos.is_nil() {
+            self.cur().pt as i64
+        } else {
+            self.position_arg(pos)?
+        };
+        let posv = Value::fixnum(pos);
+        let after_field = self
+            .get_char_property_and_overlay(posv, sym::FIELD, Value::NIL)?
+            .0;
+        let before_field = if pos > self.cur().begv as i64 {
+            self.get_char_property_and_overlay(Value::fixnum(pos - 1), sym::FIELD, Value::NIL)?
+                .0
+        } else {
+            after_field
+        };
+        let mut at_field_start = false;
+        let mut at_field_end = false;
+        if merge_at_boundary.is_nil() {
+            let field = self.get_pos_property(posv, sym::FIELD, Value::NIL)?;
+            if field != after_field {
+                at_field_end = true;
+            }
+            if field != before_field {
+                at_field_start = true;
+            }
+            if field.is_nil() && at_field_start && at_field_end {
+                at_field_end = false;
+                at_field_start = false;
+            }
+        }
+        let beg = if at_field_start {
+            pos as usize
+        } else {
+            let mut p = posv;
+            if !merge_at_boundary.is_nil() && before_field == sym::BOUNDARY {
+                p = f_previous_single_char_property_change(
+                    self,
+                    &[p, sym::FIELD, Value::NIL, beg_limit],
+                )?;
+            }
+            p = f_previous_single_char_property_change(
+                self,
+                &[p, sym::FIELD, Value::NIL, beg_limit],
+            )?;
+            if p.is_nil() {
+                self.cur().begv
+            } else {
+                self.position_arg(p)? as usize
+            }
+        };
+        let end = if at_field_end {
+            pos as usize
+        } else {
+            let mut p = posv;
+            if !merge_at_boundary.is_nil() && after_field == sym::BOUNDARY {
+                p = f_next_single_char_property_change(
+                    self,
+                    &[p, sym::FIELD, Value::NIL, end_limit],
+                )?;
+            }
+            p = f_next_single_char_property_change(self, &[p, sym::FIELD, Value::NIL, end_limit])?;
+            if p.is_nil() {
+                self.cur().zv
+            } else {
+                self.position_arg(p)? as usize
+            }
+        };
+        Ok((beg, end))
+    }
+
     pub fn save_excursion_save(&mut self) -> Value {
         let buffer = self.current_buffer;
         let pt = self.cur().pt;
@@ -384,13 +474,117 @@ fn line_count_arg(lisp: &mut Lisp, n: Value) -> LispResult<i64> {
     }
 }
 
+fn f_delete_field(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (beg, end) = lisp.find_field(args[0], Value::NIL, Value::NIL, Value::NIL)?;
+    if beg != end {
+        lisp.del_range(beg, end)?;
+    }
+    Ok(Value::NIL)
+}
+
+fn f_field_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (beg, end) = lisp.find_field(args[0], Value::NIL, Value::NIL, Value::NIL)?;
+    Ok(lisp.buffer_substring_value(beg, end, true))
+}
+
+fn f_field_string_no_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (beg, end) = lisp.find_field(args[0], Value::NIL, Value::NIL, Value::NIL)?;
+    Ok(lisp.buffer_substring_value(beg, end, false))
+}
+
+fn f_field_beginning(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (beg, _) = lisp.find_field(args[0], args[1], args[2], Value::NIL)?;
+    Ok(Value::fixnum(beg as i64))
+}
+
+fn f_field_end(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (_, end) = lisp.find_field(args[0], args[1], Value::NIL, args[2])?;
+    Ok(Value::fixnum(end as i64))
+}
+
+pub(crate) fn f_constrain_to_field(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (escape_from_edge, only_in_line, inhibit_capture_property) = (args[2], args[3], args[4]);
+    let mut orig_point = 0;
+    let mut new_pos = args[0];
+    if new_pos.is_nil() {
+        orig_point = lisp.cur().pt;
+        new_pos = Value::fixnum(orig_point as i64);
+    }
+    let new = lisp.position_arg(new_pos)?;
+    new_pos = Value::fixnum(new);
+    let old = lisp.position_arg(args[1])?;
+    let old_pos = Value::fixnum(old);
+    let fwd = new > old;
+    let prev_old = Value::fixnum(old - 1);
+    let prev_new = Value::fixnum(new - 1);
+    let field = sym::FIELD;
+    let nil = Value::NIL;
+    if lisp
+        .find_symbol_value(sym::INHIBIT_FIELD_TEXT_MOTION)
+        .is_nil()
+        && new != old
+        && (!lisp.get_char_property(new_pos, field, nil)?.is_nil()
+            || !lisp.get_char_property(old_pos, field, nil)?.is_nil()
+            || (new > lisp.cur().begv as i64
+                && !lisp.get_char_property(prev_new, field, nil)?.is_nil())
+            || (old > lisp.cur().begv as i64
+                && !lisp.get_char_property(prev_old, field, nil)?.is_nil()))
+        && (inhibit_capture_property.is_nil()
+            || (lisp
+                .get_pos_property(old_pos, inhibit_capture_property, nil)?
+                .is_nil()
+                && (old <= lisp.cur().begv as i64
+                    || lisp
+                        .get_char_property(old_pos, inhibit_capture_property, nil)?
+                        .is_nil()
+                    || lisp
+                        .get_char_property(prev_old, inhibit_capture_property, nil)?
+                        .is_nil())))
+    {
+        let field_bound = if fwd {
+            lisp.find_field(old_pos, escape_from_edge, nil, new_pos)?.1
+        } else {
+            lisp.find_field(old_pos, escape_from_edge, new_pos, nil)?.0
+        } as i64;
+        if (if field_bound < new { fwd } else { !fwd })
+            && (only_in_line.is_nil()
+                || lisp
+                    .find_newline(new as usize, field_bound as usize, if fwd { -1 } else { 1 })
+                    .1
+                    == 0)
+        {
+            new_pos = Value::fixnum(field_bound);
+        }
+        if let Some(p) = new_pos.as_fixnum()
+            && orig_point != 0
+            && p != orig_point as i64
+        {
+            lisp.goto_char_internal(p as usize);
+        }
+    }
+    Ok(new_pos)
+}
+
 fn f_pos_bol(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = line_count_arg(lisp, args[0])?;
     Ok(Value::fixnum(lisp.line_beginning(n) as i64))
 }
 
 fn f_line_beginning_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    f_pos_bol(lisp, args)
+    let n = line_count_arg(lisp, args[0])?;
+    let charpos = lisp.line_beginning(n) as i64;
+    let pt = lisp.cur().pt as i64;
+    let escape = lisp.bool(n - 1 != 0);
+    f_constrain_to_field(
+        lisp,
+        &[
+            Value::fixnum(charpos),
+            Value::fixnum(pt),
+            escape,
+            sym::T,
+            Value::NIL,
+        ],
+    )
 }
 
 fn f_pos_eol(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -399,7 +593,19 @@ fn f_pos_eol(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 fn f_line_end_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    f_pos_eol(lisp, args)
+    let n = line_count_arg(lisp, args[0])?;
+    let end = lisp.line_end(n) as i64;
+    let pt = lisp.cur().pt as i64;
+    f_constrain_to_field(
+        lisp,
+        &[
+            Value::fixnum(end),
+            Value::fixnum(pt),
+            Value::NIL,
+            sym::T,
+            Value::NIL,
+        ],
+    )
 }
 
 fn f_save_excursion(lisp: &mut Lisp, args: Value) -> LispResult {

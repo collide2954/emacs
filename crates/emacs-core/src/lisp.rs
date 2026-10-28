@@ -96,6 +96,7 @@ pub struct Lisp {
     pub xdisp: crate::xdisp::Xdisp,
     pub subr_docs: std::collections::HashMap<usize, i64>,
     pub compositions: crate::composite::Compositions,
+    pub syntax: crate::syntax::Syntax,
     pub pending_funcalls: Value,
 }
 
@@ -260,6 +261,7 @@ impl Lisp {
             xdisp: crate::xdisp::Xdisp::default(),
             subr_docs: std::collections::HashMap::new(),
             compositions: crate::composite::Compositions::default(),
+            syntax: crate::syntax::Syntax::default(),
             pending_funcalls: Value::NIL,
         };
         lisp.init_symbols();
@@ -926,6 +928,7 @@ impl Lisp {
         self.fonts.roots(&mut roots);
         self.fontsets.roots(&mut roots);
         self.compositions.roots(&mut roots);
+        self.syntax.roots(&mut roots);
         roots.push(self.pending_funcalls);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);
