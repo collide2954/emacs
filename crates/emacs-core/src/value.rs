@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct Value(u64);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

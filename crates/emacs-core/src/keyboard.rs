@@ -199,6 +199,68 @@ pub struct Keyboard {
 }
 
 impl Lisp {
+    fn safe_run_hooks_error(&mut self, error: Value, hook: Value, fun: Value) -> LispResult {
+        let format = self.string("Error in %s (%S): %S");
+        crate::editfns::f_message(self, &[format, hook, fun, error])?;
+        if hook.is_symbol() {
+            let mut found = false;
+            let mut newval = Value::NIL;
+            let mut val = self.find_symbol_value(hook);
+            while val.is_cons() {
+                let item = self.xcar(val);
+                if fun == item {
+                    found = true;
+                } else {
+                    newval = self.cons(item, newval);
+                }
+                val = self.xcdr(val);
+            }
+            if found {
+                let newval = crate::fns::f_nreverse(self, &[newval])?;
+                self.set(hook, newval)?;
+                return Ok(newval);
+            }
+            newval = Value::NIL;
+            let mut val = match self.default_value_raw(hook)? {
+                v if v == sym::UNBOUND => Value::NIL,
+                v => v,
+            };
+            while val.is_cons() {
+                let item = self.xcar(val);
+                if fun == item {
+                    found = true;
+                } else {
+                    newval = self.cons(item, newval);
+                }
+                val = self.xcdr(val);
+            }
+            if found {
+                let newval = crate::fns::f_nreverse(self, &[newval])?;
+                self.set_default(hook, newval)?;
+                return Ok(newval);
+            }
+        }
+        Ok(Value::NIL)
+    }
+
+    fn safe_run_hook_funcall(&mut self, args: &[Value]) -> LispResult {
+        let (fun, hook) = (args[0], args[1]);
+        self.condition_case_internal(
+            sym::T,
+            |l| l.funcall(fun, &args[2..]),
+            |l, error| l.safe_run_hooks_error(error, hook, fun),
+        )?;
+        Ok(Value::NIL)
+    }
+
+    pub fn safe_run_hooks(&mut self, hook: Value) -> LispResult<()> {
+        let count = self.specpdl.len();
+        self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+        let r = self.run_hook_with_args(&[hook, hook], |l, args| l.safe_run_hook_funcall(args));
+        self.unbind_to_value(count, r)?;
+        Ok(())
+    }
+
     pub fn record_auto_save(&mut self) {
         self.keyboard.last_auto_save = self.int_var(sym::NUM_NONMACRO_INPUT_EVENTS);
     }

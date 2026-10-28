@@ -242,6 +242,9 @@ pub struct Startup {
     pub argv: Argv,
     pub argc: usize,
     pub skip_args: isize,
+    pub initial_argv: Vec<Vec<u8>>,
+    pub initial_emacs_executable: Option<Vec<u8>>,
+    pub initial_wd: Option<Vec<u8>>,
     pub original_pwd: Option<Vec<u8>>,
     pub only_version: bool,
     pub noninteractive: bool,
@@ -256,6 +259,9 @@ impl Startup {
     pub fn program(noninteractive: bool) -> Startup {
         let argv0 = os_bytes(std::env::current_exe().unwrap_or_default().as_os_str());
         Startup {
+            initial_emacs_executable: find_emacs_executable(&argv0),
+            initial_argv: vec![argv0.clone()],
+            initial_wd: crate::buffer::emacs_wd().ok(),
             argv: vec![Some(argv0)],
             argc: 1,
             skip_args: 0,
@@ -500,6 +506,8 @@ pub fn version_text() -> String {
 }
 
 pub fn decode_command_line(args: Vec<Vec<u8>>) -> Result<Startup, Exit> {
+    let initial_emacs_executable = find_emacs_executable(&args[0]);
+    let initial_argv = args.clone();
     let mut argc = args.len();
     let mut argv: Argv = args.into_iter().map(Some).collect();
     let argv0 = argv[0].clone().unwrap_or_default();
@@ -547,6 +555,7 @@ pub fn decode_command_line(args: Vec<Vec<u8>>) -> Result<Startup, Exit> {
     )
     .is_some();
     let emacs_wd = crate::buffer::emacs_wd().ok();
+    let initial_wd = emacs_wd.clone();
     let mut original_pwd = None;
     if let Some(dir) = argmatch(
         &argv,
@@ -791,6 +800,9 @@ pub fn decode_command_line(args: Vec<Vec<u8>>) -> Result<Startup, Exit> {
         argv,
         argc,
         skip_args,
+        initial_argv,
+        initial_emacs_executable,
+        initial_wd,
         original_pwd,
         only_version,
         noninteractive,
@@ -1175,26 +1187,173 @@ fn f_daemon_initialized(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Err(lisp.error("This function can only be called if emacs is run as a daemon"))
 }
 
-pub(crate) fn f_kill_emacs(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let arg = args[0];
-    let hook = lisp.find_symbol_value(sym::KILL_EMACS_HOOK);
-    if !hook.is_nil() && hook != sym::UNBOUND {
-        let _ = lisp.run_hook(sym::KILL_EMACS_HOOK);
+pub fn bytes_os(bytes: &[u8]) -> std::ffi::OsString {
+    #[cfg(unix)]
+    let s = <std::ffi::OsStr as std::os::unix::ffi::OsStrExt>::from_bytes(bytes).to_os_string();
+    #[cfg(not(unix))]
+    let s = std::ffi::OsString::from(String::from_utf8_lossy(bytes).into_owned());
+    s
+}
+
+#[cfg(unix)]
+fn follow_if_symlink(name: &Path) -> Option<PathBuf> {
+    std::fs::read_link(name).ok()?;
+    std::fs::canonicalize(name).ok()
+}
+
+#[cfg(unix)]
+pub fn find_emacs_executable(argv0: &[u8]) -> Option<Vec<u8>> {
+    if argv0.contains(&b'/') {
+        let name = PathBuf::from(bytes_os(argv0));
+        return Some(match follow_if_symlink(&name) {
+            Some(val) => os_bytes(val.as_os_str()),
+            None => argv0.to_vec(),
+        });
     }
-    let code = if let Some(n) = arg.as_fixnum() {
-        n as i32
-    } else if arg.is_string() {
-        let text = lisp.string_to_rust(arg);
-        let _ = lisp.stdout.write_all(text.as_bytes());
-        0
-    } else if arg.is_nil() {
-        0
-    } else {
-        1
+    let path = match std::env::var_os("PATH") {
+        Some(path) if !path.is_empty() => os_bytes(&path),
+        _ => b"/bin:/usr/bin".to_vec(),
     };
-    let _ = lisp.stdout.flush();
-    let _ = lisp.stderr.flush();
-    std::process::exit(code);
+    for part in path.split(|&c| c == b':') {
+        let part: &[u8] = if part.is_empty() { b"." } else { part };
+        let mut candidate = part.to_vec();
+        candidate.push(b'/');
+        candidate.extend_from_slice(argv0);
+        let name = PathBuf::from(bytes_os(&candidate));
+        if std::fs::metadata(&name).is_ok_and(|m| is_executable(&m) && m.is_file()) {
+            return Some(match follow_if_symlink(&name) {
+                Some(val) => os_bytes(val.as_os_str()),
+                None => candidate,
+            });
+        }
+    }
+    Some(Vec::new())
+}
+
+#[cfg(not(unix))]
+pub fn find_emacs_executable(_argv0: &[u8]) -> Option<Vec<u8>> {
+    std::env::current_exe()
+        .ok()
+        .map(|p| os_bytes(p.as_os_str()))
+}
+
+impl Lisp {
+    fn emacs_perror(&mut self, message: &str, error_string: &str) {
+        let command = match self.startup.initial_argv.first() {
+            Some(argv0) if cfg!(not(windows)) => String::from_utf8_lossy(argv0).into_owned(),
+            _ => "emacs".to_string(),
+        };
+        let _ = self
+            .stderr
+            .write_all(format!("{command}: {message}: {error_string}\n").as_bytes());
+    }
+
+    pub fn exit(&mut self, code: i32) -> ! {
+        if let Err(e) = self.stdout.flush() {
+            self.emacs_perror("Write error to standard output", &strerror(&e));
+            let _ = self.stderr.flush();
+            std::process::exit(1);
+        }
+        if self.stderr.flush().is_err() {
+            std::process::exit(1);
+        }
+        std::process::exit(code)
+    }
+
+    fn stuff_buffered_input(&mut self) {
+        if cfg!(unix) {
+            self.keyboard.input_pending = false;
+        }
+    }
+
+    pub fn shut_down_emacs(&mut self) -> LispResult<()> {
+        self.set_plain_value(sym::RUN_HOOKS_ENABLED, Value::NIL);
+        self.set_plain_value(sym::INHIBIT_REDISPLAY, sym::T);
+        if cfg!(windows) {
+            let _ = self.stdout.flush();
+        }
+        self.stuff_buffered_input();
+        crate::fileio::f_do_auto_save(self, &[sym::T, Value::NIL])?;
+        self.unlock_all_files()?;
+        self.check_message_stack();
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn reexec_emacs(&mut self) {
+        use std::os::unix::process::CommandExt;
+        let executable = self
+            .startup
+            .initial_emacs_executable
+            .clone()
+            .unwrap_or_default();
+        self.startup.initial_argv[0] = executable.clone();
+        let err = std::process::Command::new(bytes_os(&executable))
+            .args(self.startup.initial_argv[1..].iter().map(|a| bytes_os(a)))
+            .exec();
+        self.emacs_perror("Unable to re-execute Emacs", &strerror(&err));
+    }
+
+    #[cfg(not(unix))]
+    fn reexec_emacs(&mut self) {
+        let executable = self
+            .startup
+            .initial_emacs_executable
+            .clone()
+            .unwrap_or_default();
+        let wdir = bytes_os(&self.startup.initial_wd.clone().unwrap_or_default());
+        let _ = std::env::set_current_dir(&wdir);
+        let spawned = std::process::Command::new(bytes_os(&executable))
+            .args(self.startup.initial_argv[1..].iter().map(|a| bytes_os(a)))
+            .current_dir(&wdir)
+            .spawn();
+        if spawned.is_ok() {
+            self.exit(0);
+        }
+        self.emacs_perror("Unable to re-execute Emacs", "Exec format error");
+    }
+}
+
+pub(crate) fn f_kill_emacs(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (arg, restart) = (args[0], args[1]);
+    if cfg!(not(windows)) && !restart.is_nil() {
+        if lisp.startup.initial_argv.is_empty() {
+            return Err(lisp.error("No command line arguments known; unable to re-execute Emacs"));
+        }
+        let Some(executable) = lisp.startup.initial_emacs_executable.clone() else {
+            return Err(lisp.error("Unknown Emacs executable"));
+        };
+        if !PathBuf::from(bytes_os(&executable)).exists() {
+            let argv0 = String::from_utf8_lossy(&lisp.startup.initial_argv[0]).into_owned();
+            return Err(lisp.error(&format!("Emacs executable \"{argv0}\" can't be found")));
+        }
+    }
+    let hook = lisp.find_symbol_value(sym::KILL_EMACS_HOOK);
+    if !hook.is_nil() {
+        if lisp.noninteractive {
+            lisp.safe_run_hooks(sym::KILL_EMACS_HOOK)?;
+        } else {
+            lisp.funcall(
+                sym::RUN_HOOK_QUERY_ERROR_WITH_TIMEOUT,
+                &[sym::KILL_EMACS_HOOK],
+            )?;
+        }
+    }
+    lisp.shut_down_emacs()?;
+    let list_file_name = lisp.plain_value(sym::AUTO_SAVE_LIST_FILE_NAME);
+    if list_file_name.is_string() {
+        let listfile = lisp.expand_file_name(list_file_name, Value::NIL)?;
+        let _ = std::fs::remove_file(lisp.string_to_rust(listfile));
+    }
+    if !restart.is_nil() {
+        lisp.reexec_emacs();
+    }
+    let exit_code = match arg.as_fixnum() {
+        Some(n) if n < 0 => (n | i64::from(i32::MIN)) as i32,
+        Some(n) => (n & i64::from(i32::MAX)) as i32,
+        None => 0,
+    };
+    lisp.exit(exit_code)
 }
 
 fn f_getenv_internal(lisp: &mut Lisp, args: &[Value]) -> LispResult {

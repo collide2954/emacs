@@ -26,7 +26,7 @@ pub const SUBRS: &[Subr] = &[
 
 const WAIT_READING_MAX: i64 = i64::MAX;
 
-fn f_sleep_for(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_sleep_for(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let mut duration = crate::floatfns::float_arg(lisp, args[0])?;
     if !args[1].is_nil() {
         let milliseconds = lisp.check_fixnum(args[1])?;

@@ -39,15 +39,15 @@ Ported but not yet complete (C kept):
 | --- | --- | --- |
 | `alloc.c`, `data.c`, `eval.c`, `fns.c`, `lread.c`, `print.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
 | `character.c` | `charfns.rs` | `get-byte`, display-table aware `string-width` |
-| `emacs.c` | `emacs.rs` | `kill-emacs` and `shut_down_emacs` (see below); argument handling (`sort_args`, `argmatch`, the option sequence in `main`, `init_cmdargs`) is ported, but `-t` and the daemon options exit with an error because there is no tty frontend and no daemon support |
-| `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c` | same names | assorted primitives; the overlay DEFUNs in `overlay.rs` are still approximations (only `overlays_in`, `overlays_at` and `sort_overlays` follow C), and `replace_range` is approximated by `replace_range_chars` |
+| `emacs.c` | `emacs.rs` | argument handling (`sort_args`, `argmatch`, the option sequence in `main`, `init_cmdargs`) is ported, but `-t` and the daemon options exit with an error because there is no tty frontend and no daemon support; `kill-emacs` and `shut_down_emacs` are ported, except that a string ARG is never stuffed as input (C only does that on a tty) and `shut_down_emacs` has no subprocesses to kill; on Windows, RESTART starts the new Emacs from the saved argv with Rust's argument quoting and inherited standard handles, not from the raw `GetCommandLine` string |
+| `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c` | same names | assorted primitives; the overlay DEFUNs in `overlay.rs` are still approximations (only `overlays_in`, `overlays_at` and `sort_overlays` follow C), and `replace_range` is approximated by `replace_range_chars`; `do-auto-save` and the auto-save DEFUNs follow C, but `write-region` is still a simplified version (no encoding, locking or annotations) that only follows C's `auto_saving`, VISIT and mode-bit handling |
 | `cmds.c` | `editfns.rs` | nothing |
 | `dired.c` | `dired.rs` | on Windows, inode, device and link count come from w32.c's fallback (std can't read them without `unsafe`) |
 | `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
 | `process.c` | `process.rs` | everything but `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask), and `wait_reading_process_output`, which is the subprocess-free variant C uses on MS-DOS (it runs timers and sleeps, and never wakes for keyboard input because there is no input queue yet) |
 | `term.c` | `term.rs` | `tty-frame-list-z-order`, `tty-frame-at` (need frame z-order); there is no tty frontend, so `decode_tty_terminal` never finds a tty |
 | `w32proc.c` | `w32proc.rs` | the DEFUNs (they need Win32 calls); it has the variables |
-| `keyboard.c` | `keyboard.rs` | everything except event modifier parsing, the timer runner (`timer_check`) and `detect_input_pending`; there is no input event queue yet, so pending input means `quit-flag` or a kboard's `kbd_queue_has_data`, and idle timers never run because Emacs never becomes idle |
+| `keyboard.c` | `keyboard.rs` | everything except event modifier parsing, `safe_run_hooks`, the timer runner (`timer_check`) and `detect_input_pending`; there is no input event queue yet, so pending input means `quit-flag` or a kboard's `kbd_queue_has_data`, and idle timers never run because Emacs never becomes idle |
 | `syntax.c` | `syntax.rs` | the regex engine still ignores `syntax-table` text properties |
 | `indent.c` | `indent.rs` | `compute-motion`, `vertical-motion`, `line-number-display-width` (they need the display iterator); an image `display` spec signals an error |
 | `casefiddle.c` | `casefiddle.rs` | a real port; the current version is a placeholder using Rust's Unicode tables |
@@ -60,7 +60,7 @@ Ported but not yet complete (C kept):
 | `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface`; `internal-char-font` is ported |
 | `fontset.c` | `fontset.rs` | `new-fontset`, `set-fontset-font`, `fontset-info`, `fontset-font` |
 | `xfaces.c` | `xfaces.rs` | GUI and tty face realization, `face-font`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource`; `face_at_buffer_position` is ported |
-| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path and `invisible-p` |
+| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path, the message stack (`push_message`, `restore_message`) and `invisible-p` |
 | `composite.c` | `composite.rs` | shaping on window-system frames |
 
 Window-system frames don't exist yet, so the face, font and composition code stops with
@@ -69,7 +69,8 @@ which gets plain realized faces as in C.
 
 `doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables,
 `frame-or-buffer-changed-p`, `ding`, `internal-show-cursor(-p)`, `sleep-for` and `sit_for`
-(which never redisplays, as there is no redisplay yet). `filelock.rs`,
+(which never redisplays, as there is no redisplay yet). `filelock.rs` has the variables and
+`unlock_all_files`, which finds nothing to unlock because file locking isn't ported.
 `image.rs`, `gnutls.rs`, `treesit.rs`, `macros.rs` and `w32fns.rs` hold only those files'
 variables, which the unmodified Lisp needs (cus-start.el checks them). No image, GnuTLS or
 tree-sitter library is linked, so their version variables are -1.
@@ -87,24 +88,17 @@ writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
 `emacs --batch` loads every preloaded file in `loadup.el`, including the `w32-*` files and
 `cus-start.el`, runs `Snarf-documentation`, then runs startup to the end. `main.rs`
 decodes the command line as C's `main` does and `Lisp::boot` runs `init_cmdargs`, so
-`emacs --batch --eval EXPR`, `--version` and `--help` work. The port behaves like an
+`emacs --batch --eval EXPR`, `--version` and `--help` work, and a plain `emacs --batch`
+ends in `kill-emacs` and exits successfully, as C does. The port behaves like an
 undumped `temacs`: `top-level` is `(load "loadup.el")` unless `-nl` is given.
 `Lisp::noninteractive` is C's `noninteractive` and the Lisp variable is `noninteractive1`;
 they differ after `-x`, as in C.
 
-What remains on this path:
-
-- `kill-emacs` is still an early approximation: it lacks `shut_down_emacs` and
-  `do-auto-save`, and it exits with 1 for a non-integer ARG where C exits successfully, so
-  a plain `emacs --batch` currently exits with 1.
-- `w32.c`'s `init_environment` isn't ported, so `LANG` and the other registry defaults are
-  missing on Windows and `set-locale-environment` leaves `locale-coding-system` nil. That
-  skips startup.el's Windows conversion of `default-directory`, which therefore keeps C's
-  raw `GetCurrentDirectory` form (`C:\Users\...\`).
-- `set-buffer-auto-saved` and `recent-auto-save-p` are stubs.
-- `do-auto-save` needs `safe_run_hooks`, the echo-area message stack (`push_message`,
-  `restore_message`), `auto_saving` in `write-region`, `record_auto_save`, and `sleep-for`
-  and `sit-for`, which in turn need `wait_reading_process_output` from `process.c`.
+What remains on this path: `w32.c`'s `init_environment` isn't ported, so `LANG` and the
+other registry defaults are missing on Windows and `set-locale-environment` leaves
+`locale-coding-system` nil. That skips startup.el's Windows conversion of
+`default-directory`, which therefore keeps C's raw `GetCurrentDirectory` form
+(`C:\Users\...\`).
 
 `emacs` without `--batch` stops while loading `window.el`. This is expected for now: the
 preloaded Lisp loads from source, so eager macro-expansion autoloads `flymake-log`, and

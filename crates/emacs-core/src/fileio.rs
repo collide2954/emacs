@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use crate::coding::{CodingSystem, FOR_UNIBYTE_MASK, REQUIRE_FLUSHING_MASK};
@@ -7,6 +7,7 @@ use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::subr::Subr;
 use crate::symbols as sym;
+use crate::timefns::current_timespec;
 use crate::value::Value;
 
 pub const SUBRS: &[Subr] = &[
@@ -71,9 +72,15 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("verify-visited-file-modtime", 0, 1, f_true),
     Subr::fixed("visited-file-modtime", 0, 0, f_zero),
     Subr::fixed("set-visited-file-modtime", 0, 1, f_ignore1),
-    Subr::fixed("set-buffer-auto-saved", 0, 0, f_ignore0),
-    Subr::fixed("clear-buffer-auto-save-failure", 0, 0, f_ignore0),
-    Subr::fixed("recent-auto-save-p", 0, 0, f_ignore0),
+    Subr::fixed("do-auto-save", 0, 2, f_do_auto_save).interactive(""),
+    Subr::fixed("set-buffer-auto-saved", 0, 0, f_set_buffer_auto_saved),
+    Subr::fixed(
+        "clear-buffer-auto-save-failure",
+        0,
+        0,
+        f_clear_buffer_auto_save_failure,
+    ),
+    Subr::fixed("recent-auto-save-p", 0, 0, f_recent_auto_save_p),
     Subr::fixed("next-read-file-uses-dialog-p", 0, 0, f_ignore0),
     Subr::fixed("file-system-info", 1, 1, f_ignore1),
 ];
@@ -97,6 +104,15 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar_bool(sym::DELETE_BY_MOVING_TO_TRASH, false);
     lisp.defvar(sym::AFTER_INSERT_FILE_FUNCTIONS, Value::NIL);
     lisp.defvar(sym::FILE_NAME_HISTORY, Value::NIL);
+}
+
+#[derive(Default)]
+pub struct FileIo {
+    pub auto_saving: bool,
+    pub auto_saving_dir_umask: u32,
+    pub auto_save_mode_bits: u32,
+    pub auto_save_error_occurred: bool,
+    pub auto_save_streams: Vec<Option<File>>,
 }
 
 pub fn normalize_slashes(s: &str) -> String {
@@ -590,19 +606,25 @@ pub(crate) fn f_file_name_directory(lisp: &mut Lisp, args: &[Value]) -> LispResu
             Value::NIL
         });
     }
-    let multibyte = lisp.string_multibyte(filename);
-    let bytes = lisp.string_bytes(filename).to_vec();
-    match file_name_directory(&bytes) {
-        None => Ok(Value::NIL),
-        Some((dir, w32_case)) => {
-            let tem = lisp.make_string_from_bytes(dir, multibyte);
-            if cfg!(windows) && w32_case && multibyte {
-                let var = lisp.intern("w32-downcase-file-names");
-                if !lisp.find_symbol_value(var).is_nil() {
-                    return crate::casefiddle::f_downcase(lisp, &[tem]);
+    lisp.file_name_directory_value(filename)
+}
+
+impl Lisp {
+    fn file_name_directory_value(&mut self, filename: Value) -> LispResult {
+        let multibyte = self.string_multibyte(filename);
+        let bytes = self.string_bytes(filename).to_vec();
+        match file_name_directory(&bytes) {
+            None => Ok(Value::NIL),
+            Some((dir, w32_case)) => {
+                let tem = self.make_string_from_bytes(dir, multibyte);
+                if cfg!(windows) && w32_case && multibyte {
+                    let var = self.intern("w32-downcase-file-names");
+                    if !self.find_symbol_value(var).is_nil() {
+                        return crate::casefiddle::f_downcase(self, &[tem]);
+                    }
                 }
+                Ok(tem)
             }
-            Ok(tem)
         }
     }
 }
@@ -761,7 +783,16 @@ fn f_make_directory_internal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         return Ok(r);
     }
     let path = lisp.file_arg(args[0])?;
-    if let Err(e) = std::fs::create_dir(&path) {
+    #[cfg(unix)]
+    let builder = {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o777 & !lisp.fileio.auto_saving_dir_umask);
+        builder
+    };
+    #[cfg(not(unix))]
+    let builder = std::fs::DirBuilder::new();
+    if let Err(e) = builder.create(&path) {
         return Err(lisp.file_error("Creating directory", &e, args[0]));
     }
     Ok(Value::NIL)
@@ -934,27 +965,29 @@ fn f_file_regular_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     predicate(lisp, args, sym::FILE_REGULAR_P, Path::is_file)
 }
 
+fn metadata_mode(m: &std::fs::Metadata) -> i64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        i64::from(m.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let mut mode = 0o444;
+        if !m.permissions().readonly() {
+            mode |= 0o222;
+        }
+        if m.is_dir() {
+            mode |= 0o111;
+        }
+        mode
+    }
+}
+
 fn f_file_modes(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let path = lisp.file_arg(args[0])?;
     match std::fs::metadata(&path) {
-        Ok(m) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                Ok(Value::fixnum((m.permissions().mode() & 0o7777) as i64))
-            }
-            #[cfg(not(unix))]
-            {
-                let mut mode = 0o444;
-                if !m.permissions().readonly() {
-                    mode |= 0o222;
-                }
-                if m.is_dir() {
-                    mode |= 0o111;
-                }
-                Ok(Value::fixnum(mode))
-            }
-        }
+        Ok(m) => Ok(Value::fixnum(metadata_mode(&m))),
         Err(_) => Ok(Value::NIL),
     }
 }
@@ -1135,7 +1168,7 @@ impl Lisp {
         !self.heap.symbol_ref(symbol).function.is_nil()
     }
 
-    fn unlock_file_if_supported(&mut self, file: Value) -> LispResult<()> {
+    pub(crate) fn unlock_file_if_supported(&mut self, file: Value) -> LispResult<()> {
         if self.fboundp(sym::UNLOCK_FILE) {
             self.funcall(sym::UNLOCK_FILE, &[file])?;
         }
@@ -2108,27 +2141,50 @@ fn f_write_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
             lisp.string_bytes(text).to_vec()
         }
     };
-    let result = if !append.is_nil() {
-        use std::io::Write;
-        std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path)
-            .and_then(|mut f| f.write_all(&data))
+    let mut options = std::fs::OpenOptions::new();
+    if append.is_nil() {
+        options.write(true).create(true).truncate(true);
     } else {
-        std::fs::write(&path, &data)
-    };
-    if let Err(e) = result {
+        options.append(true).create(true);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(if lisp.fileio.auto_saving {
+            lisp.fileio.auto_save_mode_bits
+        } else {
+            0o666
+        });
+    }
+    if let Err(e) = options.open(&path).and_then(|mut f| f.write_all(&data)) {
         lisp.stack.pop();
         return Err(lisp.file_error("Opening output file", &e, expanded));
     }
+    let auto_saving_into_visited_file = lisp.fileio.auto_saving && {
+        let visited = lisp.find_symbol_value(sym::BUFFER_FILE_NAME);
+        let auto_save_file_name = lisp.find_symbol_value(sym::BUFFER_AUTO_SAVE_FILE_NAME);
+        !crate::fns::f_string_equal(lisp, &[visited, auto_save_file_name])?.is_nil()
+    };
     if visit == sym::T || visit.is_string() {
         let b = lisp.current_buffer;
-        lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, expanded);
         let modiff = lisp.cur().text.modiff;
         lisp.cur_mut().text.save_modiff = modiff;
+        let size = Value::fixnum(lisp.cur().text.chars as i64);
+        lisp.buffer_local_set(b, sym::BUFFER_SAVED_SIZE, size);
+        lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, expanded);
+        if auto_saving_into_visited_file {
+            lisp.unlock_file_if_supported(expanded)?;
+        }
+    } else if !visit.is_nil() {
+        if auto_saving_into_visited_file {
+            let modiff = lisp.cur().text.modiff;
+            lisp.cur_mut().text.save_modiff = modiff;
+            lisp.unlock_file_if_supported(expanded)?;
+        }
+        lisp.stack.pop();
+        return Ok(Value::NIL);
     }
-    if (visit.is_nil() || visit == sym::T) && !lisp.noninteractive() {
+    if !lisp.fileio.auto_saving && !lisp.noninteractive() {
         let format = if append.is_fixnum() || append.is_float() || lisp.is_bignum(append) {
             "Updated %s"
         } else if !append.is_nil() {
@@ -2147,4 +2203,240 @@ fn f_car_less_than_car(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let b = lisp.car(args[1])?;
     let (lt, _, _) = lisp.arithcompare(a, b)?;
     Ok(lisp.bool(lt))
+}
+
+fn auto_save_error(lisp: &mut Lisp, error_val: Value) -> LispResult {
+    lisp.fileio.auto_save_error_occurred = true;
+    let sf = lisp.frames.selected_frame;
+    lisp.ring_bell(sf)?;
+    let format = lisp.string("Auto-saving %s: %s");
+    let name = lisp.cur().name;
+    let text = lisp.error_message_string(error_val)?;
+    let text = lisp.string(&text);
+    let msg = crate::editfns::f_format(lisp, &[format, name, text])?;
+    lisp.funcall(sym::DISPLAY_WARNING, &[sym::AUTO_SAVE, msg, sym::K_ERROR])?;
+    Ok(Value::NIL)
+}
+
+fn auto_save_1(lisp: &mut Lisp) -> LispResult {
+    lisp.fileio.auto_save_mode_bits = 0o666;
+    let filename = lisp.find_symbol_value(sym::BUFFER_FILE_NAME);
+    if !filename.is_nil() {
+        let path = PathBuf::from(lisp.string_to_rust(filename));
+        match std::fs::metadata(&path) {
+            Ok(m) => lisp.fileio.auto_save_mode_bits = ((metadata_mode(&m) | 0o600) & 0o777) as u32,
+            Err(_) => {
+                let modes = f_file_modes(lisp, &[filename, Value::NIL])?;
+                if let Some(n) = modes.as_fixnum() {
+                    lisp.fileio.auto_save_mode_bits = ((n | 0o600) & 0o777) as u32;
+                }
+            }
+        }
+    }
+    let auto_save_file_name = lisp.find_symbol_value(sym::BUFFER_AUTO_SAVE_FILE_NAME);
+    let visit = if lisp.var_true(sym::AUTO_SAVE_VISITED_FILE_NAME) {
+        sym::T
+    } else {
+        sym::LAMBDA
+    };
+    f_write_region(
+        lisp,
+        &[
+            Value::NIL,
+            Value::NIL,
+            auto_save_file_name,
+            Value::NIL,
+            visit,
+            Value::NIL,
+            Value::NIL,
+        ],
+    )
+}
+
+fn do_auto_save_unwind(lisp: &mut Lisp, auto_raise: Value) -> LispResult<()> {
+    lisp.set_forwarded_bool(sym::MINIBUFFER_AUTO_RAISE, !auto_raise.is_nil());
+    lisp.fileio.auto_saving = false;
+    lisp.fileio.auto_save_streams.pop();
+    Ok(())
+}
+
+fn do_auto_save_make_dir(lisp: &mut Lisp, dir: Value) -> LispResult {
+    lisp.condition_case_internal(
+        sym::T,
+        |l| {
+            l.fileio.auto_saving_dir_umask = 0o77;
+            let result = l.funcall(sym::MAKE_DIRECTORY, &[dir, sym::T])?;
+            l.fileio.auto_saving_dir_umask = 0;
+            Ok(result)
+        },
+        |l, _| {
+            l.fileio.auto_saving_dir_umask = 0;
+            Ok(Value::NIL)
+        },
+    )
+}
+
+pub(crate) fn f_do_auto_save(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (mut no_message, current_only) = (args[0], args[1]);
+    let old = lisp.current_buffer;
+    let mut auto_saved = false;
+    let count = lisp.specpdl.len();
+    let orig_minibuffer_auto_raise = lisp.var_true(sym::MINIBUFFER_AUTO_RAISE);
+    let mut old_message_p = false;
+    if lisp.minibuf.minibuf_level > 0 {
+        no_message = sym::T;
+    }
+    if no_message.is_nil() {
+        old_message_p = lisp.push_message();
+        lisp.record_unwind(crate::xdisp::pop_message_unwind, Value::NIL);
+    }
+    let oquit = lisp.plain_value(sym::QUIT_FLAG);
+    lisp.set_plain_value(sym::QUIT_FLAG, Value::NIL);
+    let base = lisp.stack.len();
+    lisp.stack.push(oquit);
+    lisp.safe_run_hooks(sym::AUTO_SAVE_HOOK)?;
+    let mut stream = None;
+    let list_file_name = lisp.plain_value(sym::AUTO_SAVE_LIST_FILE_NAME);
+    if list_file_name.is_string() {
+        let listfile = lisp.expand_file_name(list_file_name, Value::NIL)?;
+        lisp.stack.push(listfile);
+        if lisp.var_true(sym::RUN_HOOKS_ENABLED) {
+            let dir = lisp.file_name_directory_value(listfile)?;
+            lisp.stack.push(dir);
+            if f_file_directory_p(lisp, &[dir])?.is_nil() {
+                do_auto_save_make_dir(lisp, dir)?;
+            }
+        }
+        stream = File::create(lisp.string_to_rust(listfile)).ok();
+    }
+    lisp.fileio.auto_save_streams.push(stream);
+    let auto_raise = lisp.bool(lisp.var_true(sym::MINIBUFFER_AUTO_RAISE));
+    lisp.record_unwind(do_auto_save_unwind, auto_raise);
+    lisp.set_forwarded_bool(sym::MINIBUFFER_AUTO_RAISE, false);
+    lisp.fileio.auto_saving = true;
+    lisp.fileio.auto_save_error_occurred = false;
+    let buffers = lisp.buffers.clone();
+    lisp.stack.extend_from_slice(&buffers);
+    for do_handled_files in 0..2 {
+        for &b in &buffers {
+            if !lisp.buffer_live_p(b) {
+                continue;
+            }
+            let auto_save_file_name = lisp
+                .buffer_local_get(b, sym::BUFFER_AUTO_SAVE_FILE_NAME)
+                .unwrap_or(Value::NIL);
+            let filename = lisp
+                .buffer_local_get(b, sym::BUFFER_FILE_NAME)
+                .unwrap_or(Value::NIL);
+            if auto_save_file_name.is_string() && do_handled_files == 0 {
+                let mut lines = Vec::new();
+                if !filename.is_nil() {
+                    lines.extend_from_slice(lisp.string_bytes(filename));
+                }
+                lines.push(b'\n');
+                lines.extend_from_slice(lisp.string_bytes(auto_save_file_name));
+                lines.push(b'\n');
+                if let Some(Some(stream)) = lisp.fileio.auto_save_streams.last_mut() {
+                    let _ = stream.write_all(&lines);
+                }
+            }
+            if !current_only.is_nil() && b != lisp.current_buffer {
+                continue;
+            }
+            if !lisp.buffer(b).base_buffer.is_nil() {
+                continue;
+            }
+            let save_length = lisp
+                .buffer_local_get(b, sym::BUFFER_SAVED_SIZE)
+                .unwrap_or(Value::NIL);
+            let (save_modiff, modiff, autosave_modiff) = {
+                let text = &lisp.buffer(b).text;
+                (text.save_modiff, text.modiff, text.autosave_modiff)
+            };
+            if auto_save_file_name.is_string()
+                && save_modiff < modiff
+                && autosave_modiff < modiff
+                && save_length.as_fixnum().is_some_and(|n| n >= 0)
+                && (do_handled_files == 1
+                    || lisp
+                        .find_file_name_handler(auto_save_file_name, sym::WRITE_REGION)?
+                        .is_none())
+            {
+                let before_time = current_timespec();
+                let failure_time = lisp.buffer(b).auto_save_failure_time;
+                if failure_time > 0 && before_time.0 - failure_time < 1200 {
+                    continue;
+                }
+                lisp.set_buffer_internal(b);
+                let saved_size = save_length.as_fixnum().unwrap_or(0);
+                let size = lisp.buffer(b).text.chars as i64;
+                if !lisp.var_true(sym::AUTO_SAVE_INCLUDE_BIG_DELETIONS)
+                    && saved_size > 5000
+                    && 4 * size < 3 * saved_size
+                    && !filename.is_nil()
+                    && no_message.is_nil()
+                {
+                    lisp.set_forwarded_bool(sym::MINIBUFFER_AUTO_RAISE, orig_minibuffer_auto_raise);
+                    let name = lisp.buffer(b).name;
+                    lisp.message_with_string(
+                        "Buffer %s has shrunk a lot; auto save disabled in that buffer until next real save",
+                        name,
+                        true,
+                    )?;
+                    lisp.set_forwarded_bool(sym::MINIBUFFER_AUTO_RAISE, false);
+                    lisp.buffer_local_set(b, sym::BUFFER_SAVED_SIZE, Value::fixnum(-1));
+                    crate::dispnew::f_sleep_for(lisp, &[Value::fixnum(1), Value::NIL])?;
+                    continue;
+                }
+                if !auto_saved && no_message.is_nil() {
+                    lisp.message1("Auto-saving...")?;
+                }
+                lisp.condition_case_internal(sym::T, auto_save_1, auto_save_error)?;
+                auto_saved = true;
+                let modiff = lisp.buffer(b).text.modiff;
+                lisp.buffer_mut(b).text.autosave_modiff = modiff;
+                let cb = lisp.current_buffer;
+                let size = Value::fixnum(lisp.cur().text.chars as i64);
+                lisp.buffer_local_set(cb, sym::BUFFER_SAVED_SIZE, size);
+                lisp.set_buffer_internal(old);
+                let after_time = current_timespec();
+                if after_time.0 - before_time.0 > 60 {
+                    lisp.buffer_mut(b).auto_save_failure_time = after_time.0;
+                }
+            }
+        }
+    }
+    lisp.record_auto_save();
+    if auto_saved && no_message.is_nil() {
+        if old_message_p {
+            lisp.sit_for(Value::fixnum(1), false)?;
+            lisp.restore_message()?;
+        } else if !lisp.fileio.auto_save_error_occurred {
+            lisp.message1("Auto-saving...done")?;
+        }
+    }
+    lisp.set_plain_value(sym::QUIT_FLAG, oquit);
+    lisp.stack.truncate(base);
+    lisp.unbind_to(count)?;
+    Ok(Value::NIL)
+}
+
+fn f_set_buffer_auto_saved(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let b = lisp.current_buffer;
+    let modiff = lisp.cur().text.modiff;
+    lisp.cur_mut().text.autosave_modiff = modiff;
+    let size = Value::fixnum(lisp.cur().text.chars as i64);
+    lisp.buffer_local_set(b, sym::BUFFER_SAVED_SIZE, size);
+    lisp.cur_mut().auto_save_failure_time = 0;
+    Ok(Value::NIL)
+}
+
+fn f_clear_buffer_auto_save_failure(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    lisp.cur_mut().auto_save_failure_time = 0;
+    Ok(Value::NIL)
+}
+
+fn f_recent_auto_save_p(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let text = &lisp.cur().text;
+    Ok(lisp.bool(text.save_modiff < text.autosave_modiff))
 }

@@ -305,6 +305,12 @@ impl Lisp {
         }
     }
 
+    pub fn set_forwarded_bool(&mut self, symbol: Value, b: bool) {
+        if let SymbolValue::Forwarded(Forward::Bool(v)) = &mut self.heap.symbol_mut(symbol).value {
+            *v = b;
+        }
+    }
+
     pub fn eval(&mut self, form: Value) -> LispResult {
         if form.is_symbol() {
             if form.is_nil() || form == sym::T {

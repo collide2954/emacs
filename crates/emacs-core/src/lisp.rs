@@ -101,6 +101,7 @@ pub struct Lisp {
     pub fontsets: crate::fontset::Fontsets,
     pub xdisp: crate::xdisp::Xdisp,
     pub keyboard: crate::keyboard::Keyboard,
+    pub fileio: crate::fileio::FileIo,
     pub subr_docs: std::collections::HashMap<usize, i64>,
     pub compositions: crate::composite::Compositions,
     pub syntax: crate::syntax::Syntax,
@@ -303,6 +304,7 @@ impl Lisp {
             fontsets: crate::fontset::Fontsets::default(),
             xdisp: crate::xdisp::Xdisp::default(),
             keyboard: crate::keyboard::Keyboard::default(),
+            fileio: crate::fileio::FileIo::default(),
             subr_docs: std::collections::HashMap::new(),
             compositions: crate::composite::Compositions::default(),
             syntax: crate::syntax::Syntax::default(),
@@ -993,6 +995,7 @@ impl Lisp {
         self.syntax.roots(&mut roots);
         roots.push(self.frame_and_buffer_state);
         roots.push(self.pending_funcalls);
+        roots.push(self.xdisp.message_stack);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);
         }

@@ -82,9 +82,38 @@ pub struct Xdisp {
     pub message_log_need_newline: bool,
     pub noninteractive_need_newline: bool,
     pub redisplaying_p: bool,
+    pub message_stack: Value,
+}
+
+pub fn pop_message_unwind(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
+    let stack = lisp.xdisp.message_stack;
+    lisp.xdisp.message_stack = lisp.xcdr(stack);
+    Ok(())
 }
 
 impl Lisp {
+    pub fn push_message(&mut self) -> bool {
+        let msg = self.current_message_value();
+        self.xdisp.message_stack = self.cons(msg, self.xdisp.message_stack);
+        msg.is_string()
+    }
+
+    pub fn restore_message(&mut self) -> LispResult<()> {
+        let msg = self.xcar(self.xdisp.message_stack);
+        self.message3_nolog(msg)
+    }
+
+    pub fn check_message_stack(&self) {
+        if !self.xdisp.message_stack.is_nil() {
+            std::process::abort();
+        }
+    }
+
+    pub fn message1(&mut self, m: &str) -> LispResult<()> {
+        let msg = self.unibyte_string(m.as_bytes());
+        self.message3(msg)
+    }
+
     pub fn message_log_maybe_newline(&mut self) -> LispResult<()> {
         if self.xdisp.message_log_need_newline {
             self.message_dolog(b"", true, false)?;

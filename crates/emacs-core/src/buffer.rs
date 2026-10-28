@@ -312,6 +312,7 @@ pub struct Buffer {
     pub point_marker: Value,
     pub modtime: (i64, i64),
     pub modtime_size: i64,
+    pub auto_save_failure_time: i64,
     pub last_selected_window: Value,
 }
 
@@ -800,6 +801,7 @@ impl Lisp {
             point_marker: Value::NIL,
             modtime: (0, 0),
             modtime_size: -1,
+            auto_save_failure_time: 0,
             last_selected_window: Value::NIL,
         };
         let value = self.heap.vectorlike(Vectorlike::Buffer(Box::new(buffer)));
@@ -986,6 +988,7 @@ impl Lisp {
         buf.modtime_size = -1;
         buf.last_window_start = 1;
         buf.text.autosave_modiff = 0;
+        buf.auto_save_failure_time = 0;
         buf.overlays.clear();
         buf.last_selected_window = Value::NIL;
     }
