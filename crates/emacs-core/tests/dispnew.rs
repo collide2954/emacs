@@ -38,6 +38,21 @@ fn sleep_for() {
     ]);
 }
 
+#[test]
+fn redraw_frame() {
+    check(&[
+        ("(get 'overlay-arrow-position 'last-arrow-position)", "nil"),
+        ("(redraw-frame)", "nil"),
+        ("(redraw-frame (selected-frame))", "nil"),
+        ("(get 'overlay-arrow-position 'last-arrow-position)", "t"),
+        ("(get 'overlay-arrow-position 'last-arrow-string)", "t"),
+        (
+            "(redraw-frame 'x)",
+            "error: (wrong-type-argument frame-live-p x)",
+        ),
+    ]);
+}
+
 fn sit(lisp: &mut Lisp, timeout: &str, reading: bool) -> String {
     let timeout = lisp.read_from_str(timeout).expect("read timeout");
     match lisp.sit_for(timeout, reading) {

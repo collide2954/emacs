@@ -1657,7 +1657,7 @@ impl Lisp {
             .expect("frame has no face cache")
     }
 
-    fn set_frame_garbaged(&mut self, f: Value) {
+    pub(crate) fn set_frame_garbaged(&mut self, f: Value) {
         self.frames.frame_garbaged = true;
         self.fset_redisplay(f);
         self.frame_mut(f).flags.garbaged = true;

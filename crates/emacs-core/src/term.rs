@@ -37,7 +37,18 @@ impl Lisp {
             OutputMethod::Initial => None,
         })
     }
+
+    pub fn get_named_terminal(&self, _name: &str) -> Option<TtyTerminal> {
+        for &t in &self.terminals.list {
+            match self.terminal(t).kind {
+                OutputMethod::Initial => {}
+            }
+        }
+        None
+    }
 }
+
+pub const DEV_TTY: &str = if cfg!(windows) { "CONOUT$" } else { "/dev/tty" };
 
 fn f_tty_display_color_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     match lisp.decode_tty_terminal(args[0])? {

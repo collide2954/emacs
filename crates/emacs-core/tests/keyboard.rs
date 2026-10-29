@@ -83,6 +83,28 @@ fn timers_run_while_waiting() {
 }
 
 #[test]
+fn input_modes() {
+    let interrupt = if cfg!(unix) {
+        "(t nil t 7)"
+    } else {
+        "(nil nil t 7)"
+    };
+    check(&[
+        ("(current-input-mode)", "(nil nil t 7)"),
+        ("(set-input-meta-mode 8)", "nil"),
+        ("(set-input-meta-mode 'encoded (selected-frame))", "nil"),
+        ("(set-output-flow-control t)", "nil"),
+        ("(set-quit-char 300)", "nil"),
+        ("(set-input-mode nil t nil ?q)", "nil"),
+        ("(current-input-mode)", "(nil nil t 7)"),
+        ("(set-input-interrupt-mode t)", "nil"),
+        ("(current-input-mode)", interrupt),
+        ("(set-input-interrupt-mode nil)", "nil"),
+        ("(current-input-mode)", "(nil nil t 7)"),
+    ]);
+}
+
+#[test]
 fn terminal_local_variables() {
     check(&[
         ("last-command", "nil"),

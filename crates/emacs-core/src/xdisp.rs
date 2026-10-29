@@ -402,6 +402,66 @@ impl Lisp {
         self.frame_mut(f).flags.redisplay = true;
     }
 
+    fn overlay_arrow_string_or_property(&self, var: Value) -> Value {
+        let val = self.get(var, sym::OVERLAY_ARROW_STRING);
+        if val.is_string() {
+            return val;
+        }
+        self.plain_value(sym::OVERLAY_ARROW_STRING)
+    }
+
+    fn update_overlay_arrows(&mut self, up_to_date: i32) {
+        let mut vlist = self.plain_value(sym::OVERLAY_ARROW_VARIABLE_LIST);
+        while vlist.is_cons() {
+            let var = self.xcar(vlist);
+            vlist = self.xcdr(vlist);
+            if !var.is_symbol() {
+                continue;
+            }
+            if up_to_date > 0 {
+                let val = self.find_symbol_value(var);
+                if !self.is_marker(val) {
+                    continue;
+                }
+                let position = self.coerce_marker(val);
+                self.put(var, sym::LAST_ARROW_POSITION, position);
+                let string = self.overlay_arrow_string_or_property(var);
+                self.put(var, sym::LAST_ARROW_STRING, string);
+            } else if up_to_date < 0 || !self.get(var, sym::LAST_ARROW_POSITION).is_nil() {
+                self.put(var, sym::LAST_ARROW_POSITION, sym::T);
+                self.put(var, sym::LAST_ARROW_STRING, sym::T);
+            }
+        }
+    }
+
+    fn mark_window_display_accurate_1(&mut self, w: Value, accurate_p: bool) {
+        let b = self.window(w).contents;
+        let text = &self.buffer(b).text;
+        let (modiff, overlay_modiff, save_modiff) =
+            (text.modiff, text.overlay_modiff, text.save_modiff);
+        let window = self.window_mut(w);
+        window.last_modified = if accurate_p { modiff } else { 0 };
+        window.last_overlay_modified = if accurate_p { overlay_modiff } else { 0 };
+        window.flags.last_had_star = modiff > save_modiff;
+        if accurate_p {
+            unreachable!();
+        }
+        window.flags.redisplay = !accurate_p;
+    }
+
+    pub fn mark_window_display_accurate(&mut self, mut window: Value, accurate_p: bool) {
+        while !window.is_nil() {
+            let contents = self.window(window).contents;
+            if self.is_window(contents) {
+                self.mark_window_display_accurate(contents, accurate_p);
+            } else {
+                self.mark_window_display_accurate_1(window, accurate_p);
+            }
+            window = self.window(window).next;
+        }
+        self.update_overlay_arrows(if accurate_p { 1 } else { -1 });
+    }
+
     pub fn bset_redisplay(&mut self, b: Value) {
         let count = self.buffer(b).window_count;
         if count > 0 {

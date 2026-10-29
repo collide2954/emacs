@@ -61,6 +61,12 @@ pub const SUBRS: &[Subr] = &[
         f_event_symbol_parse_modifiers,
     ),
     Subr::fixed("event-convert-list", 1, 1, f_event_convert_list),
+    Subr::fixed("set-input-interrupt-mode", 1, 1, f_set_input_interrupt_mode),
+    Subr::fixed("set-output-flow-control", 1, 2, f_set_output_flow_control),
+    Subr::fixed("set-input-meta-mode", 1, 2, f_set_input_meta_mode),
+    Subr::fixed("set-quit-char", 1, 1, f_set_quit_char),
+    Subr::fixed("set-input-mode", 3, 4, f_set_input_mode),
+    Subr::fixed("current-input-mode", 0, 0, f_current_input_mode),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -190,12 +196,76 @@ impl Lisp {
 
 pub const READABLE_EVENTS_DO_TIMERS_NOW: i32 = 1 << 0;
 
-#[derive(Default)]
 pub struct Keyboard {
     pub input_pending: bool,
+    pub interrupt_input: bool,
+    pub quit_char: i64,
     pub timers_run: u32,
     pub timer_idleness_start_time: Option<Timespec>,
     pub last_auto_save: i64,
+}
+
+impl Default for Keyboard {
+    fn default() -> Self {
+        Keyboard {
+            input_pending: false,
+            interrupt_input: false,
+            quit_char: i64::from(b'g' & 0o37),
+            timers_run: 0,
+            timer_idleness_start_time: None,
+            last_auto_save: 0,
+        }
+    }
+}
+
+fn f_set_input_interrupt_mode(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let new_interrupt_input = cfg!(unix) && !args[0].is_nil();
+    if new_interrupt_input != lisp.keyboard.interrupt_input {
+        lisp.keyboard.interrupt_input = new_interrupt_input;
+    }
+    Ok(Value::NIL)
+}
+
+fn f_set_output_flow_control(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    match lisp.decode_tty_terminal(args[1])? {
+        None => Ok(Value::NIL),
+        Some(t) => match t {},
+    }
+}
+
+fn f_set_input_meta_mode(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    match lisp.decode_tty_terminal(args[1])? {
+        None => Ok(Value::NIL),
+        Some(t) => match t {},
+    }
+}
+
+fn f_set_quit_char(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    match lisp.get_named_terminal(crate::term::DEV_TTY) {
+        None => Ok(Value::NIL),
+        Some(t) => match t {},
+    }
+}
+
+fn f_set_input_mode(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (interrupt, flow, meta, quit) = (args[0], args[1], args[2], args[3]);
+    f_set_input_interrupt_mode(lisp, &[interrupt])?;
+    f_set_output_flow_control(lisp, &[flow, Value::NIL])?;
+    f_set_input_meta_mode(lisp, &[meta, Value::NIL])?;
+    if !quit.is_nil() {
+        f_set_quit_char(lisp, &[quit])?;
+    }
+    Ok(Value::NIL)
+}
+
+fn f_current_input_mode(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let sf = lisp.frames.selected_frame;
+    let interrupt = lisp.bool(lisp.keyboard.interrupt_input);
+    let (flow, meta) = match lisp.frame(sf).output_method {
+        crate::terminal::OutputMethod::Initial => (Value::NIL, sym::T),
+    };
+    let quit = Value::fixnum(lisp.keyboard.quit_char);
+    Ok(lisp.list(&[interrupt, flow, meta, quit]))
 }
 
 impl Lisp {

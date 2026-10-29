@@ -161,6 +161,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::callint::SUBRS,
     crate::process::SUBRS,
     crate::term::SUBRS,
+    crate::w32proc::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);

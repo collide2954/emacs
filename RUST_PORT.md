@@ -7,7 +7,8 @@ The Lisp tree under `lisp/` is used unmodified.
 
 - A Rust core (`crates/emacs-core`) boots the existing `lisp/` tree through `loadup.el`.
 - Lisp objects are tagged handles (`Value(u64)`) into typed arenas with a tracing collector.
-  The workspace forbids `unsafe` code.
+  The workspace forbids `unsafe` code, except in `crates/emacs-w32`, which wraps the few
+  Win32 calls the port needs (through `windows-sys`) in safe functions.
 - The interpreter and bytecode come first. Native compilation (Cranelift) comes later.
 - The GUI is reimplemented on iced 0.14. The terminal frontend is dropped, and `--batch` stays.
 - A C file is deleted in its own commit once its port is complete.
@@ -20,6 +21,7 @@ The Lisp tree under `lisp/` is used unmodified.
 | `crates/emacs-core` | Interpreter, data types, buffers and primitives |
 | `crates/emacs` | The `emacs` binary; its build script generates the charset maps |
 | `crates/emacs-charsets` | Port of `admin/charsets` (`mapconv` and its awk scripts); writes `etc/charsets/*.map`, `cp51932.el` and `eucjp-ms.el` |
+| `crates/emacs-w32` | Safe wrappers around Win32 calls (code pages so far); empty on other platforms |
 
 Build and run:
 
@@ -46,8 +48,8 @@ Ported but not yet complete (C kept):
 | `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
 | `process.c` | `process.rs` | everything but `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask), and `wait_reading_process_output`, which is the subprocess-free variant C uses on MS-DOS (it runs timers and sleeps, and never wakes for keyboard input because there is no input queue yet) |
 | `term.c` | `term.rs` | `tty-frame-list-z-order`, `tty-frame-at` (need frame z-order); there is no tty frontend, so `decode_tty_terminal` never finds a tty |
-| `w32proc.c` | `w32proc.rs` | the DEFUNs (they need Win32 calls); it has the variables |
-| `keyboard.c` | `keyboard.rs` | everything except event modifier parsing, `safe_run_hooks`, the timer runner (`timer_check`) and `detect_input_pending`; there is no input event queue yet, so pending input means `quit-flag` or a kboard's `kbd_queue_has_data`, and idle timers never run because Emacs never becomes idle |
+| `w32proc.c` | `w32proc.rs` | the DEFUNs other than `w32-get-console-codepage`, `w32-set-console-codepage` and their output-codepage counterparts; it has the variables |
+| `keyboard.c` | `keyboard.rs` | everything except event modifier parsing, `safe_run_hooks`, the timer runner (`timer_check`), `detect_input_pending` and the input-mode DEFUNs (`current-input-mode`, `set-input-mode` and friends, which only affect ttys, so they change nothing but the interrupt flag); there is no input event queue yet, so pending input means `quit-flag` or a kboard's `kbd_queue_has_data`, and idle timers never run because Emacs never becomes idle |
 | `syntax.c` | `syntax.rs` | the regex engine still ignores `syntax-table` text properties |
 | `indent.c` | `indent.rs` | `compute-motion`, `vertical-motion`, `line-number-display-width` (they need the display iterator); an image `display` spec signals an error |
 | `casefiddle.c` | `casefiddle.rs` | a real port; the current version is a placeholder using Rust's Unicode tables |
@@ -68,8 +70,10 @@ Window-system frames don't exist yet, so the face, font and composition code sto
 which gets plain realized faces as in C.
 
 `doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables,
-`frame-or-buffer-changed-p`, `ding`, `internal-show-cursor(-p)`, `sleep-for` and `sit_for`
-(which never redisplays, as there is no redisplay yet). `filelock.rs` has the variables and
+`frame-or-buffer-changed-p`, `ding`, `internal-show-cursor(-p)`, `sleep-for`, `sit_for`
+(which never redisplays, as there is no redisplay yet) and `redraw-frame` (which marks the
+frame and its windows for redisplay but has no glyph matrices or terminal hooks to clear).
+`w32fns.rs` defines `w32-ansi-code-page` and `w32-multibyte-code-page` on Windows. `filelock.rs` has the variables and
 `unlock_all_files`, which finds nothing to unlock because file locking isn't ported.
 `image.rs`, `gnutls.rs`, `treesit.rs`, `macros.rs` and `w32fns.rs` hold only those files'
 variables, which the unmodified Lisp needs (cus-start.el checks them). No image, GnuTLS or
@@ -94,11 +98,11 @@ undumped `temacs`: `top-level` is `(load "loadup.el")` unless `-nl` is given.
 `Lisp::noninteractive` is C's `noninteractive` and the Lisp variable is `noninteractive1`;
 they differ after `-x`, as in C.
 
-What remains on this path: `w32.c`'s `init_environment` isn't ported, so `LANG` and the
-other registry defaults are missing on Windows and `set-locale-environment` leaves
-`locale-coding-system` nil. That skips startup.el's Windows conversion of
-`default-directory`, which therefore keeps C's raw `GetCurrentDirectory` form
-(`C:\Users\...\`).
+On Windows, `set-locale-environment` sets `locale-coding-system` from the console code page
+(as C does in batch mode), so startup converts `default-directory` from C's raw
+`GetCurrentDirectory` form. What remains on this path: `w32.c`'s `init_environment` isn't
+ported, so `LANG`, `TMPDIR` and the other registry and default values are missing, and
+`~` still falls back to `USERPROFILE` where C would use `APPDATA`.
 
 `emacs` without `--batch` stops while loading `elisp-mode.el` with
 `(wrong-type-argument stringp nil)`. This is expected for now: the preloaded Lisp loads

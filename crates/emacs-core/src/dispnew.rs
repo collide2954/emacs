@@ -22,7 +22,43 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("internal-show-cursor", 2, 2, f_internal_show_cursor),
     Subr::fixed("internal-show-cursor-p", 0, 1, f_internal_show_cursor_p),
     Subr::fixed("sleep-for", 1, 2, f_sleep_for),
+    Subr::fixed("redraw-frame", 0, 1, f_redraw_frame),
 ];
+
+fn f_redraw_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(args[0])?;
+    lisp.redraw_frame(f);
+    Ok(Value::NIL)
+}
+
+impl Lisp {
+    pub fn redraw_frame(&mut self, f: Value) {
+        if self.frame_window_p(f) {
+            self.set_frame_garbaged(f);
+        }
+        self.fset_redisplay(f);
+        let root = self.frame(f).root_window;
+        self.mark_window_display_accurate(root, false);
+        self.set_window_update_flags(root, true);
+        self.frame_mut(f).flags.garbaged = false;
+    }
+
+    fn set_window_update_flags(&mut self, mut w: Value, on_p: bool) {
+        loop {
+            let contents = self.window(w).contents;
+            if self.is_window(contents) {
+                self.set_window_update_flags(contents, on_p);
+            } else {
+                self.window_mut(w).flags.must_be_updated_p = on_p;
+            }
+            let next = self.window(w).next;
+            if next.is_nil() {
+                break;
+            }
+            w = next;
+        }
+    }
+}
 
 const WAIT_READING_MAX: i64 = i64::MAX;
 
