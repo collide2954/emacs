@@ -55,6 +55,7 @@ pub mod textprop;
 pub mod timefns;
 pub mod treesit;
 pub mod value;
+pub mod w32;
 pub mod w32fns;
 pub mod w32proc;
 pub mod window;

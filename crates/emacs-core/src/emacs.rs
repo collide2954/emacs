@@ -1125,28 +1125,43 @@ impl Lisp {
         self.set_plain_value(sym::LOAD_PATH, load_path);
     }
 
-    pub fn getenv(&mut self, name: &str) -> Option<String> {
-        let env = self.find_symbol_value(sym::PROCESS_ENVIRONMENT);
-        let mut tail = env;
-        while tail.is_cons() {
-            let entry = self.xcar(tail);
-            tail = self.xcdr(tail);
+    fn getenv_internal_1(&self, var: &[u8], mut env: Value) -> Option<Option<Vec<u8>>> {
+        while env.is_cons() {
+            let entry = self.xcar(env);
+            env = self.xcdr(env);
             if !entry.is_string() {
                 continue;
             }
-            let text = self.string_to_rust(entry);
-            let matches = |key: &str| {
-                if cfg!(windows) {
-                    key.eq_ignore_ascii_case(name)
-                } else {
-                    key == name
-                }
-            };
-            match text.split_once('=') {
-                Some((key, value)) if matches(key) => return Some(value.to_string()),
-                None if matches(&text) => return None,
-                _ => {}
+            let bytes = self.string_bytes(entry);
+            if bytes.len() < var.len() {
+                continue;
             }
+            let prefix = &bytes[..var.len()];
+            let matches = if cfg!(windows) {
+                prefix.eq_ignore_ascii_case(var)
+            } else {
+                prefix == var
+            };
+            if !matches {
+                continue;
+            }
+            if bytes.len() > var.len() && bytes[var.len()] == b'=' {
+                return Some(Some(bytes[var.len() + 1..].to_vec()));
+            } else if bytes.len() == var.len() {
+                return Some(None);
+            }
+        }
+        None
+    }
+
+    pub fn getenv(&mut self, name: &str) -> Option<String> {
+        let env = self.find_symbol_value(sym::PROCESS_ENVIRONMENT);
+        if let Some(value) = self.getenv_internal_1(name.as_bytes(), env) {
+            return value.map(|v| String::from_utf8_lossy(&v).into_owned());
+        }
+        #[cfg(windows)]
+        if let Some(value) = emacs_w32::getenv(name.as_bytes()) {
+            return Some(String::from_utf8_lossy(&value).into_owned());
         }
         None
     }
@@ -1358,17 +1373,16 @@ pub(crate) fn f_kill_emacs(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_getenv_internal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let variable = lisp.check_string(args[0])?;
+    if args[1].is_cons() {
+        let var = lisp.string_bytes(variable).to_vec();
+        return Ok(match lisp.getenv_internal_1(&var, args[1]) {
+            Some(Some(value)) => lisp.make_string(&value),
+            Some(None) => sym::T,
+            None => Value::NIL,
+        });
+    }
     let name = lisp.string_to_rust(variable);
-    let value = if args[1].is_cons() {
-        let count = lisp.specpdl.len();
-        lisp.specbind(sym::PROCESS_ENVIRONMENT, args[1])?;
-        let v = lisp.getenv(&name);
-        lisp.unbind_to(count)?;
-        v
-    } else {
-        lisp.getenv(&name)
-    };
-    match value {
+    match lisp.getenv(&name) {
         Some(v) => Ok(lisp.string(&v)),
         None => Ok(Value::NIL),
     }

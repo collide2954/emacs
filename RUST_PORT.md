@@ -21,7 +21,7 @@ The Lisp tree under `lisp/` is used unmodified.
 | `crates/emacs-core` | Interpreter, data types, buffers and primitives |
 | `crates/emacs` | The `emacs` binary; its build script generates the charset maps |
 | `crates/emacs-charsets` | Port of `admin/charsets` (`mapconv` and its awk scripts); writes `etc/charsets/*.map`, `cp51932.el` and `eucjp-ms.el` |
-| `crates/emacs-w32` | Safe wrappers around Win32 calls (code pages so far); empty on other platforms |
+| `crates/emacs-w32` | Safe wrappers around Win32 calls (code pages, locale names, known folders, the registry, the process environment); empty on other platforms |
 
 Build and run:
 
@@ -48,6 +48,7 @@ Ported but not yet complete (C kept):
 | `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
 | `process.c` | `process.rs` | everything but `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask), and `wait_reading_process_output`, which is the subprocess-free variant C uses on MS-DOS (it runs timers and sleeps, and never wakes for keyboard input because there is no input queue yet) |
 | `term.c` | `term.rs` | `tty-frame-list-z-order`, `tty-frame-at` (need frame z-order); there is no tty frontend, so `decode_tty_terminal` never finds a tty |
+| `w32.c` | `w32.rs` | everything but `init_environment`, which doesn't report a missing temporary directory (that needs `command-error-default-function`), and leaves out `init_user_info` and w32term.c's mouse-button count; it sets variables with `SetEnvironmentVariableA` where C uses `_putenv`, and `getenv-internal` falls back to the process environment as C's does on Windows |
 | `w32proc.c` | `w32proc.rs` | the DEFUNs other than `w32-get-console-codepage`, `w32-set-console-codepage` and their output-codepage counterparts; it has the variables |
 | `keyboard.c` | `keyboard.rs` | everything except event modifier parsing, `safe_run_hooks`, the timer runner (`timer_check`), `detect_input_pending` and the input-mode DEFUNs (`current-input-mode`, `set-input-mode` and friends, which only affect ttys, so they change nothing but the interrupt flag); there is no input event queue yet, so pending input means `quit-flag` or a kboard's `kbd_queue_has_data`, and idle timers never run because Emacs never becomes idle |
 | `syntax.c` | `syntax.rs` | the regex engine still ignores `syntax-table` text properties |
@@ -98,11 +99,10 @@ undumped `temacs`: `top-level` is `(load "loadup.el")` unless `-nl` is given.
 `Lisp::noninteractive` is C's `noninteractive` and the Lisp variable is `noninteractive1`;
 they differ after `-x`, as in C.
 
-On Windows, `set-locale-environment` sets `locale-coding-system` from the console code page
-(as C does in batch mode), so startup converts `default-directory` from C's raw
-`GetCurrentDirectory` form. What remains on this path: `w32.c`'s `init_environment` isn't
-ported, so `LANG`, `TMPDIR` and the other registry and default values are missing, and
-`~` still falls back to `USERPROFILE` where C would use `APPDATA`.
+On Windows, `init_environment` sets `LANG`, `TMPDIR`, `HOME` and the other registry and
+default values as C does, and `set-locale-environment` sets `locale-coding-system` from the
+console code page (as C does in batch mode), so startup converts `default-directory` from
+C's raw `GetCurrentDirectory` form.
 
 `emacs` without `--batch` stops while loading `elisp-mode.el` with
 `(wrong-type-argument stringp nil)`. This is expected for now: the preloaded Lisp loads

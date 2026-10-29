@@ -218,6 +218,7 @@ pub const ALL_INITS: &[InitFn] = &[
     init_first_buffers,
     crate::minibuf::init_minibuf_once,
     crate::window::init_window_once,
+    crate::w32::init_environment,
     crate::buffer::init_buffer,
 ];
 
