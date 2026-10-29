@@ -14,7 +14,7 @@ fn write_region_handlers() {
         let mut lisp = Lisp::new();
         let l = &mut lisp;
         for (source, expected) in [
-            (RAW_TEXT.to_string(), "nil"),
+            (FILE_SETUP.to_string(), "nil"),
             (
                 "(defalias 'wr-handler (function (lambda (op &rest args) (if (eq op 'write-region) (progn (setq wr-seen (cons op args)) 'handled) (let ((inhibit-file-name-handlers (cons 'wr-handler inhibit-file-name-handlers)) (inhibit-file-name-operation op)) (apply op args))))))".to_string(),
                 "wr-handler",
@@ -43,7 +43,7 @@ fn write_region_handlers() {
 }
 
 const TEST_UTF: &str = "(define-coding-system-internal 'test-utf ?u 'utf-8 '(unicode) t nil nil nil nil nil nil '(:name test-utf) nil nil)";
-const RAW_TEXT: &str = "(define-coding-system-internal 'raw-text ?t 'raw-text nil t nil nil nil nil nil t '(:name raw-text) nil)";
+const FILE_SETUP: &str = "(progn (define-coding-system-internal 'raw-text ?t 'raw-text nil t nil nil nil nil nil t '(:name raw-text) nil) (defalias 'make-lock-file-name (function (lambda (f) (concat (file-name-directory f) \".#\" (file-name-nondirectory f))))) nil)";
 
 fn lisp_path(path: &std::path::Path) -> String {
     format!("{:?}", path.to_string_lossy().replace('\\', "/"))
@@ -67,7 +67,7 @@ fn write_region_encoding() {
         let l = &mut lisp;
         let cases: Vec<(String, &str)> = vec![
             (TEST_UTF.to_string(), "nil"),
-            (RAW_TEXT.to_string(), "nil"),
+            (FILE_SETUP.to_string(), "nil"),
             (
                 format!(
                     "(let ((coding-system-for-write 'test-utf-unix)) (write-region \"\u{e9}t\u{e9}\\n\" nil {}))",
@@ -172,7 +172,7 @@ fn write_region_positions() {
         let mut lisp = Lisp::new();
         let l = &mut lisp;
         let cases: Vec<(String, String)> = vec![
-            (RAW_TEXT.to_string(), "nil".to_string()),
+            (FILE_SETUP.to_string(), "nil".to_string()),
             (
                 format!(
                     "(let ((coding-system-for-write 'raw-text-unix)) (write-region \"abcdef\" nil {f}) (write-region \"XY\" nil {f} 2) (write-region \"Z\" nil {f} t))"
@@ -242,7 +242,7 @@ fn visited_file_modtime() {
         run(
             l,
             &[
-                (s(RAW_TEXT), "nil"),
+                (s(FILE_SETUP), "nil"),
                 (s("(set-buffer (get-buffer-create \"v\"))"), "#<buffer v>"),
                 (s("(visited-file-modtime)"), "0"),
                 (s("(verify-visited-file-modtime)"), "t"),

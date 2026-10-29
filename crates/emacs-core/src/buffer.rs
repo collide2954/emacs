@@ -1243,6 +1243,7 @@ impl Lisp {
                 }
             }
         }
+        self.unlock_buffer(buffer)?;
         let markers = std::mem::take(&mut self.buffer_mut(buffer).text.markers);
         for m in markers {
             if let Vectorlike::Marker(mk) = self.heap.vectorlike_mut(m) {
@@ -1425,7 +1426,7 @@ fn f_get_file_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     find_buffer_by_local(lisp, sym::BUFFER_FILE_NAME, expanded)
 }
 
-fn f_get_truename_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_get_truename_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     find_buffer_by_local(lisp, sym::BUFFER_FILE_TRUENAME, args[0])
 }
 
@@ -1528,11 +1529,34 @@ fn f_set_buffer_modified_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_restore_buffer_modified_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let flag = args[0];
+    let b = if lisp.cur().base_buffer.is_nil() {
+        lisp.current_buffer
+    } else {
+        lisp.cur().base_buffer
+    };
+    if !lisp.var_true(sym::INHIBIT_MODIFICATION_HOOKS) {
+        let fn_ = lisp
+            .buffer_local_get(b, sym::BUFFER_FILE_TRUENAME)
+            .unwrap_or(Value::NIL);
+        let filename = lisp
+            .buffer_local_get(b, sym::BUFFER_FILE_NAME)
+            .unwrap_or(Value::NIL);
+        if !fn_.is_nil() && !filename.is_nil() {
+            let t = &lisp.cur().text;
+            let already = t.save_modiff < t.modiff;
+            if !already && !flag.is_nil() {
+                crate::filelock::f_lock_file(lisp, &[fn_])?;
+            } else if already && flag.is_nil() {
+                crate::filelock::f_unlock_file(lisp, &[fn_])?;
+            }
+        }
+    }
     let t = &mut lisp.cur_mut().text;
     if flag.is_nil() {
         t.save_modiff = t.modiff;
     } else {
         if t.save_modiff >= t.modiff {
+            t.save_modiff = t.modiff;
             t.modiff += 1;
         }
         if flag == sym::AUTOSAVED {

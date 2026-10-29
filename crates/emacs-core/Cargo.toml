@@ -15,5 +15,8 @@ num-traits.workspace = true
 [target.'cfg(windows)'.dependencies]
 emacs-w32.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+emacs-unix.workspace = true
+
 [lints]
 workspace = true

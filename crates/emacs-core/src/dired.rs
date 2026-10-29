@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use num_bigint::BigInt;
@@ -19,8 +20,11 @@ const S_IFMT: u32 = 0o170000;
 const S_IFDIR: u32 = 0o040000;
 const S_IFREG: u32 = 0o100000;
 const S_IFLNK: u32 = 0o120000;
+#[cfg(windows)]
 const S_IREAD: u32 = 0o400;
+#[cfg(windows)]
 const S_IWRITE: u32 = 0o200;
+#[cfg(windows)]
 const S_IEXEC: u32 = 0o100;
 
 pub const SUBRS: &[Subr] = &[
@@ -121,6 +125,7 @@ fn is_any_sep(byte: u8) -> bool {
     byte == b'/' || (cfg!(windows) && (byte == b'\\' || byte == b':'))
 }
 
+#[cfg(windows)]
 fn timespec(t: std::io::Result<SystemTime>) -> Option<(i64, i64)> {
     let t = t.ok()?;
     Some(match t.duration_since(UNIX_EPOCH) {

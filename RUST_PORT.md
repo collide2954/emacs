@@ -7,8 +7,9 @@ The Lisp tree under `lisp/` is used unmodified.
 
 - A Rust core (`crates/emacs-core`) boots the existing `lisp/` tree through `loadup.el`.
 - Lisp objects are tagged handles (`Value(u64)`) into typed arenas with a tracing collector.
-  The workspace forbids `unsafe` code, except in `crates/emacs-w32`, which wraps the few
-  Win32 calls the port needs (through `windows-sys`) in safe functions.
+  The workspace forbids `unsafe` code, except in `crates/emacs-w32` and `crates/emacs-unix`,
+  which wrap the few Win32 calls (through `windows-sys`) and unix calls (through `libc`) the
+  port needs in safe functions.
 - The interpreter and bytecode come first. Native compilation (Cranelift) comes later.
 - The GUI is reimplemented on iced 0.14. The terminal frontend is dropped, and `--batch` stays.
 - A C file is deleted in its own commit once its port is complete.
@@ -21,7 +22,12 @@ The Lisp tree under `lisp/` is used unmodified.
 | `crates/emacs-core` | Interpreter, data types, buffers and primitives |
 | `crates/emacs` | The `emacs` binary; its build script generates the charset maps |
 | `crates/emacs-charsets` | Port of `admin/charsets` (`mapconv` and its awk scripts); writes `etc/charsets/*.map`, `cp51932.el` and `eucjp-ms.el` |
-| `crates/emacs-w32` | Safe wrappers around Win32 calls (code pages, locale names, known folders, the registry, the process environment); empty on other platforms |
+| `crates/emacs-w32` | Safe wrappers around Win32 calls (code pages, locale names, known folders, the registry, the process environment, process probing, no-replace renames, the tick count); empty on other platforms |
+| `crates/emacs-unix` | Safe wrappers around unix calls std lacks (`kill`, utmpx, `CLOCK_BOOTTIME`, `sysinfo`, the BSD boot-time sysctl, no-replace renames); empty on Windows |
+
+The unix code is type-checked from Windows with `cargo clippy --target
+x86_64-unknown-linux-gnu`; the macOS and BSD branches of `emacs-unix` and `boot_time.rs`
+have not been compiled yet.
 
 Build and run:
 
@@ -42,7 +48,7 @@ Ported but not yet complete (C kept):
 | `alloc.c`, `data.c`, `eval.c`, `fns.c`, `lread.c`, `print.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
 | `character.c` | `charfns.rs` | `get-byte`, display-table aware `string-width` |
 | `emacs.c` | `emacs.rs` | argument handling (`sort_args`, `argmatch`, the option sequence in `main`, `init_cmdargs`) is ported, but `-t` and the daemon options exit with an error because there is no tty frontend and no daemon support; `kill-emacs` and `shut_down_emacs` are ported, except that a string ARG is never stuffed as input (C only does that on a tty) and `shut_down_emacs` has no subprocesses to kill; on Windows, RESTART starts the new Emacs from the saved argv with Rust's argument quoting and inherited standard handles, not from the raw `GetCommandLine` string |
-| `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c` | same names | assorted primitives; the overlay DEFUNs in `overlay.rs` are still approximations (only `overlays_in`, `overlays_at` and `sort_overlays` follow C), and `replace_range` is approximated by `replace_range_chars`; `do-auto-save` and the auto-save DEFUNs follow C, but `write-region` is still a simplified version (no encoding, locking or annotations) that only follows C's `auto_saving`, VISIT and mode-bit handling |
+| `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c` | same names | assorted primitives; the overlay DEFUNs in `overlay.rs` are still approximations (only `overlays_in`, `overlays_at` and `sort_overlays` follow C), and `replace_range` is approximated by `replace_range_chars`; `do-auto-save`, the auto-save DEFUNs, `insert-file-contents` and `write-region` follow C; `prepare_to_modify_buffer` locks the visited file as C does but doesn't save the region text for `select-active-regions` |
 | `cmds.c` | `editfns.rs` | nothing |
 | `dired.c` | `dired.rs` | on Windows, inode, device and link count come from w32.c's fallback (std can't read them without `unsafe`) |
 | `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
@@ -74,8 +80,12 @@ which gets plain realized faces as in C.
 `frame-or-buffer-changed-p`, `ding`, `internal-show-cursor(-p)`, `sleep-for`, `sit_for`
 (which never redisplays, as there is no redisplay yet) and `redraw-frame` (which marks the
 frame and its windows for redisplay but has no glyph matrices or terminal hooks to clear).
-`w32fns.rs` defines `w32-ansi-code-page` and `w32-multibyte-code-page` on Windows. `filelock.rs` has the variables and
-`unlock_all_files`, which finds nothing to unlock because file locking isn't ported.
+`w32fns.rs` defines `w32-ansi-code-page` and `w32-multibyte-code-page` on Windows.
+`filelock.rs` ports `filelock.c` (locks are symlinks on unix and nonce-renamed regular files
+on Windows, as in C), with gnulib's `get_boot_time` as `boot_time.rs`. Whether a lock's owner
+is alive is checked with `kill(pid, 0)` through `emacs-unix`, or with C's `sys_kill`
+emulation (`OpenProcess`) through `emacs-w32`. Lock file names come from files.el's
+`make-lock-file-name`, so a bare `-nl` Emacs can't write files, just like C's `temacs`.
 `image.rs`, `gnutls.rs`, `treesit.rs`, `macros.rs` and `w32fns.rs` hold only those files'
 variables, which the unmodified Lisp needs (cus-start.el checks them). No image, GnuTLS or
 tree-sitter library is linked, so their version variables are -1.
@@ -135,8 +145,8 @@ port too: `choose_write_coding_system`, `build_annotations` (with `format-annota
 and `write-region-post-annotation-function`), `a_write` and `e_write` encoding through
 `encode_coding_object`, numeric APPEND offsets, MUSTBENEW and the modtime bookkeeping, which
 `verify-visited-file-modtime`, `visited-file-modtime` and `set-visited-file-modtime` read and
-set. `find-file`, `save-buffer` and `revert-buffer` work in batch. File locking
-(`filelock.c`) is not ported yet, and `update_compositions` waits for `composite.c`.
+set. `find-file`, `save-buffer` and `revert-buffer` work in batch, with file locking.
+`update_compositions` waits for `composite.c`.
 
 ## Removed legacy
 

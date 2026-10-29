@@ -119,7 +119,7 @@ fn restart() {
     let out = run(
         &dir,
         &format!(
-            "(if (file-exists-p {m}) (progn (princ \"second\") (kill-emacs 4)) (let ((coding-system-for-write 'no-conversion)) (write-region \"\" nil {m})) (kill-emacs 0 t))\n",
+            "(defalias 'make-lock-file-name (function (lambda (f) (concat (file-name-directory f) \".#\" (file-name-nondirectory f)))))\n(if (file-exists-p {m}) (progn (princ \"second\") (kill-emacs 4)) (let ((coding-system-for-write 'no-conversion)) (write-region \"\" nil {m})) (kill-emacs 0 t))\n",
             m = lisp_string(&mark)
         ),
     );

@@ -173,6 +173,10 @@ fn insert_file_contents_decodes() {
     let visit = format!("(car (cdr (insert-file-contents \"{name}\" t)))");
     check(&[
         (TEST_UTF, "nil"),
+        (
+            "(defalias 'make-lock-file-name (function (lambda (f) (concat (file-name-directory f) \".#\" (file-name-nondirectory f)))))",
+            "make-lock-file-name",
+        ),
         ("(set-buffer (get-buffer-create \"ifc\"))", "#<buffer ifc>"),
         (&insert, "5"),
         ("(buffer-string)", "\"été\nx\""),

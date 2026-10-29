@@ -157,6 +157,24 @@ impl Lisp {
             self.barf_if_buffer_read_only(start)?;
         }
         self.verify_interval_modification(start, end)?;
+        let base_buffer = if self.cur().base_buffer.is_nil() {
+            self.current_buffer
+        } else {
+            self.cur().base_buffer
+        };
+        if self.var_true(sym::INHIBIT_MODIFICATION_HOOKS) {
+            return Ok(());
+        }
+        let truename = self
+            .buffer_local_get(base_buffer, sym::BUFFER_FILE_TRUENAME)
+            .unwrap_or(Value::NIL);
+        let filename = self
+            .buffer_local_get(base_buffer, sym::BUFFER_FILE_NAME)
+            .unwrap_or(Value::NIL);
+        let text = &self.cur().text;
+        if !truename.is_nil() && !filename.is_nil() && text.save_modiff >= text.modiff {
+            crate::filelock::f_lock_file(self, &[truename])?;
+        }
         self.signal_before_change(start, end)?;
         self.set(sym::DEACTIVATE_MARK, sym::T)?;
         Ok(())

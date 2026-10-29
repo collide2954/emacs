@@ -567,6 +567,8 @@ impl Lisp {
             std::io::ErrorKind::PermissionDenied => "Permission denied".to_string(),
             std::io::ErrorKind::AlreadyExists => "File exists".to_string(),
             std::io::ErrorKind::IsADirectory => "Is a directory".to_string(),
+            std::io::ErrorKind::InvalidInput => "Invalid argument".to_string(),
+            std::io::ErrorKind::InvalidFilename => "File name too long".to_string(),
             _ => err.to_string(),
         };
         let detail = self.string(&text);
@@ -585,7 +587,7 @@ fn f_ignore1(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_verify_visited_file_modtime(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_verify_visited_file_modtime(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buf = args[0];
     let b = lisp.decode_buffer(buf)?;
     let filename = lisp
@@ -1188,7 +1190,7 @@ fn time_error_value(err: &std::io::Error) -> (i64, i64) {
     (0, ns)
 }
 
-fn stat_mtime(meta: &std::fs::Metadata) -> (i64, i64) {
+pub(crate) fn stat_mtime(meta: &std::fs::Metadata) -> (i64, i64) {
     match meta.modified() {
         Ok(t) => match t.duration_since(std::time::UNIX_EPOCH) {
             Ok(d) => (d.as_secs() as i64, d.subsec_nanos() as i64),
@@ -1267,13 +1269,6 @@ impl Lisp {
 
     fn fboundp(&self, symbol: Value) -> bool {
         !self.heap.symbol_ref(symbol).function.is_nil()
-    }
-
-    pub(crate) fn unlock_file_if_supported(&mut self, file: Value) -> LispResult<()> {
-        if self.fboundp(sym::UNLOCK_FILE) {
-            self.funcall(sym::UNLOCK_FILE, &[file])?;
-        }
-        Ok(())
     }
 
     fn check_inserted(&mut self, insval: Value) -> LispResult<usize> {
@@ -1980,7 +1975,7 @@ fn insert_file_contents_body(lisp: &mut Lisp, s: &mut InsertFile) -> LispResult<
     if raw.is_empty() {
         if we_locked_file {
             let truename = lisp.find_symbol_value(sym::BUFFER_FILE_TRUENAME);
-            lisp.unlock_file_if_supported(truename)?;
+            crate::filelock::f_unlock_file(lisp, &[truename])?;
         }
         lisp.set_plain_value(sym::DEACTIVATE_MARK, s.old_deactivate_mark);
     } else {
@@ -2114,9 +2109,9 @@ fn insert_file_contents_handled(
         if s.handler.is_nil() {
             let truename = lisp.find_symbol_value(sym::BUFFER_FILE_TRUENAME);
             if !truename.is_nil() {
-                lisp.unlock_file_if_supported(truename)?;
+                crate::filelock::f_unlock_file(lisp, &[truename])?;
             }
-            lisp.unlock_file_if_supported(s.filename)?;
+            crate::filelock::f_unlock_file(lisp, &[s.filename])?;
         }
     }
     if s.set_coding_system {
@@ -2605,13 +2600,6 @@ impl Lisp {
         }
         Ok(Ok(()))
     }
-
-    fn lock_file_if_supported(&mut self, file: Value) -> LispResult<()> {
-        if self.fboundp(sym::LOCK_FILE) {
-            self.funcall(sym::LOCK_FILE, &[file])?;
-        }
-        Ok(())
-    }
 }
 
 struct WriteRegion {
@@ -2709,7 +2697,7 @@ fn write_region(lisp: &mut Lisp, mut w: WriteRegion) -> LispResult {
     let (file_locked, written) = r?;
     u?;
     if file_locked {
-        lisp.unlock_file_if_supported(w.lockname)?;
+        crate::filelock::f_unlock_file(lisp, &[w.lockname])?;
     }
     if let Some(modtime) = written.modtime {
         let b = lisp.cur_mut();
@@ -2733,13 +2721,13 @@ fn write_region(lisp: &mut Lisp, mut w: WriteRegion) -> LispResult {
         lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, visit_file);
         lisp.windows.update_mode_lines = 14;
         if auto_saving_into_visited_file {
-            lisp.unlock_file_if_supported(w.lockname)?;
+            crate::filelock::f_unlock_file(lisp, &[w.lockname])?;
         }
     } else if quietly {
         if auto_saving_into_visited_file {
             let modiff = lisp.cur().text.modiff;
             lisp.cur_mut().text.save_modiff = modiff;
-            lisp.unlock_file_if_supported(w.lockname)?;
+            crate::filelock::f_unlock_file(lisp, &[w.lockname])?;
         }
         return Ok(Value::NIL);
     }
@@ -2787,7 +2775,7 @@ fn write_region_1(lisp: &mut Lisp, w: &mut WriteRegion) -> LispResult<(bool, Wri
     lisp.set_plain_value(sym::LAST_CODING_SYSTEM_USED, val);
     let mut file_locked = false;
     if !lisp.fileio.auto_saving {
-        lisp.lock_file_if_supported(w.lockname)?;
+        crate::filelock::f_lock_file(lisp, &[w.lockname])?;
         file_locked = true;
     }
     let path = PathBuf::from(lisp.string_to_rust(w.filename));
@@ -2822,7 +2810,7 @@ fn write_region_1(lisp: &mut Lisp, w: &mut WriteRegion) -> LispResult<(bool, Wri
         Ok(f) => f,
         Err(e) => {
             if file_locked {
-                lisp.unlock_file_if_supported(w.lockname)?;
+                crate::filelock::f_unlock_file(lisp, &[w.lockname])?;
             }
             return Err(lisp.file_error("Opening output file", &e, w.filename));
         }
@@ -2831,7 +2819,7 @@ fn write_region_1(lisp: &mut Lisp, w: &mut WriteRegion) -> LispResult<(bool, Wri
         && let Err(e) = file.seek(SeekFrom::Start(offset as u64))
     {
         if file_locked {
-            lisp.unlock_file_if_supported(w.lockname)?;
+            crate::filelock::f_unlock_file(lisp, &[w.lockname])?;
         }
         return Err(lisp.file_error("Setting file position", &e, w.filename));
     }

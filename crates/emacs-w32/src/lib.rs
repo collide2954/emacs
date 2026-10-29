@@ -1,9 +1,11 @@
 #![cfg(windows)]
 
+use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-use windows_sys::Win32::Foundation::{ERROR_SUCCESS, MAX_PATH, S_OK};
+use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, GetLastError, MAX_PATH, S_OK};
 use windows_sys::Win32::Globalization::{
     GetACP, GetLocaleInfoA, GetUserDefaultUILanguage, IsValidCodePage, LOCALE_SABBREVLANGNAME,
     LOCALE_USE_CP_ACP,
@@ -12,6 +14,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FindClose, FindFirstFileW, GetFileAttributesA,
     INVALID_FILE_ATTRIBUTES, WIN32_FIND_DATAW,
 };
+use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_COPY_ALLOWED, MoveFileExW};
 use windows_sys::Win32::System::Console::{
     GetConsoleCP, GetConsoleOutputCP, SetConsoleCP, SetConsoleOutputCP,
 };
@@ -23,6 +26,8 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExA,
     RegQueryValueExA,
 };
+use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
 use windows_sys::Win32::UI::Shell::{CSIDL_APPDATA, SHGetFolderPathA};
 
 pub use windows_sys::Win32::System::Registry::{REG_EXPAND_SZ, REG_SZ};
@@ -212,4 +217,33 @@ pub fn putenv(name: &[u8], value: &[u8]) -> bool {
     let name = c_string(name);
     let value = c_string(value);
     unsafe { SetEnvironmentVariableA(name.as_ptr(), value.as_ptr()) != 0 }
+}
+
+pub fn open_process_query(pid: u32) -> Result<(), u32> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return Err(unsafe { GetLastError() });
+    }
+    unsafe { CloseHandle(handle) };
+    Ok(())
+}
+
+pub fn tick_count64() -> u64 {
+    unsafe { GetTickCount64() }
+}
+
+fn wide(path: &Path) -> Vec<u16> {
+    path.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+pub fn move_file_no_replace(old: &Path, new: &Path) -> std::io::Result<()> {
+    let old = wide(old);
+    let new = wide(new);
+    if unsafe { MoveFileExW(old.as_ptr(), new.as_ptr(), MOVEFILE_COPY_ALLOWED) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }

@@ -1,6 +1,8 @@
 mod common;
 
-use common::{check, eval, on_big_stack};
+#[cfg(windows)]
+use common::check;
+use common::{eval, on_big_stack};
 use emacs_core::emacs::{
     Argv, Exit, Startup, argmatch, decode_command_line, sort_args, version_text,
 };

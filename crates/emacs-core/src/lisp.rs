@@ -135,6 +135,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::textprop::SUBRS,
     crate::overlay::SUBRS,
     crate::fileio::SUBRS,
+    crate::filelock::SUBRS,
     crate::emacs::SUBRS,
     crate::keyboard::SUBRS,
     crate::keymap::SUBRS,
