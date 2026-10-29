@@ -3,6 +3,69 @@ mod common;
 use common::check;
 
 #[test]
+fn symbols_with_position_as_symbols() {
+    check(&[
+        ("(defvar swp-var 7)", "swp-var"),
+        (
+            "(setq swp (position-symbol 'swp-var 12))",
+            "#<symbol swp-var at 12>",
+        ),
+        (
+            "(special-variable-p swp)",
+            "error: (wrong-type-argument symbolp #<symbol swp-var at 12>)",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (list (special-variable-p swp) (symbol-value swp) (boundp swp) (get swp 'nothing)))",
+            "(t 7 t nil)",
+        ),
+        (
+            "(defalias 'swp-mac (cons 'macro (function (lambda (x) (list 'quote x)))))",
+            "swp-mac",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (macroexpand (list (position-symbol 'swp-mac 3) 5)))",
+            "'5",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (macroexpand (list (position-symbol 'swp-env 3) 5) (list (cons 'swp-env (function (lambda (x) (list 'quote (list x x))))))))",
+            "'(5 5)",
+        ),
+        (
+            "(car (macroexpand (list (position-symbol 'swp-mac 3) 5)))",
+            "#<symbol swp-mac at 3>",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (eval (position-symbol 'swp-var 3)))",
+            "7",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (eval (list 'let '((q 5)) (position-symbol 'q 2)) t))",
+            "5",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (eval (list (position-symbol 'car 1) ''(a b))))",
+            "a",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (funcall (position-symbol 'car 1) '(a b)))",
+            "a",
+        ),
+        (
+            "(funcall (position-symbol 'car 1) '(a b))",
+            "error: (invalid-function #<symbol car at 1>)",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (byte-code \"\\300\\071\\207\" (vector (position-symbol 'x 1)) 1))",
+            "t",
+        ),
+        (
+            "(byte-code \"\\300\\071\\207\" (vector (position-symbol 'x 1)) 1)",
+            "nil",
+        ),
+    ]);
+}
+
+#[test]
 fn arithmetic() {
     check(&[
         ("(+ 1 2 3)", "6"),

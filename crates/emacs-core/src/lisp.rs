@@ -765,7 +765,11 @@ impl Lisp {
 
     pub fn check_symbol(&mut self, v: Value) -> LispResult<Value> {
         if v.is_symbol() {
-            Ok(v)
+            return Ok(v);
+        }
+        let bare = self.maybe_remove_pos_from_symbol(v);
+        if bare.is_symbol() {
+            Ok(bare)
         } else {
             Err(self.wrong_type(sym::SYMBOLP, v))
         }

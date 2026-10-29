@@ -2119,11 +2119,50 @@ fn insert_file_contents_handled(
 fn f_write_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (start, end, filename, append, visit) = (args[0], args[1], args[2], args[3], args[4]);
     let filename = lisp.check_string(filename)?;
-    if let Some(r) = lisp.handled(sym::WRITE_REGION, args)? {
-        return Ok(r);
-    }
+    let base = lisp.stack.len();
     let expanded = lisp.expand_file_name(filename, Value::NIL)?;
     lisp.stack.push(expanded);
+    let visit_file = if visit.is_string() {
+        lisp.expand_file_name(visit, Value::NIL)?
+    } else {
+        expanded
+    };
+    lisp.stack.push(visit_file);
+    let lockname = if args[5].is_nil() {
+        visit_file
+    } else {
+        args[5]
+    };
+    let mut handler = lisp.find_file_name_handler(expanded, sym::WRITE_REGION)?;
+    if handler.is_none() && visit.is_string() {
+        handler = lisp.find_file_name_handler(visit, sym::WRITE_REGION)?;
+    }
+    if let Some(handler) = handler {
+        let val = lisp.funcall(
+            handler,
+            &[
+                sym::WRITE_REGION,
+                start,
+                end,
+                expanded,
+                append,
+                visit,
+                lockname,
+                args[6],
+            ],
+        )?;
+        if visit == sym::T || visit.is_string() {
+            let b = lisp.current_buffer;
+            let modiff = lisp.cur().text.modiff;
+            lisp.cur_mut().text.save_modiff = modiff;
+            let size = Value::fixnum(lisp.cur().text.chars as i64);
+            lisp.buffer_local_set(b, sym::BUFFER_SAVED_SIZE, size);
+            lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, visit_file);
+        }
+        lisp.stack.truncate(base);
+        return Ok(val);
+    }
+    lisp.stack.truncate(base + 1);
     let path = PathBuf::from(lisp.string_to_rust(expanded));
     let data: Vec<u8> = if start.is_string() {
         lisp.string_to_rust(start).into_bytes()

@@ -246,7 +246,7 @@ fn state_matches(lisp: &mut Lisp, state: Value) -> LispResult<bool> {
 fn f_frame_or_buffer_changed_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let variable = args[0];
     let mut state = if !variable.is_nil() {
-        lisp.check_symbol(variable)?;
+        let variable = lisp.check_symbol(variable)?;
         lisp.symbol_value(variable)?
     } else {
         lisp.frame_and_buffer_state

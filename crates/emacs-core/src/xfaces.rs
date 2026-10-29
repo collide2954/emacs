@@ -883,13 +883,13 @@ impl Lisp {
         if !font.is_nil() {
             let foundry = self.font_aref(font, FONT_FOUNDRY_INDEX);
             if !foundry.is_nil() {
-                self.check_symbol(foundry)?;
+                let foundry = self.check_symbol(foundry)?;
                 let name = self.symbol_name(foundry);
                 self.set_at(to, LFACE_FOUNDRY_INDEX, name);
             }
             let family = self.font_aref(font, FONT_FAMILY_INDEX);
             if !family.is_nil() {
-                self.check_symbol(family)?;
+                let family = self.check_symbol(family)?;
                 let name = self.symbol_name(family);
                 self.set_at(to, LFACE_FAMILY_INDEX, name);
             }
@@ -1139,7 +1139,7 @@ impl Lisp {
             if !self.xcdr(filter).is_nil() {
                 break 'err;
             }
-            self.check_symbol(parameter)?;
+            let parameter = self.check_symbol(parameter)?;
             if self.get(parameter, sym::K_FILTERED).is_nil() {
                 self.put(parameter, sym::K_FILTERED, sym::T);
             }
@@ -2184,7 +2184,7 @@ impl Lisp {
 
 pub(crate) fn f_internal_make_lisp_face(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (face, frame) = (args[0], arg(args, 1));
-    lisp.check_symbol(face)?;
+    let face = lisp.check_symbol(face)?;
     let mut global_lface = lisp.lface_from_face_name(None, face, false)?;
     let (f, mut lface) = if !frame.is_nil() {
         lisp.check_live_frame(frame)?;
@@ -2238,8 +2238,8 @@ fn f_internal_lisp_face_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_internal_copy_lisp_face(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (from, to, frame, mut new_frame) = (args[0], args[1], args[2], args[3]);
-    lisp.check_symbol(from)?;
-    lisp.check_symbol(to)?;
+    let from = lisp.check_symbol(from)?;
+    let to = lisp.check_symbol(to)?;
     let (lface, copy, f) = if frame == sym::T {
         let lface = lisp.lface_from_face_name(None, from, true)?;
         let copy = f_internal_make_lisp_face(lisp, &[to, Value::NIL])?;
@@ -2384,13 +2384,12 @@ fn internal_set_lisp_face_attribute(
     value: Value,
     frame: Value,
 ) -> LispResult {
-    let mut attr = attr;
     let mut value = value;
     let mut frame = frame;
     let mut old_value = Value::NIL;
     let mut prop_index = 0;
-    lisp.check_symbol(face)?;
-    lisp.check_symbol(attr)?;
+    let face = lisp.check_symbol(face)?;
+    let mut attr = lisp.check_symbol(attr)?;
     let face = lisp.resolve_face_name(face, true)?;
     if frame == Value::fixnum(0) {
         f_internal_set_lisp_face_attribute(lisp, &[face, attr, value, sym::T])?;
@@ -2467,7 +2466,7 @@ fn internal_set_lisp_face_attribute(
             (LFACE_SWIDTH_INDEX, FONT_WIDTH_INDEX, "Invalid face width")
         };
         if !special(value) {
-            lisp.check_symbol(value)?;
+            let value = lisp.check_symbol(value)?;
             if lisp.font_style_to_value(fi, value, false)? >> 8 < 0 {
                 return Err(lisp.signal_error(msg, value));
             }
@@ -2514,7 +2513,7 @@ fn internal_set_lisp_face_attribute(
             (LFACE_EXTEND_INDEX, "Invalid extend face attribute value")
         };
         if !special(value) {
-            lisp.check_symbol(value)?;
+            let value = lisp.check_symbol(value)?;
             if value != sym::T && !value.is_nil() {
                 return Err(lisp.signal_error(msg, value));
             }
@@ -2724,8 +2723,8 @@ fn face_boolean_x_resource_value(
 
 fn f_internal_set_lisp_face_attribute_from_resource(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (face, attr, mut value, frame) = (args[0], args[1], args[2], arg(args, 3));
-    lisp.check_symbol(face)?;
-    lisp.check_symbol(attr)?;
+    let face = lisp.check_symbol(face)?;
+    let attr = lisp.check_symbol(attr)?;
     lisp.check_string(value)?;
     if crate::fontset::c_bytes(lisp.string_bytes(value)).eq_ignore_ascii_case(b"unspecified") {
         value = sym::UNSPECIFIED;
@@ -2789,7 +2788,7 @@ fn f_internal_get_lisp_face_attribute(lisp: &mut Lisp, args: &[Value]) -> LispRe
     };
     let lface = lisp.lface_from_face_name(f, symbol, true)?;
     lisp.check_symbol(symbol)?;
-    lisp.check_symbol(keyword)?;
+    let keyword = lisp.check_symbol(keyword)?;
     let idx = FACE_ATTR_SYM[1..]
         .iter()
         .position(|&k| k == keyword)
@@ -2806,7 +2805,7 @@ fn f_internal_get_lisp_face_attribute(lisp: &mut Lisp, args: &[Value]) -> LispRe
 
 fn f_internal_lisp_face_attribute_values(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let attr = args[0];
-    lisp.check_symbol(attr)?;
+    let attr = lisp.check_symbol(attr)?;
     if attr == sym::K_UNDERLINE
         || attr == sym::K_OVERLINE
         || attr == sym::K_STRIKE_THROUGH

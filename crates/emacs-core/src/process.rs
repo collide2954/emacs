@@ -8,7 +8,19 @@ use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
 
-pub const SUBRS: &[Subr] = &[Subr::fixed("num-processors", 0, 1, f_num_processors)];
+pub const SUBRS: &[Subr] = &[
+    Subr::fixed("num-processors", 0, 1, f_num_processors),
+    Subr::fixed("get-buffer-process", 1, 1, f_get_buffer_process),
+];
+
+fn f_get_buffer_process(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let buffer = args[0];
+    if buffer.is_nil() {
+        return Ok(Value::NIL);
+    }
+    crate::buffer::f_get_buffer(lisp, &[buffer])?;
+    Ok(Value::NIL)
+}
 
 #[cfg(windows)]
 pub type ULong = u32;

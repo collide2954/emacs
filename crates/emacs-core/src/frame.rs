@@ -1488,13 +1488,13 @@ fn f_frame_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_frame_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_any_frame(args[0])?;
-    lisp.check_symbol(args[1])?;
+    let parameter = lisp.check_symbol(args[1])?;
     if !lisp.frame_live_p(f) {
         return Ok(Value::NIL);
     }
-    let value = lisp.frame_get_param_value(f, args[1])?;
+    let value = lisp.frame_get_param_value(f, parameter)?;
     Ok(if value == sym::UNBOUND {
-        lisp.get_frame_param(f, args[1])
+        lisp.get_frame_param(f, parameter)
     } else {
         value
     })

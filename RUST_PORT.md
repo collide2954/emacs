@@ -46,10 +46,10 @@ Ported but not yet complete (C kept):
 | `cmds.c` | `editfns.rs` | nothing |
 | `dired.c` | `dired.rs` | on Windows, inode, device and link count come from w32.c's fallback (std can't read them without `unsafe`) |
 | `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
-| `process.c` | `process.rs` | everything but `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask), and `wait_reading_process_output`, which is the subprocess-free variant C uses on MS-DOS (it runs timers and sleeps, and never wakes for keyboard input because there is no input queue yet) |
+| `process.c` | `process.rs` | everything but `get-buffer-process` (which finds nothing, as no process objects exist yet), `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask), and `wait_reading_process_output`, which is the subprocess-free variant C uses on MS-DOS (it runs timers and sleeps, and never wakes for keyboard input because there is no input queue yet) |
 | `term.c` | `term.rs` | `tty-frame-list-z-order`, `tty-frame-at` (need frame z-order); there is no tty frontend, so `decode_tty_terminal` never finds a tty |
 | `w32.c` | `w32.rs` | everything but `init_environment`, which doesn't report a missing temporary directory (that needs `command-error-default-function`), and leaves out `init_user_info` and w32term.c's mouse-button count; it sets variables with `SetEnvironmentVariableA` where C uses `_putenv`, and `getenv-internal` falls back to the process environment as C's does on Windows |
-| `w32proc.c` | `w32proc.rs` | the DEFUNs other than `w32-get-console-codepage`, `w32-set-console-codepage` and their output-codepage counterparts; it has the variables |
+| `w32proc.c` | `w32proc.rs` | the DEFUNs other than `w32-long-file-name`, `w32-get-console-codepage`, `w32-set-console-codepage` and their output-codepage counterparts; it has the variables |
 | `keyboard.c` | `keyboard.rs` | everything except event modifier parsing, `safe_run_hooks`, the timer runner (`timer_check`), `detect_input_pending` and the input-mode DEFUNs (`current-input-mode`, `set-input-mode` and friends, which only affect ttys, so they change nothing but the interrupt flag); there is no input event queue yet, so pending input means `quit-flag` or a kboard's `kbd_queue_has_data`, and idle timers never run because Emacs never becomes idle |
 | `syntax.c` | `syntax.rs` | the regex engine still ignores `syntax-table` text properties |
 | `indent.c` | `indent.rs` | `compute-motion`, `vertical-motion`, `line-number-display-width` (they need the display iterator); an image `display` spec signals an error |
@@ -103,6 +103,13 @@ On Windows, `init_environment` sets `LANG`, `TMPDIR`, `HOME` and the other regis
 default values as C does, and `set-locale-environment` sets `locale-coding-system` from the
 console code page (as C does in batch mode), so startup converts `default-directory` from
 C's raw `GetCurrentDirectory` form.
+
+Byte compilation works: bytecomp.el, loaded from source, compiles its own hot functions
+and then `byte-compile` and `byte-compile-file` compile correctly (symbols with positions
+are accepted wherever C's `SYMBOLP` accepts them: `check_symbol`, `eval`, `funcall`,
+`macroexpand` and the `symbolp` opcode). What remains on this path: `write-region` does not
+encode yet, so it writes buffer text as UTF-8 with raw bytes replaced, which corrupts the
+bytecode strings in the `.elc` files that `byte-compile-file` writes.
 
 `emacs` without `--batch` stops while loading `elisp-mode.el` with
 `(wrong-type-argument stringp nil)`. This is expected for now: the preloaded Lisp loads

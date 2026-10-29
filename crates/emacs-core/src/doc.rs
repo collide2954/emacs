@@ -326,7 +326,7 @@ fn f_documentation_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (symbol, prop, raw) = (args[0], args[1], arg(args, 2));
     let mut try_reload = lisp.var_true(sym::DOCUMENTATION_DYNAMIC_RELOAD);
     loop {
-        lisp.check_symbol(symbol)?;
+        let symbol = lisp.check_symbol(symbol)?;
         let mut tem = lisp.get(symbol, prop);
         if prop == sym::VARIABLE_DOCUMENTATION && tem.is_nil() {
             let indirect = lisp.indirect_variable(symbol);

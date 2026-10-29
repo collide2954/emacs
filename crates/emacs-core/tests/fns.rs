@@ -3,6 +3,49 @@ mod common;
 use common::check;
 
 #[test]
+fn line_number_at_pos() {
+    check(&[
+        (
+            "(progn (set-buffer (get-buffer-create \"lines\")) (insert \"one\\ntwo\\r\\nthree\\rfour\") nil)",
+            "nil",
+        ),
+        ("(line-number-at-pos)", "3"),
+        ("(line-number-at-pos 1)", "1"),
+        ("(line-number-at-pos 4)", "1"),
+        ("(line-number-at-pos 5)", "2"),
+        ("(line-number-at-pos (point-max))", "3"),
+        (
+            "(line-number-at-pos 0)",
+            "error: (args-out-of-range 0 1 20)",
+        ),
+        (
+            "(line-number-at-pos 21)",
+            "error: (args-out-of-range 21 1 20)",
+        ),
+        (
+            "(line-number-at-pos 'x)",
+            "error: (wrong-type-argument fixnump x)",
+        ),
+        (
+            "(let ((selective-display t)) (line-number-at-pos (point-max)))",
+            "5",
+        ),
+        (
+            "(let ((selective-display 3)) (line-number-at-pos (point-max)))",
+            "3",
+        ),
+        (
+            "(progn (narrow-to-region 5 20) (line-number-at-pos 10))",
+            "2",
+        ),
+        ("(line-number-at-pos 10 t)", "3"),
+        ("(line-number-at-pos 2)", "1"),
+        ("(line-number-at-pos 2 t)", "1"),
+        ("(progn (widen) (line-number-at-pos (copy-marker 9)))", "2"),
+    ]);
+}
+
+#[test]
 fn sequences() {
     check(&[
         ("(length '(1 2 3))", "3"),

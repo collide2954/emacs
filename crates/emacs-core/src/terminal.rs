@@ -252,10 +252,10 @@ fn f_terminal_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 fn f_terminal_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    lisp.check_symbol(args[1])?;
+    let parameter = lisp.check_symbol(args[1])?;
     let t = lisp.decode_live_terminal(args[0])?;
     let alist = lisp.terminal(t).param_alist;
-    let cell = lisp.assq(args[1], alist);
+    let cell = lisp.assq(parameter, alist);
     Ok(lisp.cdr_safe(cell))
 }
 

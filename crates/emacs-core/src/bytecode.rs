@@ -594,7 +594,7 @@ impl Lisp {
                 }
             }
             B_SYMBOLP => {
-                let v = self.bool(self.bc_top().is_symbol());
+                let v = self.bool(self.symbolp(self.bc_top()));
                 self.bc_set_top(v);
             }
             B_CONSP => {

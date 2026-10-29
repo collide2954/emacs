@@ -397,6 +397,53 @@ impl Lisp {
         self.window_mut(w).flags.redisplay = true;
     }
 
+    pub fn count_lines(&self, start_byte: usize, end_byte: usize) -> i64 {
+        let zv = self.cur().zv as i64;
+        self.display_count_lines(start_byte, end_byte, zv).0
+    }
+
+    pub fn display_count_lines(
+        &self,
+        mut start_byte: usize,
+        limit_byte: usize,
+        mut count: i64,
+    ) -> (i64, usize) {
+        let orig_count = count;
+        let selective = self.find_symbol_value(sym::SELECTIVE_DISPLAY);
+        let selective_display = !selective.is_nil() && !selective.is_fixnum();
+        let text = &self.cur().text;
+        let is_newline = |byte_pos: usize| {
+            let c = text.byte_at(byte_pos);
+            c == b'\n' || (selective_display && c == 0o15)
+        };
+        if count > 0 {
+            while start_byte < limit_byte {
+                if is_newline(start_byte) {
+                    count -= 1;
+                    if count == 0 {
+                        return (orig_count, start_byte + 1);
+                    }
+                }
+                start_byte += 1;
+            }
+        } else {
+            while start_byte > limit_byte {
+                start_byte -= 1;
+                if is_newline(start_byte) {
+                    count += 1;
+                    if count == 0 {
+                        return (-orig_count - 1, start_byte + 1);
+                    }
+                }
+            }
+        }
+        if count < 0 {
+            (-orig_count + count, limit_byte)
+        } else {
+            (orig_count - count, limit_byte)
+        }
+    }
+
     pub fn fset_redisplay(&mut self, f: Value) {
         self.redisplay_other_windows();
         self.frame_mut(f).flags.redisplay = true;

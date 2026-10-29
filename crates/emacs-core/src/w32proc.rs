@@ -23,7 +23,25 @@ pub const SUBRS: &[Subr] = &[
         1,
         f_w32_set_console_output_codepage,
     ),
+    Subr::fixed("w32-long-file-name", 1, 1, f_w32_long_file_name),
 ];
+
+#[cfg(windows)]
+fn f_w32_long_file_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let filename = lisp.check_string(args[0])?;
+    let bytes = lisp.string_bytes(filename);
+    let drive_only = bytes.len() == 2 && bytes[1] == b':';
+    let filename = lisp.expand_file_name(filename, Value::NIL)?;
+    let encoded = lisp.string_bytes(filename).to_vec();
+    let Some(mut longname) = crate::w32::w32_get_long_filename(&encoded) else {
+        return Ok(Value::NIL);
+    };
+    crate::fileio::dostounix_filename(&mut longname);
+    if drive_only && longname.len() == 3 && longname[1] == b':' && longname[2] == b'/' {
+        longname.truncate(2);
+    }
+    Ok(lisp.make_string(&longname))
+}
 
 #[cfg(not(windows))]
 pub const SUBRS: &[crate::subr::Subr] = &[];

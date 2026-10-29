@@ -17,6 +17,20 @@ fn num_processors() {
 }
 
 #[test]
+fn buffer_processes() {
+    check(&[
+        ("(get-buffer-process (current-buffer))", "nil"),
+        ("(get-buffer-process \"*scratch*\")", "nil"),
+        ("(get-buffer-process \"no such buffer\")", "nil"),
+        ("(get-buffer-process nil)", "nil"),
+        (
+            "(get-buffer-process 1)",
+            "error: (wrong-type-argument stringp 1)",
+        ),
+    ]);
+}
+
+#[test]
 fn omp_threads() {
     let parse = |s: Option<&str>| parse_omp_threads(s.map(Into::into));
     assert_eq!(parse(None), 0);

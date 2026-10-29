@@ -20,6 +20,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("identity", 1, 1, f_identity),
     Subr::fixed("random", 0, 1, f_random),
     Subr::fixed("length", 1, 1, f_length),
+    Subr::fixed("line-number-at-pos", 0, 2, f_line_number_at_pos),
     Subr::fixed("safe-length", 1, 1, f_safe_length),
     Subr::fixed("length<", 2, 2, f_length_less),
     Subr::fixed("length>", 2, 2, f_length_greater),
@@ -1129,6 +1130,48 @@ fn f_random(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(r))
 }
 
+fn f_line_number_at_pos(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (position, absolute) = (args[0], args[1]);
+    let cb = lisp.current_buffer;
+    if !lisp.buffer_live_p(cb) {
+        return Err(lisp.error("Attempt to count lines in a dead buffer"));
+    }
+    let mut start_byte = lisp.cur().begv_byte;
+    let mut pos_byte = if lisp.is_marker(position) {
+        if lisp.marker(position).buffer != cb {
+            let pos = lisp.marker_position_checked(position)?;
+            lisp.cur().text.char_to_byte(pos)
+        } else {
+            lisp.marker_byte_position_checked(position)?
+        }
+    } else if position.is_nil() {
+        lisp.cur().pt_byte
+    } else {
+        let pos = lisp.check_fixnum(position)?;
+        let z = lisp.cur().z() as i64;
+        if pos < 1 || pos > z {
+            return Err(lisp.args_out_of_range3(position, Value::fixnum(1), Value::fixnum(z)));
+        }
+        lisp.cur().text.char_to_byte(pos as usize)
+    };
+    if !absolute.is_nil() {
+        start_byte = 1;
+    } else {
+        let b = lisp.cur();
+        pos_byte = pos_byte.clamp(b.begv_byte, b.zv_byte);
+    }
+    let (z, z_byte) = (lisp.cur().z(), lisp.cur().z_byte());
+    if pos_byte < 1 || pos_byte > z_byte {
+        let pos = lisp.cur().text.byte_to_char(pos_byte) as i64;
+        return Err(lisp.args_out_of_range3(
+            Value::fixnum(pos),
+            Value::fixnum(1),
+            Value::fixnum(z as i64),
+        ));
+    }
+    Ok(Value::fixnum(lisp.count_lines(start_byte, pos_byte) + 1))
+}
+
 fn f_length(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.length(args[0])
 }
@@ -1686,7 +1729,7 @@ fn f_memql(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_assq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_assq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist) = (args[0], args[1]);
     let mut tail = alist;
     while tail.is_cons() {

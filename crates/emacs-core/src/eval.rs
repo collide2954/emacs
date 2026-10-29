@@ -312,18 +312,23 @@ impl Lisp {
     }
 
     pub fn eval(&mut self, form: Value) -> LispResult {
-        if form.is_symbol() {
-            if form.is_nil() || form == sym::T {
-                return Ok(form);
+        let bare = self.maybe_remove_pos_from_symbol(form);
+        if bare.is_symbol() {
+            if bare.is_nil() || bare == sym::T {
+                return Ok(bare);
             }
             let lexenv = self.lexenv();
             if lexenv.is_cons() {
-                let binding = self.assq(form, lexenv);
+                let binding = if self.var_true(sym::SYMBOLS_WITH_POS_ENABLED) {
+                    crate::fns::f_assq(self, &[form, lexenv])?
+                } else {
+                    self.assq(form, lexenv)
+                };
                 if !binding.is_nil() {
                     return Ok(self.xcdr(binding));
                 }
             }
-            return self.symbol_value(form);
+            return self.symbol_value(bare);
         }
         if !form.is_cons() {
             return Ok(form);
@@ -365,13 +370,14 @@ impl Lisp {
     ) -> LispResult {
         loop {
             let mut fun = original_fun;
-            if !fun.is_symbol() {
+            let bare = self.maybe_remove_pos_from_symbol(fun);
+            if !bare.is_symbol() {
                 let list = self.list(&[fun]);
                 self.stack.push(list);
                 fun = f_function(self, list)?;
                 self.stack.push(fun);
-            } else if !fun.is_nil() {
-                fun = self.heap.symbol_ref(fun).function;
+            } else if !bare.is_nil() {
+                fun = self.heap.symbol_ref(bare).function;
                 if fun.is_symbol() {
                     fun = self.indirect_function(fun);
                 }
@@ -557,8 +563,9 @@ impl Lisp {
     pub fn funcall_general(&mut self, original_fun: Value, args: &[Value]) -> LispResult {
         let mut fun = original_fun;
         loop {
-            if fun.is_symbol() && !fun.is_nil() {
-                fun = self.heap.symbol_ref(fun).function;
+            let bare = self.maybe_remove_pos_from_symbol(fun);
+            if bare.is_symbol() && !bare.is_nil() {
+                fun = self.heap.symbol_ref(bare).function;
                 if fun.is_symbol() {
                     fun = self.indirect_function(fun);
                 }
@@ -1089,7 +1096,7 @@ impl Lisp {
         if macro_only == sym::MACRO && !(kind == sym::T || kind == sym::MACRO) {
             return Ok(fundef);
         }
-        self.check_symbol(funname)?;
+        let funname = self.check_symbol(funname)?;
         let ignore_errors = if kind == sym::T || kind == sym::MACRO {
             Value::NIL
         } else {
@@ -1520,8 +1527,8 @@ pub fn f_function(lisp: &mut Lisp, args: Value) -> LispResult {
 
 fn f_defvaralias(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (new_alias, base_variable, docstring) = (args[0], args[1], args[2]);
-    lisp.check_symbol(new_alias)?;
-    lisp.check_symbol(base_variable)?;
+    let new_alias = lisp.check_symbol(new_alias)?;
+    let base_variable = lisp.check_symbol(base_variable)?;
     if lisp.heap.symbol_ref(new_alias).trapped_write == TrappedWrite::NoWrite {
         let name = lisp.symbol_name_string(new_alias);
         return Err(lisp.error(&format!("Cannot make a constant an alias: {name}")));
@@ -1654,7 +1661,7 @@ impl Lisp {
         docstring: Value,
         eval: bool,
     ) -> LispResult {
-        self.check_symbol(symbol)?;
+        let symbol = self.check_symbol(symbol)?;
         let bound = self.default_boundp(symbol);
         f_internal_define_uninitialized_variable(self, &[symbol, docstring])?;
         if !bound {
@@ -1696,7 +1703,7 @@ fn f_defvar(lisp: &mut Lisp, args: Value) -> LispResult {
     let symbol = lisp.car(args)?;
     let tail = lisp.cdr(args)?;
     let symbol = lisp.maybe_remove_pos_from_symbol(symbol);
-    lisp.check_symbol(symbol)?;
+    let symbol = lisp.check_symbol(symbol)?;
     if !tail.is_nil() {
         let rest = lisp.xcdr(tail);
         if !lisp.cdr(rest)?.is_nil() {
@@ -1717,14 +1724,14 @@ fn f_defvar(lisp: &mut Lisp, args: Value) -> LispResult {
 
 fn f_defvar_1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (symbol, value, docstring) = (args[0], args[1], args[2]);
-    lisp.check_symbol(symbol)?;
+    let symbol = lisp.check_symbol(symbol)?;
     lisp.defvar_internal(symbol, value, docstring, false)
 }
 
 fn f_defconst(lisp: &mut Lisp, args: Value) -> LispResult {
     let symbol = lisp.car(args)?;
     let symbol = lisp.maybe_remove_pos_from_symbol(symbol);
-    lisp.check_symbol(symbol)?;
+    let symbol = lisp.check_symbol(symbol)?;
     let tail = lisp.cdr(args)?;
     let mut docstring = Value::NIL;
     let rest = lisp.cdr(tail)?;
@@ -1744,7 +1751,7 @@ fn f_defconst(lisp: &mut Lisp, args: Value) -> LispResult {
 
 fn f_defconst_1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (symbol, initvalue, docstring) = (args[0], args[1], args[2]);
-    lisp.check_symbol(symbol)?;
+    let symbol = lisp.check_symbol(symbol)?;
     let value = initvalue;
     f_internal_define_uninitialized_variable(lisp, &[symbol, docstring])?;
     lisp.set_default(symbol, value)?;
@@ -1881,11 +1888,15 @@ fn f_macroexpand(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         let mut def = lisp.xcar(form);
         let mut symbol = def;
         let mut tem = Value::NIL;
-        while def.is_symbol() {
+        loop {
+            let bare = lisp.maybe_remove_pos_from_symbol(def);
+            if !bare.is_symbol() {
+                break;
+            }
             symbol = def;
-            tem = lisp.assq(symbol, environment);
+            tem = crate::fns::f_assq(lisp, &[symbol, environment])?;
             if tem.is_nil() {
-                def = lisp.heap.symbol_ref(symbol).function;
+                def = lisp.heap.symbol_ref(bare).function;
                 if !def.is_nil() {
                     continue;
                 }
@@ -2147,7 +2158,7 @@ pub(crate) fn f_commandp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_autoload(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (function, file, docstring, interactive, kind) =
         (args[0], args[1], args[2], args[3], args[4]);
-    lisp.check_symbol(function)?;
+    let function = lisp.check_symbol(function)?;
     lisp.check_string(file)?;
     let current = lisp.heap.symbol_ref(function).function;
     if !current.is_nil() && !(current.is_cons() && lisp.xcar(current) == sym::AUTOLOAD) {

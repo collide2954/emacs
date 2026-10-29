@@ -502,7 +502,7 @@ impl Lisp {
         {
             to = end;
         }
-        self.check_symbol(func)?;
+        let func = self.check_symbol(func)?;
         if !self.heap.symbol_ref(func).function.is_nil() {
             self.funcall(
                 func,

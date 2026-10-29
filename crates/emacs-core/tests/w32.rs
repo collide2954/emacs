@@ -6,6 +6,43 @@ use common::{check, eval, on_big_stack};
 use emacs_core::lisp::Lisp;
 
 #[test]
+fn long_file_names() {
+    let dir = std::env::temp_dir().join(format!("emacs-w32-long-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create directory");
+    std::fs::write(dir.join("MixedCase.Txt"), "x").expect("create file");
+    let lower = dir.to_string_lossy().replace('\\', "/").to_lowercase();
+    on_big_stack(move || {
+        let mut lisp = Lisp::new();
+        let l = &mut lisp;
+        let found = eval(
+            l,
+            &format!("(w32-long-file-name \"{lower}/mixedcase.txt\")"),
+        );
+        assert!(found.ends_with("/MixedCase.Txt\""), "{found}");
+        assert_eq!(found.to_lowercase(), format!("\"{lower}/mixedcase.txt\""));
+        assert!(found.starts_with("\"c:/"), "{found}");
+        let found_dir = eval(l, &format!("(w32-long-file-name \"{lower}/\")"));
+        assert!(found_dir.ends_with("/\""), "{found_dir}");
+        assert_eq!(found_dir.to_lowercase(), format!("\"{lower}/\""));
+        for (source, expected) in [
+            (
+                format!("(w32-long-file-name \"{lower}/no-such-file\")"),
+                "nil",
+            ),
+            (format!("(w32-long-file-name \"{lower}/mixed*\")"), "nil"),
+            ("(w32-long-file-name \"C:/\")".to_string(), "\"c:/\""),
+            (
+                "(w32-long-file-name 1)".to_string(),
+                "error: (wrong-type-argument stringp 1)",
+            ),
+        ] {
+            assert_eq!(eval(l, &source), expected, "evaluating {source}");
+        }
+    });
+}
+
+#[test]
 fn init_environment() {
     on_big_stack(|| {
         let mut lisp = Lisp::new();

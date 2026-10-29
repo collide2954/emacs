@@ -2,13 +2,15 @@
 
 use std::ptr::{null, null_mut};
 
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Foundation::{ERROR_SUCCESS, MAX_PATH, S_OK};
 use windows_sys::Win32::Globalization::{
     GetACP, GetLocaleInfoA, GetUserDefaultUILanguage, IsValidCodePage, LOCALE_SABBREVLANGNAME,
     LOCALE_USE_CP_ACP,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, GetFileAttributesA, INVALID_FILE_ATTRIBUTES,
+    FILE_ATTRIBUTE_DIRECTORY, FindClose, FindFirstFileW, GetFileAttributesA,
+    INVALID_FILE_ATTRIBUTES, WIN32_FIND_DATAW,
 };
 use windows_sys::Win32::System::Console::{
     GetConsoleCP, GetConsoleOutputCP, SetConsoleCP, SetConsoleOutputCP,
@@ -118,6 +120,22 @@ pub fn file_exists(path: &[u8]) -> bool {
 
 pub fn is_directory(path: &[u8]) -> bool {
     file_attributes(path).is_some_and(|a| a & FILE_ATTRIBUTE_DIRECTORY != 0)
+}
+
+pub fn find_first_file_name(name: &str) -> Option<String> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut data = WIN32_FIND_DATAW::default();
+    let handle = unsafe { FindFirstFileW(wide.as_ptr(), &mut data) };
+    if handle == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    unsafe { FindClose(handle) };
+    let len = data
+        .cFileName
+        .iter()
+        .position(|&c| c == 0)
+        .unwrap_or(data.cFileName.len());
+    Some(String::from_utf16_lossy(&data.cFileName[..len]))
 }
 
 fn query_value(root: HKEY, key: &[u8], name: &[u8]) -> Option<(Vec<u8>, u32)> {

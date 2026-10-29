@@ -1733,10 +1733,10 @@ fn f_coding_system_put(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         }
         lisp.set_attr(attrs, ATTR_ENCODE_TBL, val);
     } else if prop == sym::K_POST_READ_CONVERSION {
-        lisp.check_symbol(val)?;
+        let val = lisp.check_symbol(val)?;
         lisp.set_attr(attrs, ATTR_POST_READ, val);
     } else if prop == sym::K_PRE_WRITE_CONVERSION {
-        lisp.check_symbol(val)?;
+        let val = lisp.check_symbol(val)?;
         lisp.set_attr(attrs, ATTR_PRE_WRITE, val);
     } else if prop == sym::K_ASCII_COMPATIBLE_P {
         lisp.set_attr(attrs, ATTR_ASCII_COMPAT, val);
