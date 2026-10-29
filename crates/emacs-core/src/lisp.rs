@@ -17,6 +17,7 @@ use crate::value::{Tag, Value};
 pub enum BacktraceArgs {
     Unevalled(Value),
     Evaluated { start: usize, len: usize },
+    Saved(Value),
 }
 
 pub type UnwindFn = fn(&mut Lisp, Value) -> LispResult<()>;
@@ -1037,7 +1038,7 @@ impl Lisp {
                 SpecBinding::Unwind(_, arg) => roots.push(arg),
                 SpecBinding::Backtrace { function, args, .. } => {
                     roots.push(function);
-                    if let BacktraceArgs::Unevalled(list) = args {
+                    if let BacktraceArgs::Unevalled(list) | BacktraceArgs::Saved(list) = args {
                         roots.push(list);
                     }
                 }

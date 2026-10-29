@@ -885,6 +885,8 @@ impl Lisp {
                 return Ok(None);
             }
         }
+        let level = self.handler_level(found);
+        self.save_backtrace_args(level);
         self.stack.truncate(base);
         self.flow_roots.push(error);
         Err(Flow::Signal {
@@ -1001,22 +1003,21 @@ impl Lisp {
     }
 
     pub fn throw(&mut self, tag: Value, value: Value) -> Flow {
-        if !tag.is_nil() {
-            for (index, h) in self.handlers.iter().enumerate().rev() {
-                let caught = match h.kind {
-                    HandlerKind::CatchAll | HandlerKind::CatchAllDebuggable => true,
-                    HandlerKind::Catch(t) => self.eq(t, tag),
-                    _ => false,
-                };
-                if caught {
-                    self.flow_roots.extend_from_slice(&[tag, value]);
-                    return Flow::Throw {
-                        tag,
-                        value,
-                        target: index,
-                    };
-                }
-            }
+        if !tag.is_nil()
+            && let Some(index) = self.handlers.iter().rposition(|h| match h.kind {
+                HandlerKind::CatchAll | HandlerKind::CatchAllDebuggable => true,
+                HandlerKind::Catch(t) => self.eq(t, tag),
+                _ => false,
+            })
+        {
+            let level = self.handlers[index].specpdl;
+            self.flow_roots.extend_from_slice(&[tag, value]);
+            self.save_backtrace_args(level);
+            return Flow::Throw {
+                tag,
+                value,
+                target: index,
+            };
         }
         self.signal_list(sym::NO_CATCH, &[tag, value])
     }
@@ -1281,8 +1282,34 @@ impl Lisp {
                 let list = self.list(&items);
                 (function, list, true)
             }
+            SpecBinding::Backtrace {
+                function,
+                args: BacktraceArgs::Saved(list),
+                ..
+            } => (function, list, true),
             _ => (Value::NIL, Value::NIL, false),
         }
+    }
+
+    fn save_backtrace_args(&mut self, level: usize) {
+        for index in level..self.specpdl.len() {
+            if let SpecBinding::Backtrace {
+                args: BacktraceArgs::Evaluated { start, len },
+                ..
+            } = self.specpdl[index]
+                && let Some(items) = self.stack.get(start..start + len)
+            {
+                let items = items.to_vec();
+                let list = self.list(&items);
+                if let SpecBinding::Backtrace { args, .. } = &mut self.specpdl[index] {
+                    *args = BacktraceArgs::Saved(list);
+                }
+            }
+        }
+    }
+
+    fn handler_level(&self, target: usize) -> usize {
+        self.handlers.get(target).map_or(0, |h| h.specpdl)
     }
 
     fn get_backtrace_starting_at(&mut self, base: Value) -> Option<usize> {

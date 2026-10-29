@@ -94,7 +94,16 @@ GC roots for non-local exits: a signal or throw pushes its values on `Lisp::flow
 because Rust code can run Lisp (for example `unbind_to`) while an `Err` is still on its
 way to the handler, where C's conservative stack scan would keep it alive. A catch keeps
 the caught values rooted while its handler runs; `pop_handler` and a finished catch
-truncate back to the handler's level.
+truncate back to the handler's level. Unbinding (and so `unwind-protect` cleanups) happens
+at the handler, as in C's `unwind_to_catch`, but Rust frames truncate `Lisp::stack` as the
+exit passes through them, so when a signal or throw picks its target it copies the
+evaluated arguments of every backtrace frame it will unwind into a rooted list; a cleanup
+that calls `backtrace` then sees the same arguments C's still-intact frames show.
+
+ERT runs upstream test files only partly: `loaddefs.el` and `cl-loaddefs.el` aren't
+generated yet (the port boots from `ldefs-boot.el`, so cl-lib's autoloads such as
+`cl-coerce` are missing), `current-window-configuration` isn't ported, and a failing
+`should` is reported as "aborted with non-local exit" instead of "failed".
 
 `crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
 writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and

@@ -278,6 +278,20 @@ fn nonlocal_exits_survive_collection() {
 }
 
 #[test]
+fn backtrace_during_unwinding() {
+    check(&[
+        (
+            "(progn (setq seen nil) (list (condition-case nil (funcall (function (lambda (a) (unwind-protect (funcall (function (lambda (b) (car b))) a) (garbage-collect) (mapbacktrace (function (lambda (evald fun args flags) (setq seen (cons args seen)))))))) 'x) (error 'caught)) (if (member '(x) seen) 'found 'missing)))",
+            "(caught found)",
+        ),
+        (
+            "(progn (setq seen nil) (list (catch 'tag (funcall (function (lambda (a) (unwind-protect (funcall (function (lambda (b) (throw 'tag b))) a) (garbage-collect) (mapbacktrace (function (lambda (evald fun args flags) (setq seen (cons args seen)))))))) 'y)) (if (member '(y) seen) 'found 'missing)))",
+            "(y found)",
+        ),
+    ]);
+}
+
+#[test]
 fn collection_during_evaluation_keeps_live_data() {
     check(&[
         (
