@@ -3,6 +3,42 @@ mod common;
 use common::check;
 
 #[test]
+fn buffer_hash() {
+    check(&[
+        ("(set-buffer (get-buffer-create \"bh\"))", "#<buffer bh>"),
+        (
+            "(buffer-hash)",
+            "\"da39a3ee5e6b4b0d3255bfef95601890afd80709\"",
+        ),
+        (
+            "(progn (insert \"abc\") (buffer-hash))",
+            "\"a9993e364706816aba3e25717850c26c9cd0d89d\"",
+        ),
+        (
+            "(progn (narrow-to-region 2 3) (prog1 (buffer-hash) (widen)))",
+            "\"a9993e364706816aba3e25717850c26c9cd0d89d\"",
+        ),
+        (
+            "(progn (erase-buffer) (insert \"\u{e9}\") (buffer-hash \"bh\"))",
+            "\"bf15be717ac1b080b4f1c456692825891ff5073d\"",
+        ),
+        (
+            "(progn (erase-buffer) (insert (make-string 100 ?a)) (goto-char 51) (insert \"b\") (buffer-hash (current-buffer)))",
+            "\"e17f5c7370f1dd97c49c9d3cbc1abf22033df9e1\"",
+        ),
+        (
+            "(progn (erase-buffer) (insert (make-string 100000 ?x)) (buffer-hash))",
+            "\"f6ee99edde6199a3e982c46ef72bdd5cb5e41ddf\"",
+        ),
+        (
+            "(buffer-hash \"no such buffer\")",
+            "error: (error \"No buffer named no such buffer\")",
+        ),
+        ("(buffer-hash 1)", "error: (wrong-type-argument stringp 1)"),
+    ]);
+}
+
+#[test]
 fn line_number_at_pos() {
     check(&[
         (

@@ -21,6 +21,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("random", 0, 1, f_random),
     Subr::fixed("length", 1, 1, f_length),
     Subr::fixed("line-number-at-pos", 0, 2, f_line_number_at_pos),
+    Subr::fixed("buffer-hash", 0, 1, f_buffer_hash),
     Subr::fixed("safe-length", 1, 1, f_safe_length),
     Subr::fixed("length<", 2, 2, f_length_less),
     Subr::fixed("length>", 2, 2, f_length_greater),
@@ -1128,6 +1129,39 @@ fn f_random(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         r - crate::value::MOST_POSITIVE_FIXNUM - 1
     };
     Ok(Value::fixnum(r))
+}
+
+fn make_digest_string(digest: &[u8]) -> Vec<u8> {
+    const HEXDIGIT: &[u8; 16] = b"0123456789abcdef";
+    digest
+        .iter()
+        .flat_map(|&b| {
+            [
+                HEXDIGIT[usize::from(b >> 4)],
+                HEXDIGIT[usize::from(b & 0xf)],
+            ]
+        })
+        .collect()
+}
+
+fn f_buffer_hash(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let buffer_or_name = args[0];
+    let buffer = if buffer_or_name.is_nil() {
+        lisp.current_buffer
+    } else {
+        crate::buffer::f_get_buffer(lisp, &[buffer_or_name])?
+    };
+    if buffer.is_nil() {
+        return Err(lisp.nsberror(buffer_or_name));
+    }
+    let mut ctx = crate::sha1::Sha1Ctx::default();
+    let (before_gap, after_gap) = lisp.buffer(buffer).text.parts();
+    ctx.process_bytes(before_gap);
+    if !after_gap.is_empty() {
+        ctx.process_bytes(after_gap);
+    }
+    let digest = make_digest_string(&ctx.finish());
+    Ok(lisp.unibyte_string(&digest))
 }
 
 fn f_line_number_at_pos(lisp: &mut Lisp, args: &[Value]) -> LispResult {

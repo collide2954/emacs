@@ -46,6 +46,7 @@ pub mod print;
 pub mod process;
 pub mod regex;
 pub mod search;
+pub mod sha1;
 pub mod subr;
 pub mod symbols;
 pub mod syntax;

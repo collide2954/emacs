@@ -692,6 +692,14 @@ impl Lisp {
         }
     }
 
+    pub(crate) fn nsberror(&mut self, spec: Value) -> crate::error::Flow {
+        if spec.is_string() {
+            let name = self.string_to_rust(spec);
+            return self.error(&format!("No buffer named {name}"));
+        }
+        self.error("Invalid buffer argument")
+    }
+
     pub fn decode_buffer(&mut self, v: Value) -> LispResult<Value> {
         if v.is_nil() {
             Ok(self.current_buffer)
