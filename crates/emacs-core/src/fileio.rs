@@ -113,6 +113,9 @@ pub struct FileIo {
     pub auto_save_mode_bits: u32,
     pub auto_save_error_occurred: bool,
     pub auto_save_streams: Vec<Option<File>>,
+    pub annotation_buffers: Value,
+    pub timestamp_file_system: u64,
+    pub valid_timestamp_file_system: bool,
 }
 
 pub fn normalize_slashes(s: &str) -> String {
@@ -2116,42 +2119,482 @@ fn insert_file_contents_handled(
     Ok(s.val)
 }
 
+const E_WRITE_MAX: usize = 8 * 1024 * 1024;
+
+type WriteOk = std::io::Result<()>;
+
+fn build_annotations_unwind(lisp: &mut Lisp, arg: Value) -> LispResult<()> {
+    lisp.fileio.annotation_buffers = arg;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+#[cfg(not(unix))]
+fn file_identity(_meta: &std::fs::Metadata) -> (u64, u64) {
+    (0, 0)
+}
+
+fn fsync_unsupported(err: &std::io::Error) -> bool {
+    err.kind() == std::io::ErrorKind::InvalidInput
+        || (cfg!(windows) && err.raw_os_error() == Some(6))
+}
+
+impl Lisp {
+    fn barf_or_query_if_file_exists(
+        &mut self,
+        absname: Value,
+        mut known_to_exist: bool,
+        querystring: &str,
+        interactive: bool,
+        quick: bool,
+    ) -> LispResult<()> {
+        let path = PathBuf::from(self.string_to_rust(absname));
+        if !known_to_exist && let Ok(meta) = std::fs::symlink_metadata(&path) {
+            if meta.is_dir() {
+                let msg = self.string("File is a directory");
+                return Err(self.signal_list(sym::FILE_ERROR, &[msg, absname]));
+            }
+            known_to_exist = true;
+        }
+        if known_to_exist {
+            if !interactive {
+                let msg = self.string("File already exists");
+                return Err(self.signal_list(sym::FILE_ALREADY_EXISTS, &[msg, absname]));
+            }
+            let format = self.string("File %s already exists; %s anyway? ");
+            let query = self.string(querystring);
+            let tem = crate::editfns::f_format(self, &[format, absname, query])?;
+            let tem = if quick {
+                self.funcall(sym::Y_OR_N_P, &[tem])?
+            } else {
+                self.funcall(sym::YES_OR_NO_P, &[tem])?
+            };
+            if tem.is_nil() {
+                let msg = self.string("File already exists");
+                return Err(self.signal_list(sym::FILE_ALREADY_EXISTS, &[msg, absname]));
+            }
+        }
+        Ok(())
+    }
+
+    fn choose_write_coding_system(
+        &mut self,
+        args: [Value; 6],
+    ) -> LispResult<(Value, CodingSystem)> {
+        let [start, end, filename, append, visit, lockname] = args;
+        let base = self.stack.len();
+        let mut eol_parent = Value::NIL;
+        let visited = self.find_symbol_value(sym::BUFFER_FILE_NAME);
+        let auto_save_file_name = self.find_symbol_value(sym::BUFFER_AUTO_SAVE_FILE_NAME);
+        let coding_system_for_write = self.plain_value(sym::CODING_SYSTEM_FOR_WRITE);
+        let mut val;
+        if self.fileio.auto_saving
+            && crate::fns::f_string_equal(self, &[visited, auto_save_file_name])?.is_nil()
+        {
+            val = sym::UTF_8_EMACS;
+            eol_parent = sym::UNIX;
+        } else if !coding_system_for_write.is_nil() {
+            val = coding_system_for_write;
+            let select = self.plain_value(sym::SELECT_SAFE_CODING_SYSTEM_FUNCTION);
+            if self.var_true(sym::CODING_SYSTEM_REQUIRE_WARNING)
+                && !crate::data::f_fboundp(self, &[select])?.is_nil()
+            {
+                let codings = self.list(&[sym::T, val]);
+                val = self.funcall(select, &[start, end, codings, Value::NIL, filename])?;
+                self.stack.push(val);
+            }
+        } else {
+            let mut using_default_coding = false;
+            let mut force_raw_text = false;
+            val = self.find_symbol_value(sym::BUFFER_FILE_CODING_SYSTEM);
+            let buffer = self.current_buffer;
+            if val.is_nil() || !self.local_variable_in(sym::BUFFER_FILE_CODING_SYSTEM, buffer) {
+                val = Value::NIL;
+                if self
+                    .find_symbol_value(sym::ENABLE_MULTIBYTE_CHARACTERS)
+                    .is_nil()
+                {
+                    force_raw_text = true;
+                }
+            }
+            if val.is_nil() {
+                let coding_systems = crate::coding::f_find_operation_coding_system(
+                    self,
+                    &[
+                        sym::WRITE_REGION,
+                        start,
+                        end,
+                        filename,
+                        append,
+                        visit,
+                        lockname,
+                    ],
+                )?;
+                if coding_systems.is_cons() && !self.xcdr(coding_systems).is_nil() {
+                    val = self.xcdr(coding_systems);
+                    self.stack.push(val);
+                }
+            }
+            if val.is_nil() {
+                val = self.find_symbol_value(sym::BUFFER_FILE_CODING_SYSTEM);
+                using_default_coding = true;
+            }
+            if !val.is_nil() && !force_raw_text {
+                self.check_coding_system(val)?;
+                let spec = self.check_coding_system_get_spec(val)?;
+                let attrs = self.vector_items(spec)[0];
+                if self.attr(attrs, crate::coding::ATTR_TYPE) == sym::RAW_TEXT {
+                    force_raw_text = true;
+                }
+            }
+            let select = self.plain_value(sym::SELECT_SAFE_CODING_SYSTEM_FUNCTION);
+            if !force_raw_text && !crate::data::f_fboundp(self, &[select])?.is_nil() {
+                val = self.funcall(select, &[start, end, val, Value::NIL, filename])?;
+                self.stack.push(val);
+                if !val.is_nil() {
+                    self.check_coding_system(val)?;
+                }
+            }
+            if !using_default_coding {
+                let dflt = self.default_value_unchecked(sym::BUFFER_FILE_CODING_SYSTEM);
+                if !dflt.is_nil() {
+                    val = self.coding_inherit_eol_type(val, dflt)?;
+                }
+            }
+            if force_raw_text {
+                val = self.raw_text_coding_system(val)?;
+            }
+        }
+        let val = self.coding_inherit_eol_type(val, eol_parent)?;
+        self.stack.push(val);
+        let mut coding = self.setup_coding_system(val)?;
+        if !start.is_string() && self.find_symbol_value(sym::SELECTIVE_DISPLAY) == sym::T {
+            coding.mode |= crate::coding::MODE_SELECTIVE_DISPLAY;
+        }
+        self.stack.truncate(base);
+        Ok((val, coding))
+    }
+
+    fn merge(&mut self, org_l1: Value, org_l2: Value, pred: Value) -> LispResult {
+        let mut l1 = org_l1;
+        let mut l2 = org_l2;
+        let mut tail = Value::NIL;
+        let mut value = Value::NIL;
+        loop {
+            if l1.is_nil() {
+                if tail.is_nil() {
+                    return Ok(l2);
+                }
+                self.heap.set_cdr(tail, l2);
+                return Ok(value);
+            }
+            if l2.is_nil() {
+                if tail.is_nil() {
+                    return Ok(l1);
+                }
+                self.heap.set_cdr(tail, l1);
+                return Ok(value);
+            }
+            let a = self.car(l1)?;
+            let b = self.car(l2)?;
+            let tem = if !self.funcall(pred, &[a, b])?.is_nil() {
+                let tem = l1;
+                l1 = self.cdr(l1)?;
+                tem
+            } else {
+                let tem = l2;
+                l2 = self.cdr(l2)?;
+                tem
+            };
+            if tail.is_nil() {
+                value = tem;
+            } else {
+                self.heap.set_cdr(tail, tem);
+            }
+            tail = tem;
+        }
+    }
+
+    fn build_annotations(&mut self, mut start: Value, mut end: Value) -> LispResult {
+        let base = self.stack.len();
+        let original_buffer = self.current_buffer;
+        let mut annotations = Value::NIL;
+        let mut used_global = false;
+        let mut p = self.plain_value(sym::WRITE_REGION_ANNOTATE_FUNCTIONS);
+        self.stack.push(p);
+        while p.is_cons() {
+            let given_buffer = self.current_buffer;
+            if self.xcar(p) == sym::T && !used_global {
+                used_global = true;
+                let global = self.default_value(sym::WRITE_REGION_ANNOTATE_FUNCTIONS)?;
+                let rest = self.xcdr(p);
+                p = crate::fns::f_append(self, &[global, rest])?;
+                self.stack.push(p);
+                continue;
+            }
+            self.set_plain_value(sym::WRITE_REGION_ANNOTATIONS_SO_FAR, annotations);
+            let f = self.xcar(p);
+            let res = self.funcall(f, &[start, end])?;
+            self.stack.push(res);
+            if self.current_buffer != given_buffer {
+                let current = self.current_buffer;
+                let buffers = self.fileio.annotation_buffers;
+                self.fileio.annotation_buffers = self.cons(current, buffers);
+                let b = self.cur();
+                start = Value::fixnum(b.begv as i64);
+                end = Value::fixnum(b.zv as i64);
+                annotations = Value::NIL;
+            }
+            crate::fns::f_length(self, &[res])?;
+            annotations = self.merge(annotations, res, sym::CAR_LESS_THAN_CAR)?;
+            self.stack.push(annotations);
+            p = self.xcdr(p);
+        }
+        p = if self.fileio.auto_saving
+            && self.find_symbol_value(sym::BUFFER_AUTO_SAVE_FILE_FORMAT) != sym::T
+        {
+            self.find_symbol_value(sym::BUFFER_AUTO_SAVE_FILE_FORMAT)
+        } else {
+            self.find_symbol_value(sym::BUFFER_FILE_FORMAT)
+        };
+        self.stack.push(p);
+        let mut i = 0;
+        while p.is_cons() {
+            let given_buffer = self.current_buffer;
+            self.set_plain_value(sym::WRITE_REGION_ANNOTATIONS_SO_FAR, annotations);
+            let format = self.xcar(p);
+            let res = self.funcall(
+                sym::FORMAT_ANNOTATE_FUNCTION,
+                &[format, start, end, original_buffer, Value::fixnum(i)],
+            )?;
+            i += 1;
+            self.stack.push(res);
+            if self.current_buffer != given_buffer {
+                let b = self.cur();
+                start = Value::fixnum(b.begv as i64);
+                end = Value::fixnum(b.zv as i64);
+                annotations = Value::NIL;
+            }
+            if res.is_cons() {
+                annotations = self.merge(annotations, res, sym::CAR_LESS_THAN_CAR)?;
+                self.stack.push(annotations);
+            }
+            p = self.xcdr(p);
+        }
+        self.stack.truncate(base);
+        Ok(annotations)
+    }
+
+    fn a_write(
+        &mut self,
+        file: &mut File,
+        string: Value,
+        mut pos: usize,
+        nchars: usize,
+        annot: &mut Value,
+        coding: &mut CodingSystem,
+    ) -> LispResult<WriteOk> {
+        let lastpos = pos + nchars;
+        while annot.is_nil() || annot.is_cons() {
+            let first = self.car(*annot)?;
+            let tem = self.car_safe(first);
+            let nextpos = tem.as_fixnum().unwrap_or(pos as i64 - 1);
+            if !(nextpos >= pos as i64 && nextpos <= lastpos as i64) {
+                return self.e_write(file, string, pos, lastpos, coding);
+            }
+            let nextpos = nextpos as usize;
+            if nextpos > pos {
+                let r = self.e_write(file, string, pos, nextpos, coding)?;
+                if r.is_err() {
+                    return Ok(r);
+                }
+                pos = nextpos;
+            }
+            let tem = self.cdr(first)?;
+            if tem.is_string() {
+                let n = self.string_chars(tem);
+                let r = self.e_write(file, tem, 0, n, coding)?;
+                if r.is_err() {
+                    return Ok(r);
+                }
+            }
+            *annot = self.cdr(*annot)?;
+        }
+        Ok(Ok(()))
+    }
+
+    fn e_write(
+        &mut self,
+        file: &mut File,
+        string: Value,
+        mut start: usize,
+        mut end: usize,
+        coding: &mut CodingSystem,
+    ) -> LispResult<WriteOk> {
+        if string.is_string() {
+            start = 0;
+            end = self.string_chars(string);
+        }
+        while start < end {
+            if string.is_string() {
+                coding.src_multibyte = self.string_chars(string) < self.string_bytes(string).len();
+                if coding.require_encoding() {
+                    let nchars = (end - start).min(E_WRITE_MAX);
+                    if nchars == E_WRITE_MAX {
+                        coding.raw_destination = true;
+                    }
+                    let from_byte = self.string_char_to_byte_index(string, start);
+                    let to_byte = self.string_char_to_byte_index(string, start + nchars);
+                    self.encode_coding_object(
+                        coding,
+                        string,
+                        (start, from_byte, start + nchars, to_byte),
+                        sym::T,
+                    )?;
+                } else {
+                    coding.dst_object = string;
+                    coding.consumed_char = self.string_chars(string);
+                    coding.produced = self.string_bytes(string).len();
+                }
+            } else {
+                let start_byte = self.cur().text.char_to_byte(start);
+                let end_byte = self.cur().text.char_to_byte(end);
+                coding.src_multibyte = (end - start) < (end_byte - start_byte);
+                if coding.require_encoding() {
+                    let nchars = (end - start).min(E_WRITE_MAX);
+                    if nchars == E_WRITE_MAX {
+                        coding.raw_destination = true;
+                    }
+                    let buffer = self.current_buffer;
+                    let to_byte = self.cur().text.char_to_byte(start + nchars);
+                    self.encode_coding_object(
+                        coding,
+                        buffer,
+                        (start, start_byte, start + nchars, to_byte),
+                        sym::T,
+                    )?;
+                } else {
+                    coding.dst_object = Value::NIL;
+                    coding.dst_pos_byte = start_byte;
+                    coding.consumed_char = end - start;
+                    coding.produced = end_byte - start_byte;
+                }
+            }
+            if coding.produced > 0 {
+                let produced = coding.produced;
+                let r = if coding.raw_destination {
+                    file.write_all(&coding.destination[..produced])
+                } else if coding.dst_object.is_string() {
+                    file.write_all(&self.string_bytes(coding.dst_object)[..produced])
+                } else {
+                    let from = coding.dst_pos_byte - 1;
+                    file.write_all(&self.cur().text.slice(from, from + produced))
+                };
+                if coding.raw_destination {
+                    coding.destination = Vec::new();
+                    coding.raw_destination = false;
+                }
+                if r.is_err() {
+                    return Ok(r);
+                }
+            }
+            start += coding.consumed_char;
+        }
+        Ok(Ok(()))
+    }
+
+    fn lock_file_if_supported(&mut self, file: Value) -> LispResult<()> {
+        if self.fboundp(sym::LOCK_FILE) {
+            self.funcall(sym::LOCK_FILE, &[file])?;
+        }
+        Ok(())
+    }
+}
+
+struct WriteRegion {
+    start: Value,
+    end: Value,
+    filename: Value,
+    append: Value,
+    visit: Value,
+    lockname: Value,
+    mustbenew: Value,
+}
+
+struct Written {
+    ok: WriteOk,
+    modtime: Option<(i64, i64)>,
+    st_size: i64,
+}
+
 fn f_write_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let (start, end, filename, append, visit) = (args[0], args[1], args[2], args[3], args[4]);
-    let filename = lisp.check_string(filename)?;
     let base = lisp.stack.len();
-    let expanded = lisp.expand_file_name(filename, Value::NIL)?;
-    lisp.stack.push(expanded);
-    let visit_file = if visit.is_string() {
-        lisp.expand_file_name(visit, Value::NIL)?
+    let r = write_region(
+        lisp,
+        WriteRegion {
+            start: args[0],
+            end: args[1],
+            filename: args[2],
+            append: args[3],
+            visit: args[4],
+            lockname: args[5],
+            mustbenew: args[6],
+        },
+    );
+    lisp.stack.truncate(base);
+    r
+}
+
+fn write_region(lisp: &mut Lisp, mut w: WriteRegion) -> LispResult {
+    let visiting = w.visit == sym::T || w.visit.is_string();
+    let quietly = !w.visit.is_nil();
+    if !lisp.cur().base_buffer.is_nil() && visiting {
+        return Err(lisp.error("Cannot do file visiting in an indirect buffer"));
+    }
+    if !w.start.is_nil() && !w.start.is_string() {
+        let (s, e) = lisp.validate_region(w.start, w.end)?;
+        w.start = Value::fixnum(s as i64);
+        w.end = Value::fixnum(e as i64);
+    }
+    let filename = lisp.check_string(w.filename)?;
+    w.filename = lisp.expand_file_name(filename, Value::NIL)?;
+    lisp.stack.push(w.filename);
+    if !w.mustbenew.is_nil() && w.mustbenew != sym::EXCL {
+        lisp.barf_or_query_if_file_exists(w.filename, false, "overwrite", true, true)?;
+    }
+    let visit_file = if w.visit.is_string() {
+        lisp.expand_file_name(w.visit, Value::NIL)?
     } else {
-        expanded
+        w.filename
     };
     lisp.stack.push(visit_file);
-    let lockname = if args[5].is_nil() {
-        visit_file
-    } else {
-        args[5]
-    };
-    let mut handler = lisp.find_file_name_handler(expanded, sym::WRITE_REGION)?;
-    if handler.is_none() && visit.is_string() {
-        handler = lisp.find_file_name_handler(visit, sym::WRITE_REGION)?;
+    if w.lockname.is_nil() {
+        w.lockname = visit_file;
+    }
+    let mut handler = lisp.find_file_name_handler(w.filename, sym::WRITE_REGION)?;
+    if handler.is_none() && w.visit.is_string() {
+        handler = lisp.find_file_name_handler(w.visit, sym::WRITE_REGION)?;
     }
     if let Some(handler) = handler {
         let val = lisp.funcall(
             handler,
             &[
                 sym::WRITE_REGION,
-                start,
-                end,
-                expanded,
-                append,
-                visit,
-                lockname,
-                args[6],
+                w.start,
+                w.end,
+                w.filename,
+                w.append,
+                w.visit,
+                w.lockname,
+                w.mustbenew,
             ],
         )?;
-        if visit == sym::T || visit.is_string() {
+        if visiting {
             let b = lisp.current_buffer;
             let modiff = lisp.cur().text.modiff;
             lisp.cur_mut().text.save_modiff = modiff;
@@ -2159,33 +2602,115 @@ fn f_write_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
             lisp.buffer_local_set(b, sym::BUFFER_SAVED_SIZE, size);
             lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, visit_file);
         }
-        lisp.stack.truncate(base);
         return Ok(val);
     }
-    lisp.stack.truncate(base + 1);
-    let path = PathBuf::from(lisp.string_to_rust(expanded));
-    let data: Vec<u8> = if start.is_string() {
-        lisp.string_to_rust(start).into_bytes()
-    } else {
-        let (s, e) = if start.is_nil() {
-            (lisp.cur().begv, lisp.cur().zv)
-        } else {
-            lisp.validate_region(start, end)?
-        };
-        let text = lisp.buffer_substring_value(s, e, false);
-        let multibyte = lisp.string_multibyte(text);
-        if multibyte {
-            lisp.string_to_rust(text).into_bytes()
-        } else {
-            lisp.string_bytes(text).to_vec()
-        }
-    };
-    let mut options = std::fs::OpenOptions::new();
-    if append.is_nil() {
-        options.write(true).create(true).truncate(true);
-    } else {
-        options.append(true).create(true);
+    let count = lisp.specpdl.len();
+    lisp.record_unwind_restriction();
+    let r = write_region_1(lisp, &mut w);
+    let u = lisp.unbind_to(count);
+    let (file_locked, written) = r?;
+    u?;
+    if file_locked {
+        lisp.unlock_file_if_supported(w.lockname)?;
     }
+    if let Some(modtime) = written.modtime {
+        let b = lisp.cur_mut();
+        b.modtime = modtime;
+        b.modtime_size = written.st_size;
+    }
+    if let Err(e) = written.ok {
+        return Err(lisp.file_error("Write error", &e, w.filename));
+    }
+    let auto_saving_into_visited_file = lisp.fileio.auto_saving && {
+        let visited = lisp.find_symbol_value(sym::BUFFER_FILE_NAME);
+        let auto_save_file_name = lisp.find_symbol_value(sym::BUFFER_AUTO_SAVE_FILE_NAME);
+        !crate::fns::f_string_equal(lisp, &[visited, auto_save_file_name])?.is_nil()
+    };
+    if visiting {
+        let b = lisp.current_buffer;
+        let modiff = lisp.cur().text.modiff;
+        lisp.cur_mut().text.save_modiff = modiff;
+        let size = Value::fixnum(lisp.cur().text.chars as i64);
+        lisp.buffer_local_set(b, sym::BUFFER_SAVED_SIZE, size);
+        lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, visit_file);
+        lisp.windows.update_mode_lines = 14;
+        if auto_saving_into_visited_file {
+            lisp.unlock_file_if_supported(w.lockname)?;
+        }
+    } else if quietly {
+        if auto_saving_into_visited_file {
+            let modiff = lisp.cur().text.modiff;
+            lisp.cur_mut().text.save_modiff = modiff;
+            lisp.unlock_file_if_supported(w.lockname)?;
+        }
+        return Ok(Value::NIL);
+    }
+    if !lisp.fileio.auto_saving && !lisp.noninteractive() {
+        let append = w.append;
+        let format = if append.is_fixnum() || append.is_float() || lisp.is_bignum(append) {
+            "Updated %s"
+        } else if !append.is_nil() {
+            "Added to %s"
+        } else {
+            "Wrote %s"
+        };
+        lisp.message_with_string(format, visit_file, true)?;
+    }
+    Ok(Value::NIL)
+}
+
+fn write_region_1(lisp: &mut Lisp, w: &mut WriteRegion) -> LispResult<(bool, Written)> {
+    if w.start.is_nil() {
+        lisp.widen();
+        lisp.invalidate_current_column();
+    }
+    let buffers = lisp.fileio.annotation_buffers;
+    lisp.record_unwind(build_annotations_unwind, buffers);
+    let current = lisp.current_buffer;
+    lisp.fileio.annotation_buffers = lisp.list(&[current]);
+    let given_buffer = lisp.current_buffer;
+    let mut annotations = Value::NIL;
+    if !w.start.is_string() {
+        annotations = lisp.build_annotations(w.start, w.end)?;
+        lisp.stack.push(annotations);
+        if lisp.current_buffer != given_buffer {
+            let b = lisp.cur();
+            w.start = Value::fixnum(b.begv as i64);
+            w.end = Value::fixnum(b.zv as i64);
+        }
+    }
+    if w.start.is_nil() {
+        let b = lisp.cur();
+        w.start = Value::fixnum(b.begv as i64);
+        w.end = Value::fixnum(b.zv as i64);
+    }
+    let (val, mut coding) = lisp
+        .choose_write_coding_system([w.start, w.end, w.filename, w.append, w.visit, w.lockname])?;
+    lisp.set_plain_value(sym::LAST_CODING_SYSTEM_USED, val);
+    let mut file_locked = false;
+    if !lisp.fileio.auto_saving {
+        lisp.lock_file_if_supported(w.lockname)?;
+        file_locked = true;
+    }
+    let path = PathBuf::from(lisp.string_to_rust(w.filename));
+    let excl = w.mustbenew == sym::EXCL;
+    let numeric_append = w.append.is_fixnum() || w.append.is_float() || lisp.is_bignum(w.append);
+    let truncate = !excl && w.append.is_nil();
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true);
+    if excl {
+        options.create_new(true);
+    } else if truncate {
+        options.truncate(true);
+    }
+    let offset = if numeric_append {
+        Some(file_offset(lisp, w.append)?)
+    } else {
+        if !w.append.is_nil() {
+            options.append(true);
+        }
+        None
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -2195,46 +2720,106 @@ fn f_write_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
             0o666
         });
     }
-    if let Err(e) = options.open(&path).and_then(|mut f| f.write_all(&data)) {
-        lisp.stack.pop();
-        return Err(lisp.file_error("Opening output file", &e, expanded));
-    }
-    let auto_saving_into_visited_file = lisp.fileio.auto_saving && {
-        let visited = lisp.find_symbol_value(sym::BUFFER_FILE_NAME);
-        let auto_save_file_name = lisp.find_symbol_value(sym::BUFFER_AUTO_SAVE_FILE_NAME);
-        !crate::fns::f_string_equal(lisp, &[visited, auto_save_file_name])?.is_nil()
+    let mut file = match options.open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            if file_locked {
+                lisp.unlock_file_if_supported(w.lockname)?;
+            }
+            return Err(lisp.file_error("Opening output file", &e, w.filename));
+        }
     };
-    if visit == sym::T || visit.is_string() {
-        let b = lisp.current_buffer;
-        let modiff = lisp.cur().text.modiff;
-        lisp.cur_mut().text.save_modiff = modiff;
-        let size = Value::fixnum(lisp.cur().text.chars as i64);
-        lisp.buffer_local_set(b, sym::BUFFER_SAVED_SIZE, size);
-        lisp.buffer_local_set(b, sym::BUFFER_FILE_NAME, expanded);
-        if auto_saving_into_visited_file {
-            lisp.unlock_file_if_supported(expanded)?;
+    if let Some(offset) = offset
+        && let Err(e) = file.seek(SeekFrom::Start(offset as u64))
+    {
+        if file_locked {
+            lisp.unlock_file_if_supported(w.lockname)?;
         }
-    } else if !visit.is_nil() {
-        if auto_saving_into_visited_file {
-            let modiff = lisp.cur().text.modiff;
-            lisp.cur_mut().text.save_modiff = modiff;
-            lisp.unlock_file_if_supported(expanded)?;
-        }
-        lisp.stack.pop();
-        return Ok(Value::NIL);
+        return Err(lisp.file_error("Setting file position", &e, w.filename));
     }
-    if !lisp.fileio.auto_saving && !lisp.noninteractive() {
-        let format = if append.is_fixnum() || append.is_float() || lisp.is_bignum(append) {
-            "Updated %s"
-        } else if !append.is_nil() {
-            "Added to %s"
+    let mut ok = if w.start.is_string() {
+        let n = lisp.string_chars(w.start);
+        lisp.a_write(&mut file, w.start, 0, n, &mut annotations, &mut coding)?
+    } else {
+        let start = w.start.as_fixnum().unwrap_or(0) as usize;
+        let end = w.end.as_fixnum().unwrap_or(0) as usize;
+        if start != end {
+            lisp.a_write(
+                &mut file,
+                Value::NIL,
+                start,
+                end - start,
+                &mut annotations,
+                &mut coding,
+            )?
         } else {
-            "Wrote %s"
-        };
-        lisp.message_with_string(format, expanded, true)?;
+            coding.mode |= crate::coding::MODE_LAST_BLOCK;
+            lisp.a_write(&mut file, Value::NIL, end, 0, &mut annotations, &mut coding)?
+        }
+    };
+    if ok.is_ok()
+        && coding.common_flags & REQUIRE_FLUSHING_MASK != 0
+        && coding.mode & crate::coding::MODE_LAST_BLOCK == 0
+    {
+        coding.mode |= crate::coding::MODE_LAST_BLOCK;
+        ok = lisp.e_write(&mut file, Value::NIL, 1, 1, &mut coding)?;
     }
-    lisp.stack.pop();
-    Ok(Value::NIL)
+    if !lisp.fileio.auto_saving
+        && !lisp.var_true(sym::WRITE_REGION_INHIBIT_FSYNC)
+        && let Err(e) = file.sync_all()
+        && !fsync_unsupported(&e)
+    {
+        ok = Err(e);
+    }
+    let mut modtime = None;
+    let mut st_size = 0;
+    let mut st_identity = (0, 0);
+    if w.visit == sym::T || w.visit.is_string() {
+        match file.metadata() {
+            Ok(st) => {
+                modtime = Some(stat_mtime(&st));
+                st_size = st.len() as i64;
+                st_identity = file_identity(&st);
+            }
+            Err(e) => ok = Err(e),
+        }
+    }
+    drop(file);
+    if let Some(mt) = modtime
+        && !(lisp.fileio.valid_timestamp_file_system
+            && st_identity.0 == lisp.fileio.timestamp_file_system)
+        && let Ok(st1) = std::fs::metadata(&path)
+        && file_identity(&st1) == st_identity
+    {
+        let use_heuristic = (excl || truncate) && st_size != 0 && mt.1 % 100 != 0;
+        let modtime1 = stat_mtime(&st1);
+        if use_heuristic && mt == modtime1 && st_size == st1.len() as i64 {
+            lisp.fileio.timestamp_file_system = st_identity.0;
+            lisp.fileio.valid_timestamp_file_system = true;
+        } else {
+            st_size = st1.len() as i64;
+            modtime = Some(modtime1);
+        }
+    }
+    while lisp.fileio.annotation_buffers.is_cons() {
+        let buf = lisp.xcar(lisp.fileio.annotation_buffers);
+        if lisp.buffer_live_p(buf) {
+            crate::buffer::f_set_buffer(lisp, &[buf])?;
+            let f = lisp.plain_value(sym::WRITE_REGION_POST_ANNOTATION_FUNCTION);
+            if lisp.functionp(f) {
+                lisp.call0(f)?;
+            }
+        }
+        lisp.fileio.annotation_buffers = lisp.xcdr(lisp.fileio.annotation_buffers);
+    }
+    Ok((
+        file_locked,
+        Written {
+            ok,
+            modtime,
+            st_size,
+        },
+    ))
 }
 
 fn f_car_less_than_car(lisp: &mut Lisp, args: &[Value]) -> LispResult {

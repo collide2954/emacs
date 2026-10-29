@@ -88,7 +88,9 @@ fn auto_save_at_exit() {
     let out = run(
         &dir,
         &format!(
-            "(set-buffer (get-buffer-create \"notes\"))\n\
+            "(define-coding-system-internal 'utf-8-emacs ?U 'utf-8 '(emacs) t nil nil nil nil nil nil '(:name utf-8-emacs) nil nil)\n\
+             (define-coding-system-alias 'unix 'undecided-unix)\n\
+             (set-buffer (get-buffer-create \"notes\"))\n\
              (insert \"hello\")\n\
              (setq buffer-auto-save-file-name {})\n\
              (setq auto-save-list-file-name {})\n\
@@ -117,7 +119,7 @@ fn restart() {
     let out = run(
         &dir,
         &format!(
-            "(if (file-exists-p {m}) (progn (princ \"second\") (kill-emacs 4)) (write-region \"\" nil {m}) (kill-emacs 0 t))\n",
+            "(if (file-exists-p {m}) (progn (princ \"second\") (kill-emacs 4)) (let ((coding-system-for-write 'no-conversion)) (write-region \"\" nil {m})) (kill-emacs 0 t))\n",
             m = lisp_string(&mark)
         ),
     );

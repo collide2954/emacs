@@ -14,6 +14,7 @@ fn write_region_handlers() {
         let mut lisp = Lisp::new();
         let l = &mut lisp;
         for (source, expected) in [
+            (RAW_TEXT.to_string(), "nil"),
             (
                 "(defalias 'wr-handler (function (lambda (op &rest args) (if (eq op 'write-region) (progn (setq wr-seen (cons op args)) 'handled) (let ((inhibit-file-name-handlers (cons 'wr-handler inhibit-file-name-handlers)) (inhibit-file-name-operation op)) (apply op args))))))".to_string(),
                 "wr-handler",
@@ -39,4 +40,185 @@ fn write_region_handlers() {
         }
     });
     assert_eq!(std::fs::read_to_string(&plain).expect("written"), "abc");
+}
+
+const TEST_UTF: &str = "(define-coding-system-internal 'test-utf ?u 'utf-8 '(unicode) t nil nil nil nil nil nil '(:name test-utf) nil nil)";
+const RAW_TEXT: &str = "(define-coding-system-internal 'raw-text ?t 'raw-text nil t nil nil nil nil nil t '(:name raw-text) nil)";
+
+fn lisp_path(path: &std::path::Path) -> String {
+    format!("{:?}", path.to_string_lossy().replace('\\', "/"))
+}
+
+#[test]
+fn write_region_encoding() {
+    let dir = std::env::temp_dir().join(format!("emacs-write-encode-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create directory");
+    let names = [
+        "utf.txt", "dos.txt", "eol.txt", "raw.txt", "str.txt", "uni.txt", "dflt.txt", "sel.txt",
+    ];
+    let paths: Vec<_> = names.iter().map(|n| dir.join(n)).collect();
+    let p: Vec<String> = paths.iter().map(|p| lisp_path(p)).collect();
+    let system_eol = if cfg!(windows) { "dos" } else { "unix" };
+    let expected_dflt = format!("raw-text-{system_eol}");
+    let expected_eol = format!("test-utf-{system_eol}");
+    on_big_stack(move || {
+        let mut lisp = Lisp::new();
+        let l = &mut lisp;
+        let cases: Vec<(String, &str)> = vec![
+            (TEST_UTF.to_string(), "nil"),
+            (RAW_TEXT.to_string(), "nil"),
+            (
+                format!(
+                    "(let ((coding-system-for-write 'test-utf-unix)) (write-region \"\u{e9}t\u{e9}\\n\" nil {}))",
+                    p[0]
+                ),
+                "nil",
+            ),
+            ("last-coding-system-used".to_string(), "test-utf-unix"),
+            (
+                format!(
+                    "(let ((coding-system-for-write 'test-utf-dos)) (write-region \"a\\nb\" nil {}))",
+                    p[1]
+                ),
+                "nil",
+            ),
+            (
+                format!(
+                    "(let ((coding-system-for-write 'test-utf)) (write-region \"a\\nb\" nil {}) last-coding-system-used)",
+                    p[2]
+                ),
+                &expected_eol,
+            ),
+            (
+                format!(
+                    "(save-current-buffer (set-buffer (get-buffer-create \"raw\")) (insert \"a\" (string-to-multibyte \"\\351\\200\") \"b\") (let ((coding-system-for-write 'no-conversion)) (write-region nil nil {})) last-coding-system-used)",
+                    p[3]
+                ),
+                "no-conversion",
+            ),
+            (
+                format!(
+                    "(let ((coding-system-for-write 'no-conversion)) (write-region (string-to-multibyte \"\\351\") nil {}))",
+                    p[4]
+                ),
+                "nil",
+            ),
+            (
+                format!(
+                    "(save-current-buffer (set-buffer (get-buffer-create \"uni\")) (set-buffer-multibyte nil) (insert \"\\351\\n\") (write-region nil nil {}) last-coding-system-used)",
+                    p[5]
+                ),
+                &expected_dflt,
+            ),
+            (
+                format!(
+                    "(save-current-buffer (set-buffer (get-buffer-create \"dflt\")) (insert \"a\\nb\") (write-region nil nil {}) last-coding-system-used)",
+                    p[6]
+                ),
+                &expected_dflt,
+            ),
+            (
+                format!(
+                    "(save-current-buffer (set-buffer (get-buffer-create \"sel\")) (insert \"a\\rb\\n\") (setq selective-display t) (let ((coding-system-for-write 'raw-text-unix)) (write-region nil nil {})))",
+                    p[7]
+                ),
+                "nil",
+            ),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(eval(l, &source), expected, "evaluating {source}");
+        }
+    });
+    let read = |i: usize| std::fs::read(&paths[i]).expect("written");
+    let crlf = |s: &[u8]| -> Vec<u8> {
+        if cfg!(windows) {
+            s.iter()
+                .flat_map(|&b| {
+                    if b == b'\n' {
+                        vec![b'\r', b'\n']
+                    } else {
+                        vec![b]
+                    }
+                })
+                .collect()
+        } else {
+            s.to_vec()
+        }
+    };
+    assert_eq!(read(0), b"\xc3\xa9t\xc3\xa9\n");
+    assert_eq!(read(1), b"a\r\nb");
+    assert_eq!(read(2), crlf(b"a\nb"));
+    assert_eq!(read(3), b"a\xe9\x80b");
+    assert_eq!(read(4), b"\xe9");
+    assert_eq!(read(5), crlf(b"\xe9\n"));
+    assert_eq!(read(6), crlf(b"a\nb"));
+    assert_eq!(read(7), b"a\nb\n");
+}
+
+#[test]
+fn write_region_positions() {
+    let dir = std::env::temp_dir().join(format!("emacs-write-pos-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create directory");
+    let file = dir.join("pos.txt");
+    let empty = dir.join("empty.txt");
+    let narrowed = dir.join("narrowed.txt");
+    let f = lisp_path(&file);
+    let e = lisp_path(&empty);
+    let n = lisp_path(&narrowed);
+    let (file2, empty2, narrowed2) = (file.clone(), empty.clone(), narrowed.clone());
+    on_big_stack(move || {
+        let mut lisp = Lisp::new();
+        let l = &mut lisp;
+        let cases: Vec<(String, String)> = vec![
+            (RAW_TEXT.to_string(), "nil".to_string()),
+            (
+                format!(
+                    "(let ((coding-system-for-write 'raw-text-unix)) (write-region \"abcdef\" nil {f}) (write-region \"XY\" nil {f} 2) (write-region \"Z\" nil {f} t))"
+                ),
+                "nil".to_string(),
+            ),
+            (
+                format!(
+                    "(condition-case err (let ((coding-system-for-write 'raw-text-unix)) (write-region \"Q\" nil {f} nil nil nil 'excl)) (file-already-exists (list (car err) (nth 1 err) (nth 2 err) (equal (nth 3 err) (expand-file-name {f})))))"
+                ),
+                "(file-already-exists \"Opening output file\" \"File exists\" t)".to_string(),
+            ),
+            (
+                format!(
+                    "(let ((coding-system-for-write 'raw-text-unix)) (write-region \"Q\" nil {f} -1))"
+                ),
+                "error: (wrong-type-argument file-offset -1)".to_string(),
+            ),
+            (
+                "(set-buffer (get-buffer-create \"ann\"))".to_string(),
+                "#<buffer ann>".to_string(),
+            ),
+            ("(insert \"abc\")".to_string(), "nil".to_string()),
+            (
+                format!(
+                    "(let ((coding-system-for-write 'raw-text-unix) (write-region-annotate-functions (list (function (lambda (s e) (list (cons 1 \"[\") (cons 4 \"]\"))))))) (write-region 1 1 {e}))"
+                ),
+                "nil".to_string(),
+            ),
+            ("(narrow-to-region 2 3)".to_string(), "nil".to_string()),
+            (
+                format!(
+                    "(let ((coding-system-for-write 'raw-text-unix) (wr-post nil) (write-region-post-annotation-function (function (lambda () (setq wr-post (buffer-name))))) (write-region-annotate-functions (list (function (lambda (s e) (setq wr-range (list s e)) (list (cons 2 \"<\") (cons 3 \">\"))))))) (write-region nil nil {n}) (list wr-post wr-range (point-min) (point-max)))"
+                ),
+                "(\"ann\" (nil nil) 2 3)".to_string(),
+            ),
+            (
+                "(list write-region-annotations-so-far)".to_string(),
+                "(nil)".to_string(),
+            ),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(eval(l, &source), expected, "evaluating {source}");
+        }
+    });
+    assert_eq!(std::fs::read(&file2).expect("written"), b"abXYefZ");
+    assert_eq!(std::fs::read(&empty2).expect("written"), b"[");
+    assert_eq!(std::fs::read(&narrowed2).expect("written"), b"a<b>c");
 }

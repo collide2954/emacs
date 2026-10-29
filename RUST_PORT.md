@@ -107,9 +107,8 @@ C's raw `GetCurrentDirectory` form.
 Byte compilation works: bytecomp.el, loaded from source, compiles its own hot functions
 and then `byte-compile` and `byte-compile-file` compile correctly (symbols with positions
 are accepted wherever C's `SYMBOLP` accepts them: `check_symbol`, `eval`, `funcall`,
-`macroexpand` and the `symbolp` opcode). What remains on this path: `write-region` does not
-encode yet, so it writes buffer text as UTF-8 with raw bytes replaced, which corrupts the
-bytecode strings in the `.elc` files that `byte-compile-file` writes.
+`macroexpand` and the `symbolp` opcode). The `.elc` files that `byte-compile-file` writes
+load and run with `emacs --batch -l`, lazy `#@` docstrings included.
 
 `emacs` without `--batch` stops while loading `elisp-mode.el` with
 `(wrong-type-argument stringp nil)`. This is expected for now: the preloaded Lisp loads
@@ -131,9 +130,12 @@ produce/consume, the decode and encode drivers, `decode_coding_object`,
 
 `insert-file-contents` is a port of `fileio.c`: it decides the coding system with
 `set-auto-coding-function` and `find-operation-coding-system`, decodes through
-`decode_coding_gap`, sets `last-coding-system-used`, and handles REPLACE. `fileio.c` itself
-is still mostly unported (modtime checks, `write-region` encoding, file locking), and
-`update_compositions` waits for `composite.c`.
+`decode_coding_gap`, sets `last-coding-system-used`, and handles REPLACE. `write-region` is a
+port too: `choose_write_coding_system`, `build_annotations` (with `format-annotate-function`
+and `write-region-post-annotation-function`), `a_write` and `e_write` encoding through
+`encode_coding_object`, numeric APPEND offsets, MUSTBENEW and the modtime bookkeeping. The
+rest of `fileio.c` is still mostly unported (the modtime DEFUNs, file locking, which
+`filelock.c` provides in C), and `update_compositions` waits for `composite.c`.
 
 ## Removed legacy
 

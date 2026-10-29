@@ -1172,7 +1172,7 @@ fn f_line_number_at_pos(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.count_lines(start_byte, pos_byte) + 1))
 }
 
-fn f_length(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_length(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.length(args[0])
 }
 
@@ -1402,7 +1402,7 @@ fn f_string_collate_equalp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(ca == cb))
 }
 
-fn f_append(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_append(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if args.is_empty() {
         return Ok(Value::NIL);
     }

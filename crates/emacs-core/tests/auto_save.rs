@@ -52,6 +52,11 @@ fn do_auto_save() {
         let l = &mut lisp;
         ok(
             l,
+            "(progn (define-coding-system-internal 'utf-8-emacs ?U 'utf-8 '(emacs) t nil nil nil nil nil nil '(:name utf-8-emacs) nil nil) (define-coding-system-alias 'unix 'undecided-unix))",
+            "nil",
+        );
+        ok(
+            l,
             &format!("(setq auto-save-list-file-name {})", lisp_string(&list)),
             &lisp_string(&list),
         );

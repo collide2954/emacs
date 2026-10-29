@@ -1005,6 +1005,7 @@ impl Lisp {
         roots.push(self.frame_and_buffer_state);
         roots.push(self.pending_funcalls);
         roots.push(self.xdisp.message_stack);
+        roots.push(self.fileio.annotation_buffers);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);
         }
