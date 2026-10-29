@@ -36,6 +36,27 @@ cargo build
 target/debug/emacs --batch
 ```
 
+The checkout must keep LF line endings (`git config core.autocrlf false` on Windows, as
+`nt/INSTALL` requires): files with a `-unix` coding cookie keep their CRs otherwise, and
+autoload generation garbles them.
+
+Generate `lisp/subdirs.el` and the loaddefs files the way `lisp/Makefile` does, with the
+port itself. Run `build-aux/update-subdirs DIR` for `lisp` and each of its subdirectories
+except `cedet` and `leim` (and theirs), then:
+
+```
+target/debug/emacs --batch --no-site-file --no-site-lisp \
+  -l lisp/emacs-lisp/loaddefs-gen.el -f loaddefs-generate--emacs-batch DIRS
+```
+
+where DIRS is `lisp` and all its subdirectories except `obsolete` and `term`, sorted as
+make's `$(sort)` sorts them. This writes `lisp/loaddefs.el`, `cl-loaddefs.el`,
+`theme-loaddefs.el` and the other `*-loaddefs.el` files (all ignored by git); loadup then
+loads `loaddefs.el` instead of `ldefs-boot.el`. The result matches `ldefs-boot.el` except
+for upstream changes since that file was refreshed and four `define-minor-mode` doc
+strings that gain a `\\{...-map}` line, because the source-loaded preloaded Lisp has
+already loaded `compile`, `flymake` and `rect` (C's byte-compiled preload doesn't).
+
 ## Status
 
 C files fully replaced and deleted: `keymap.c`, `regex-emacs.c`, `search.c`, `casetab.c`,
@@ -100,10 +121,10 @@ exit passes through them, so when a signal or throw picks its target it copies t
 evaluated arguments of every backtrace frame it will unwind into a rooted list; a cleanup
 that calls `backtrace` then sees the same arguments C's still-intact frames show.
 
-ERT runs upstream test files only partly: `loaddefs.el` and `cl-loaddefs.el` aren't
-generated yet (the port boots from `ldefs-boot.el`, so cl-lib's autoloads such as
-`cl-coerce` are missing), `current-window-configuration` isn't ported, and a failing
-`should` is reported as "aborted with non-local exit" instead of "failed".
+ERT runs upstream test files only partly: `current-window-configuration` isn't ported,
+and a failing `should` is reported as "aborted with non-local exit" instead of "failed".
+(Without generated loaddefs, cl-lib's autoloads such as `cl-coerce` are missing too; see
+Build and run.)
 
 `crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
 writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
