@@ -39,7 +39,7 @@ target/debug/emacs --batch
 ## Status
 
 C files fully replaced and deleted: `keymap.c`, `regex-emacs.c`, `search.c`, `casetab.c`,
-`category.c`, `timefns.c`, `charset.c`, `ccl.c`.
+`category.c`, `timefns.c`, `charset.c`, `ccl.c`, `filelock.c`.
 
 Ported but not yet complete (C kept):
 
