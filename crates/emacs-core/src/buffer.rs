@@ -799,7 +799,7 @@ impl Lisp {
             last_window_start: 1,
             window_count: 0,
             point_marker: Value::NIL,
-            modtime: (0, 0),
+            modtime: (0, -2),
             modtime_size: -1,
             auto_save_failure_time: 0,
             last_selected_window: Value::NIL,

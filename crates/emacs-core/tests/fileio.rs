@@ -181,9 +181,9 @@ fn write_region_positions() {
             ),
             (
                 format!(
-                    "(condition-case err (let ((coding-system-for-write 'raw-text-unix)) (write-region \"Q\" nil {f} nil nil nil 'excl)) (file-already-exists (list (car err) (nth 1 err) (nth 2 err) (equal (nth 3 err) (expand-file-name {f})))))"
+                    "(condition-case err (let ((coding-system-for-write 'raw-text-unix)) (write-region \"Q\" nil {f} nil nil nil 'excl)) (file-already-exists (list (car err) (nth 1 err) (equal (nth 2 err) (expand-file-name {f})) (nthcdr 3 err))))"
                 ),
-                "(file-already-exists \"Opening output file\" \"File exists\" t)".to_string(),
+                "(file-already-exists \"File exists\" t nil)".to_string(),
             ),
             (
                 format!(
@@ -221,4 +221,123 @@ fn write_region_positions() {
     assert_eq!(std::fs::read(&file2).expect("written"), b"abXYefZ");
     assert_eq!(std::fs::read(&empty2).expect("written"), b"[");
     assert_eq!(std::fs::read(&narrowed2).expect("written"), b"a<b>c");
+}
+
+#[test]
+fn visited_file_modtime() {
+    let dir = std::env::temp_dir().join(format!("emacs-modtime-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create directory");
+    let file = dir.join("visited.txt");
+    let f = lisp_path(&file);
+    on_big_stack(move || {
+        let mut lisp = Lisp::new();
+        let l = &mut lisp;
+        let run = |l: &mut Lisp, cases: &[(String, &str)]| {
+            for (source, expected) in cases {
+                assert_eq!(eval(l, source), *expected, "evaluating {source}");
+            }
+        };
+        let s = |x: &str| x.to_string();
+        run(
+            l,
+            &[
+                (s(RAW_TEXT), "nil"),
+                (s("(set-buffer (get-buffer-create \"v\"))"), "#<buffer v>"),
+                (s("(visited-file-modtime)"), "0"),
+                (s("(verify-visited-file-modtime)"), "t"),
+                (s("(set-visited-file-modtime -1)"), "nil"),
+                (s("(visited-file-modtime)"), "-1"),
+                (s("(set-visited-file-modtime 0)"), "nil"),
+                (s("(visited-file-modtime)"), "0"),
+                (
+                    s("(set-visited-file-modtime 1)"),
+                    "error: (args-out-of-range 1 -1 0)",
+                ),
+                (s("(set-visited-file-modtime '(0 5))"), "nil"),
+                (s("(visited-file-modtime)"), "(5000000000 . 1000000000)"),
+                (
+                    s("(let ((current-time-list t)) (visited-file-modtime))"),
+                    "(0 5 0 0)",
+                ),
+                (
+                    s("(set-visited-file-modtime)"),
+                    "error: (wrong-type-argument stringp nil)",
+                ),
+                (s("(verify-visited-file-modtime)"), "t"),
+                (
+                    s("(verify-visited-file-modtime 'nope)"),
+                    "error: (wrong-type-argument bufferp nope)",
+                ),
+                (
+                    format!(
+                        "(progn (insert \"abc\") (write-region nil nil {f} nil t) (equal buffer-file-name (expand-file-name {f})))"
+                    ),
+                    "t",
+                ),
+                (s("(verify-visited-file-modtime)"), "t"),
+                (
+                    s("(equal (visited-file-modtime) (nth 5 (file-attributes buffer-file-name)))"),
+                    "t",
+                ),
+                (
+                    s("(verify-visited-file-modtime (get-buffer-create \"other\"))"),
+                    "t",
+                ),
+            ],
+        );
+        std::fs::write(&file, "changed on disk").expect("rewrite");
+        run(
+            l,
+            &[
+                (s("(verify-visited-file-modtime)"), "nil"),
+                (
+                    s(
+                        "(save-current-buffer (set-buffer \"other\") (verify-visited-file-modtime (get-buffer \"v\")))",
+                    ),
+                    "nil",
+                ),
+                (s("(set-visited-file-modtime)"), "nil"),
+                (s("(verify-visited-file-modtime)"), "t"),
+            ],
+        );
+        std::fs::remove_file(&file).expect("remove");
+        run(
+            l,
+            &[
+                (s("(verify-visited-file-modtime)"), "nil"),
+                (s("(set-visited-file-modtime)"), "nil"),
+                (s("(verify-visited-file-modtime)"), "nil"),
+                (
+                    s(
+                        "(defalias 'mt-handler (function (lambda (op &rest args) (if (memq op '(verify-visited-file-modtime set-visited-file-modtime)) (cons op args) (let ((inhibit-file-name-handlers (cons 'mt-handler inhibit-file-name-handlers)) (inhibit-file-name-operation op)) (apply op args))))))",
+                    ),
+                    "mt-handler",
+                ),
+                (
+                    s(
+                        "(let ((file-name-handler-alist (list (cons \"\\\\.bad\\\\'\" (function (lambda (op &rest args) 'notastring)))))) (expand-file-name \"/x/a.bad\"))",
+                    ),
+                    "error: (error \"Invalid handler in `file-name-handler-alist'\")",
+                ),
+                (
+                    s("(setq file-name-handler-alist (list (cons \"\\\\.gpg\\\\'\" 'mt-handler)))"),
+                    "((\"\\\\.gpg\\\\'\" . mt-handler))",
+                ),
+                (s("(setq buffer-file-name \"/x/a.gpg\")"), "\"/x/a.gpg\""),
+                (
+                    s("(verify-visited-file-modtime)"),
+                    "(verify-visited-file-modtime nil)",
+                ),
+                (
+                    s("(verify-visited-file-modtime (current-buffer))"),
+                    "(verify-visited-file-modtime #<buffer v>)",
+                ),
+                (
+                    s("(set-visited-file-modtime)"),
+                    "(set-visited-file-modtime nil)",
+                ),
+            ],
+        );
+    });
 }

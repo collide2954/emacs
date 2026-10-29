@@ -133,9 +133,10 @@ produce/consume, the decode and encode drivers, `decode_coding_object`,
 `decode_coding_gap`, sets `last-coding-system-used`, and handles REPLACE. `write-region` is a
 port too: `choose_write_coding_system`, `build_annotations` (with `format-annotate-function`
 and `write-region-post-annotation-function`), `a_write` and `e_write` encoding through
-`encode_coding_object`, numeric APPEND offsets, MUSTBENEW and the modtime bookkeeping. The
-rest of `fileio.c` is still mostly unported (the modtime DEFUNs, file locking, which
-`filelock.c` provides in C), and `update_compositions` waits for `composite.c`.
+`encode_coding_object`, numeric APPEND offsets, MUSTBENEW and the modtime bookkeeping, which
+`verify-visited-file-modtime`, `visited-file-modtime` and `set-visited-file-modtime` read and
+set. `find-file`, `save-buffer` and `revert-buffer` work in batch. File locking
+(`filelock.c`) is not ported yet, and `update_compositions` waits for `composite.c`.
 
 ## Removed legacy
 

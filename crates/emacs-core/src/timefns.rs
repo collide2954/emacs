@@ -1137,7 +1137,7 @@ impl Lisp {
         }
     }
 
-    fn lisp_time_argument(&mut self, t: Value) -> LispResult<(i64, i64)> {
+    pub(crate) fn lisp_time_argument(&mut self, t: Value) -> LispResult<(i64, i64)> {
         let th = self.decode_lisp_time(t, false)?;
         self.ticks_hz_to_timespec(&th)
     }

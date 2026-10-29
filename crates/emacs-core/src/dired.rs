@@ -283,7 +283,7 @@ impl Lisp {
         }
     }
 
-    fn file_metadata_errno(
+    pub(crate) fn file_metadata_errno(
         &mut self,
         action: &str,
         file: Value,

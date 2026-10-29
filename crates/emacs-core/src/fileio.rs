@@ -69,9 +69,14 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("insert-file-contents", 1, 5, f_insert_file_contents),
     Subr::fixed("write-region", 3, 7, f_write_region),
     Subr::fixed("car-less-than-car", 2, 2, f_car_less_than_car),
-    Subr::fixed("verify-visited-file-modtime", 0, 1, f_true),
-    Subr::fixed("visited-file-modtime", 0, 0, f_zero),
-    Subr::fixed("set-visited-file-modtime", 0, 1, f_ignore1),
+    Subr::fixed(
+        "verify-visited-file-modtime",
+        0,
+        1,
+        f_verify_visited_file_modtime,
+    ),
+    Subr::fixed("visited-file-modtime", 0, 0, f_visited_file_modtime),
+    Subr::fixed("set-visited-file-modtime", 0, 1, f_set_visited_file_modtime),
     Subr::fixed("do-auto-save", 0, 2, f_do_auto_save).interactive(""),
     Subr::fixed("set-buffer-auto-saved", 0, 0, f_set_buffer_auto_saved),
     Subr::fixed(
@@ -448,7 +453,12 @@ impl Lisp {
     pub fn expand_file_name(&mut self, name: Value, default_directory: Value) -> LispResult {
         let name = self.check_string(name)?;
         if let Some(handler) = self.find_file_name_handler(name, sym::EXPAND_FILE_NAME)? {
-            return self.funcall(handler, &[sym::EXPAND_FILE_NAME, name, default_directory]);
+            let handled_name =
+                self.funcall(handler, &[sym::EXPAND_FILE_NAME, name, default_directory])?;
+            if handled_name.is_string() {
+                return Ok(handled_name);
+            }
+            return Err(self.error("Invalid handler in `file-name-handler-alist'"));
         }
         let n = self.string_to_rust(name);
         let dir = if default_directory.is_nil() {
@@ -560,6 +570,9 @@ impl Lisp {
             _ => err.to_string(),
         };
         let detail = self.string(&text);
+        if symbol == sym::FILE_ALREADY_EXISTS {
+            return self.signal_list(symbol, &[detail, file]);
+        }
         self.signal_list(symbol, &[msg, detail, file])
     }
 }
@@ -572,12 +585,97 @@ fn f_ignore1(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_true(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    Ok(sym::T)
+fn f_verify_visited_file_modtime(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let buf = args[0];
+    let b = lisp.decode_buffer(buf)?;
+    let filename = lisp
+        .buffer_local_get(b, sym::BUFFER_FILE_NAME)
+        .unwrap_or(Value::NIL);
+    if !filename.is_string() {
+        return Ok(sym::T);
+    }
+    let (modtime, modtime_size) = {
+        let b = lisp.buffer(b);
+        (b.modtime, b.modtime_size)
+    };
+    if modtime.1 == UNKNOWN_MODTIME_NSECS {
+        return Ok(sym::T);
+    }
+    if let Some(handler) =
+        lisp.find_file_name_handler(filename, sym::VERIFY_VISITED_FILE_MODTIME)?
+    {
+        return lisp.funcall(handler, &[sym::VERIFY_VISITED_FILE_MODTIME, buf]);
+    }
+    let path = PathBuf::from(lisp.string_to_rust(filename));
+    let (mtime, st_size) = match std::fs::metadata(&path) {
+        Ok(st) => (stat_mtime(&st), st.len() as i64),
+        Err(e) => (time_error_value(&e), -1),
+    };
+    Ok(lisp.bool(mtime == modtime && (modtime_size < 0 || st_size == modtime_size)))
 }
 
-fn f_zero(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    Ok(Value::fixnum(0))
+impl Lisp {
+    pub(crate) fn buffer_visited_file_modtime(&mut self, buf: Value) -> Value {
+        let (sec, ns) = self.buffer(buf).modtime;
+        if ns < 0 {
+            return Value::fixnum(UNKNOWN_MODTIME_NSECS - ns);
+        }
+        self.make_lisp_time(sec, ns)
+    }
+}
+
+fn f_visited_file_modtime(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let b = lisp.current_buffer;
+    Ok(lisp.buffer_visited_file_modtime(b))
+}
+
+fn f_set_visited_file_modtime(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let time_flag = args[0];
+    if !time_flag.is_nil() {
+        let mtime = if let Some(flag) = time_flag.as_fixnum() {
+            if !(-1..=0).contains(&flag) {
+                return Err(lisp.args_out_of_range3(
+                    time_flag,
+                    Value::fixnum(-1),
+                    Value::fixnum(0),
+                ));
+            }
+            (0, UNKNOWN_MODTIME_NSECS - flag)
+        } else {
+            lisp.lisp_time_argument(time_flag)?
+        };
+        let b = lisp.cur_mut();
+        b.modtime = mtime;
+        b.modtime_size = -1;
+    } else if !lisp.cur().base_buffer.is_nil() {
+        return Err(lisp.error("An indirect buffer does not have a visited file"));
+    } else {
+        let filename = lisp.find_symbol_value(sym::BUFFER_FILE_NAME);
+        let filename = lisp.check_string(filename)?;
+        let filename = lisp.expand_file_name(filename, Value::NIL)?;
+        let base = lisp.stack.len();
+        lisp.stack.push(filename);
+        let handler = lisp.find_file_name_handler(filename, sym::SET_VISITED_FILE_MODTIME)?;
+        if let Some(handler) = handler {
+            let r = lisp.funcall(handler, &[sym::SET_VISITED_FILE_MODTIME, Value::NIL]);
+            lisp.stack.truncate(base);
+            return r;
+        }
+        let path = PathBuf::from(lisp.string_to_rust(filename));
+        match std::fs::metadata(&path) {
+            Ok(st) => {
+                let mtime = stat_mtime(&st);
+                let b = lisp.cur_mut();
+                b.modtime = mtime;
+                b.modtime_size = st.len() as i64;
+            }
+            Err(e) => {
+                lisp.file_metadata_errno("Getting attributes", filename, &e)?;
+            }
+        }
+        lisp.stack.truncate(base);
+    }
+    Ok(Value::NIL)
 }
 
 pub(crate) fn f_find_file_name_handler(lisp: &mut Lisp, args: &[Value]) -> LispResult {
