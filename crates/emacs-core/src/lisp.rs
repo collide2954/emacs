@@ -102,6 +102,7 @@ pub struct Lisp {
     pub xdisp: crate::xdisp::Xdisp,
     pub keyboard: crate::keyboard::Keyboard,
     pub fileio: crate::fileio::FileIo,
+    pub bc: crate::bytecode::Bytecode,
     pub subr_docs: std::collections::HashMap<usize, i64>,
     pub compositions: crate::composite::Compositions,
     pub syntax: crate::syntax::Syntax,
@@ -162,6 +163,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::process::SUBRS,
     crate::term::SUBRS,
     crate::w32proc::SUBRS,
+    crate::bytecode::SUBRS,
 ];
 
 type InitFn = fn(&mut Lisp);
@@ -307,6 +309,7 @@ impl Lisp {
             xdisp: crate::xdisp::Xdisp::default(),
             keyboard: crate::keyboard::Keyboard::default(),
             fileio: crate::fileio::FileIo::default(),
+            bc: crate::bytecode::Bytecode::default(),
             subr_docs: std::collections::HashMap::new(),
             compositions: crate::composite::Compositions::default(),
             syntax: crate::syntax::Syntax::default(),

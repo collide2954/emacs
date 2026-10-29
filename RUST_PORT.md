@@ -55,7 +55,7 @@ Ported but not yet complete (C kept):
 | `indent.c` | `indent.rs` | `compute-motion`, `vertical-motion`, `line-number-display-width` (they need the display iterator); an image `display` spec signals an error |
 | `casefiddle.c` | `casefiddle.rs` | a real port; the current version is a placeholder using Rust's Unicode tables |
 | `coding.c` | `coding.rs`, `coding/` | `encode_string_utf_8`/`decode_string_utf_8` (for `json.c`), file-name encoding |
-| `bytecode.c` | `bytecode.rs` | the VM (stub) |
+| `bytecode.c` | `bytecode.rs` | nothing but three opcodes obsolete since Emacs 24.1: `temp-output-buffer-setup`/`-show` signal an error, and `save-window-excursion` needs the unported window configurations; `debug-on-next-call` is not honored (as elsewhere in the port). The VM keeps its operands on `Lisp::stack` (so they are GC roots) and recurses for calls where C chains frames on its own stack; primitives are called through the subr table by name, not through function cells, as C calls `Fcar` and friends directly |
 | `terminal.c` | `terminal.rs` | `delete-terminal` (needs `delete-frame`) |
 | `frame.c` | `frame.rs` | `delete-frame`, `adjust_frame_size`, `x-create-frame` |
 | `window.c` | `window.rs` | splitting, resizing, `window-list` |

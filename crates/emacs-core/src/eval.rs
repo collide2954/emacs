@@ -475,7 +475,7 @@ impl Lisp {
         }
     }
 
-    fn maybe_debug_on_exit(&mut self, count: usize, value: Value) -> LispResult {
+    pub(crate) fn maybe_debug_on_exit(&mut self, count: usize, value: Value) -> LispResult {
         if let Some(SpecBinding::Backtrace {
             debug_on_exit: true,
             ..
@@ -625,13 +625,15 @@ impl Lisp {
             let arglist = slots.first().copied().unwrap_or(Value::NIL);
             let code = slots.get(1).copied().unwrap_or(Value::NIL);
             let constants = slots.get(2).copied().unwrap_or(Value::NIL);
-            if arglist.is_fixnum() {
-                return crate::bytecode::exec_byte_code(self, fun, arglist, args);
+            if let Some(template) = arglist.as_fixnum() {
+                return crate::bytecode::exec_byte_code(self, fun, template, args);
             }
-            if !code.is_cons() {
-                return crate::bytecode::exec_byte_code(self, fun, Value::fixnum(0), &[]);
-            }
-            (arglist, constants, code)
+            let lexenv = if code.is_cons() {
+                constants
+            } else {
+                Value::NIL
+            };
+            (arglist, lexenv, code)
         };
         let count = self.specpdl.len();
         let mut i = 0usize;
@@ -690,7 +692,11 @@ impl Lisp {
         if lexenv != self.lexenv() {
             self.specbind(sym::INTERNAL_INTERPRETER_ENVIRONMENT, lexenv)?;
         }
-        let value = self.progn(body);
+        let value = if fun.is_cons() || body.is_cons() {
+            self.progn(body)
+        } else {
+            crate::bytecode::exec_byte_code(self, fun, 0, &[])
+        };
         self.unbind_to_value(count, value)
     }
 
