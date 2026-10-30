@@ -18,6 +18,81 @@ fn window_variables() {
 }
 
 #[test]
+fn window_configurations() {
+    check(&[
+        (
+            "(progn (fset 'record-window-buffer (function (lambda (w) (setq recorded w)))) (fset 'frame-windows-min-size (function (lambda (frame horizontal ignore pixelwise) 1))) nil)",
+            "nil",
+        ),
+        (
+            "(window-configuration-p (current-window-configuration))",
+            "t",
+        ),
+        ("(window-configuration-p 1)", "nil"),
+        ("(window-fringes)", "(0 0 nil nil)"),
+        (
+            "(window-fringes 1)",
+            "error: (wrong-type-argument window-live-p 1)",
+        ),
+        (
+            "(type-of (current-window-configuration))",
+            "window-configuration",
+        ),
+        ("(current-window-configuration)", "#<window-configuration>"),
+        (
+            "(eq (window-configuration-frame (current-window-configuration)) (selected-frame))",
+            "t",
+        ),
+        (
+            "(window-configuration-frame 1)",
+            "error: (wrong-type-argument window-configuration-p 1)",
+        ),
+        (
+            "(set-window-configuration 1)",
+            "error: (wrong-type-argument window-configuration-p 1)",
+        ),
+        (
+            "(progn (set-window-buffer nil (get-buffer-create \"a\")) (set-buffer \"a\") (insert \"hello world\") (goto-char 3) (setq c1 (current-window-configuration) c2 (current-window-configuration)) (window-configuration-equal-p c1 c2))",
+            "t",
+        ),
+        (
+            "(window-configuration-equal-p 1 c1)",
+            "error: (wrong-type-argument window-configuration-p 1)",
+        ),
+        (
+            "(progn (set-window-buffer nil (get-buffer-create \"b\")) (window-configuration-equal-p c1 (current-window-configuration)))",
+            "nil",
+        ),
+        (
+            "(progn (setq recorded nil) (list (set-window-configuration c1) (buffer-name (window-buffer)) (buffer-name) (eq recorded (selected-window))))",
+            "(t \"a\" \"a\" t)",
+        ),
+        ("(point)", "3"),
+        (
+            "(progn (goto-char 7) (set-window-configuration c1) (point))",
+            "7",
+        ),
+        (
+            "(progn (set-buffer \"b\") (set-window-configuration c1) (list (buffer-name) (point)))",
+            "(\"a\" 7)",
+        ),
+        ("(hash-table-count window-dead-windows-table)", "0"),
+        (
+            "(progn (set-window-buffer nil (get-buffer-create \"k\")) (setq ck (current-window-configuration)) (set-window-buffer nil \"a\") (kill-buffer \"k\") (list (set-window-configuration ck) (buffer-name (window-buffer))))",
+            "(t \"a\")",
+        ),
+        (
+            "(progn (set-window-parameter nil 'clone-of 'x) (set-window-parameter nil 'foo 1) (setq cp (current-window-configuration)) (set-window-parameter nil 'clone-of 'y) (set-window-parameter nil 'foo 2) (set-window-configuration cp) (list (window-parameter nil 'clone-of) (window-parameter nil 'foo)))",
+            "(x 2)",
+        ),
+        (
+            "(progn (set-window-buffer nil \"a\") (list (byte-code \"\\300\\213\\207\" [((set-window-buffer nil \"b\") 42)] 1) (buffer-name (window-buffer))))",
+            "(42 \"a\")",
+        ),
+    ]);
+}
+
+#[test]
 fn set_window_buffer() {
     check(&[
         (

@@ -206,11 +206,6 @@ fn bcall0(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     Ok(())
 }
 
-fn restore_window_configuration(lisp: &mut Lisp, configuration: Value) -> LispResult<()> {
-    lisp.call_primitive("set-window-configuration", &[configuration])?;
-    Ok(())
-}
-
 fn f_byte_code(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (mut bytestr, vector, maxdepth) = (args[0], args[1], args[2]);
     if !(bytestr.is_string()
@@ -835,7 +830,7 @@ impl Lisp {
                 let count1 = self.specpdl.len();
                 let configuration =
                     self.call_primitive("current-window-configuration", &[Value::NIL])?;
-                self.record_unwind(restore_window_configuration, configuration);
+                self.record_unwind(crate::window::restore_window_configuration, configuration);
                 let body = self.bc_top();
                 let r = self.progn(body);
                 let v = self.unbind_to_value(count1, r)?;

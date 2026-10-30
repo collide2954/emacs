@@ -396,7 +396,7 @@ pub(crate) fn f_point_marker(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.make_marker_at(pt, b, false))
 }
 
-fn f_goto_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_goto_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let position = args[0];
     if lisp.is_marker(position) {
         let m = *lisp.marker(position);

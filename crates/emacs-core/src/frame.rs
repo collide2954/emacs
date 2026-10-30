@@ -31,6 +31,7 @@ pub struct FrameFlags {
     pub window_state_change: bool,
     pub redisplay: bool,
     pub can_set_window_size: bool,
+    pub resized_p: bool,
     pub after_make_frame: bool,
     pub new_size_p: bool,
     pub select_mini_window_flag: bool,
@@ -727,6 +728,341 @@ impl Lisp {
     pub fn frame_total_fringe_width(&self, f: Value) -> i64 {
         let g = &self.frame(f).geometry;
         g.left_fringe_width + g.right_fringe_width
+    }
+
+    fn frame_tool_bar_top_height(&self, f: Value) -> i64 {
+        let fr = self.frame(f);
+        if fr.tool_bar_position == sym::TOP {
+            fr.geometry.tool_bar_height
+        } else {
+            0
+        }
+    }
+
+    fn frame_tool_bar_top_lines(&self, f: Value) -> i64 {
+        let fr = self.frame(f);
+        if fr.tool_bar_position == sym::TOP {
+            fr.geometry.tool_bar_lines
+        } else {
+            0
+        }
+    }
+
+    pub fn frame_top_margin(&self, f: Value) -> i64 {
+        let g = &self.frame(f).geometry;
+        g.menu_bar_lines + g.tab_bar_lines + self.frame_tool_bar_top_lines(f)
+    }
+
+    pub fn frame_top_margin_height(&self, f: Value) -> i64 {
+        let g = &self.frame(f).geometry;
+        g.menu_bar_height + g.tab_bar_height + self.frame_tool_bar_top_height(f)
+    }
+
+    fn frame_margin_height(&self, f: Value) -> i64 {
+        let g = &self.frame(f).geometry;
+        g.menu_bar_height + g.tab_bar_height + g.tool_bar_height
+    }
+
+    fn frame_text_to_pixel_width(&self, f: Value, width: i64) -> i64 {
+        width
+            + self.frame_scroll_bar_area_width(f)
+            + self.frame_total_fringe_width(f)
+            + 2 * self.frame(f).geometry.internal_border_width
+    }
+
+    fn frame_text_to_pixel_height(&self, f: Value, height: i64) -> i64 {
+        height
+            + self.frame_margin_height(f)
+            + self.frame_scroll_bar_area_height(f)
+            + 2 * self.frame(f).geometry.internal_border_width
+    }
+
+    fn frame_pixel_to_text_width(&self, f: Value, width: i64) -> i64 {
+        width
+            - self.frame_scroll_bar_area_width(f)
+            - self.frame_total_fringe_width(f)
+            - 2 * self.frame(f).geometry.internal_border_width
+    }
+
+    fn frame_pixel_to_text_height(&self, f: Value, height: i64) -> i64 {
+        height
+            - self.frame_margin_height(f)
+            - self.frame_scroll_bar_area_height(f)
+            - 2 * self.frame(f).geometry.internal_border_width
+    }
+
+    fn frame_inner_width(&self, f: Value) -> i64 {
+        let g = &self.frame(f).geometry;
+        g.pixel_width - 2 * g.internal_border_width
+    }
+
+    fn frame_inner_height(&self, f: Value) -> i64 {
+        let g = &self.frame(f).geometry;
+        g.pixel_height - self.frame_margin_height(f) - 2 * g.internal_border_width
+    }
+
+    fn is_tty_frame(&self, f: Value) -> bool {
+        match self.frame(f).output_method {
+            OutputMethod::Initial => false,
+        }
+    }
+
+    fn frame_inhibit_resize(&self, f: Value, horizontal: bool, parameter: Value) -> bool {
+        let fullscreen = self.get_frame_param(f, sym::FULLSCREEN);
+        let implied = self.plain_value(sym::FRAME_INHIBIT_IMPLIED_RESIZE);
+        implied == sym::FORCE
+            || (self.frame(f).flags.after_make_frame
+                && (implied == sym::T
+                    || (implied.is_cons() && !self.memq(parameter, implied).is_nil())
+                    || (horizontal && !fullscreen.is_nil() && fullscreen != sym::FULLHEIGHT)
+                    || (!horizontal && !fullscreen.is_nil() && fullscreen != sym::FULLWIDTH)
+                    || self.is_tty_frame(f)))
+    }
+
+    fn frame_windows_min_size(
+        &mut self,
+        frame: Value,
+        horizontal: Value,
+        ignore: Value,
+        pixelwise: Value,
+    ) -> LispResult<i64> {
+        let par_size = if horizontal.is_nil() {
+            self.get_frame_param(frame, sym::MIN_HEIGHT)
+        } else {
+            self.get_frame_param(frame, sym::MIN_WIDTH)
+        };
+        let mut retval = if let Some(min_size) = par_size
+            .as_fixnum()
+            .filter(|n| (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(n))
+        {
+            let min_size = min_size.max(1);
+            let g = &self.frame(frame).geometry;
+            if pixelwise.is_nil() {
+                min_size
+            } else if horizontal.is_nil() {
+                min_size * g.line_height
+            } else {
+                min_size * g.column_width
+            }
+        } else {
+            let r = self.funcall(
+                sym::FRAME_WINDOWS_MIN_SIZE,
+                &[frame, horizontal, ignore, pixelwise],
+            )?;
+            self.check_fixnum(r)?
+        };
+        if self.is_tty_frame(frame) && horizontal.is_nil() {
+            let g = &self.frame(frame).geometry;
+            let mut min_height = g.menu_bar_lines
+                + g.tab_bar_lines
+                + i64::from(self.frame(frame).flags.wants_modeline)
+                + i64::from(self.frame_has_minibuf_p(frame));
+            if min_height == 0 {
+                min_height = 1;
+            }
+            retval = retval.max(min_height);
+        }
+        Ok(retval)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn frame_size_history_adjust(
+        &mut self,
+        f: Value,
+        inhibit: i64,
+        parameter: Value,
+        sizes: [i64; 16],
+        min_inner: (i64, i64),
+        inhibit_horizontal: bool,
+        inhibit_vertical: bool,
+    ) {
+        let history = self.plain_value(sym::FRAME_SIZE_HISTORY);
+        if !history.is_cons() {
+            return;
+        }
+        let Some(n) = self.xcar(history).as_fixnum().filter(|&n| 0 < n) else {
+            return;
+        };
+        let head = self.list(&[f, Value::fixnum(5), Value::fixnum(inhibit), parameter]);
+        let mut groups = Vec::with_capacity(5);
+        for chunk in sizes.chunks(4) {
+            let items: Vec<Value> = chunk.iter().map(|&n| Value::fixnum(n)).collect();
+            groups.push(self.list(&items));
+        }
+        let ih = self.bool(inhibit_horizontal);
+        let iv = self.bool(inhibit_vertical);
+        let mins = self.list(&[
+            Value::fixnum(min_inner.0),
+            Value::fixnum(min_inner.1),
+            ih,
+            iv,
+        ]);
+        groups.push(mins);
+        let body = self.list(&groups);
+        let entry = self.cons(head, body);
+        let rest = self.xcdr(history);
+        let rest = self.cons(entry, rest);
+        let history = self.cons(Value::fixnum(n - 1), rest);
+        self.set_plain_value(sym::FRAME_SIZE_HISTORY, history);
+    }
+
+    pub fn adjust_frame_size(
+        &mut self,
+        f: Value,
+        new_text_width: i64,
+        new_text_height: i64,
+        inhibit: i64,
+        parameter: Value,
+    ) -> LispResult<()> {
+        let unit_width = self.frame(f).geometry.column_width;
+        let unit_height = self.frame(f).geometry.line_height;
+        let old_native_width = self.frame(f).geometry.pixel_width;
+        let old_native_height = self.frame(f).geometry.pixel_height;
+        let r = self.frame(f).root_window;
+        let old_inner_width = self.window(r).pixel_width;
+        let old_inner_height = self.window(r).pixel_height
+            + if self.frame_has_minibuf_p(f) && !self.frame_minibuf_only_p(f) {
+                let mw = self.frame(f).minibuffer_window;
+                self.window(mw).pixel_height
+            } else {
+                0
+            };
+        let old_text_cols = self.frame(f).geometry.text_cols;
+        let old_text_lines = self.frame(f).geometry.text_lines;
+        let old_text_width = self.frame(f).geometry.text_width;
+        let old_text_height = self.frame(f).geometry.text_height;
+        let size_and_position = parameter == sym::SIZE_AND_POSITION;
+        let ignore = if inhibit == 5 { sym::SAFE } else { Value::NIL };
+        let min_inner_width = self.frame_windows_min_size(f, sym::T, ignore, sym::T)?;
+        let min_inner_height = self.frame_windows_min_size(f, Value::NIL, ignore, sym::T)?;
+        let mut new_text_width = new_text_width;
+        let mut new_text_height = new_text_height;
+        let (inhibit_horizontal, inhibit_vertical) = if (2..=4).contains(&inhibit) {
+            if new_text_width == -1 {
+                new_text_width = old_text_width;
+            }
+            if new_text_height == -1 {
+                new_text_height = old_text_height;
+            }
+            (
+                self.frame_inner_width(f) >= min_inner_width
+                    && (inhibit == 4 || self.frame_inhibit_resize(f, true, parameter)),
+                self.frame_inner_height(f) >= min_inner_height
+                    && (inhibit == 4 || self.frame_inhibit_resize(f, false, parameter)),
+            )
+        } else {
+            (inhibit == 5, inhibit == 5)
+        };
+        let border = self.frame(f).geometry.internal_border_width;
+        let new_native_width = if inhibit_horizontal && inhibit < 5 {
+            old_native_width
+        } else {
+            self.frame_text_to_pixel_width(f, new_text_width)
+                .max(min_inner_width + 2 * border)
+        };
+        let new_inner_width = new_native_width - 2 * border;
+        let new_text_width = self.frame_pixel_to_text_width(f, new_native_width);
+        let new_text_cols = new_text_width / unit_width;
+        let new_native_height = if inhibit_vertical && inhibit < 5 {
+            old_native_height
+        } else {
+            self.frame_text_to_pixel_height(f, new_text_height)
+                .max(min_inner_height + self.frame_margin_height(f) + 2 * border)
+        };
+        let new_inner_height = new_native_height - self.frame_margin_height(f) - 2 * border;
+        let new_text_height = self.frame_pixel_to_text_height(f, new_native_height);
+        let new_text_lines = new_text_height / unit_height;
+        if self.frame(f).window_p()
+            && self.frame(f).flags.can_set_window_size
+            && (size_and_position
+                || (!inhibit_horizontal
+                    && (new_native_width != old_native_width || inhibit == 0 || inhibit == 2))
+                || (!inhibit_vertical
+                    && (new_native_height != old_native_height || inhibit == 0 || inhibit == 2)))
+        {
+            unreachable!("set_window_size_hook needs window-system frames");
+        }
+        self.frame_size_history_adjust(
+            f,
+            inhibit,
+            parameter,
+            [
+                old_text_width,
+                old_text_height,
+                new_text_width,
+                new_text_height,
+                old_text_cols,
+                old_text_lines,
+                new_text_cols,
+                new_text_lines,
+                old_native_width,
+                old_native_height,
+                new_native_width,
+                new_native_height,
+                old_inner_width,
+                old_inner_height,
+                new_inner_width,
+                new_inner_height,
+            ],
+            (min_inner_width, min_inner_height),
+            inhibit_horizontal,
+            inhibit_vertical,
+        );
+        if self.window(r).pixel_top == self.frame_top_margin_height(f)
+            && new_text_width == old_text_width
+            && new_text_height == old_text_height
+            && new_inner_width == old_inner_width
+            && new_inner_height == old_inner_height
+            && new_native_width == old_native_width
+            && new_native_height == old_native_height
+            && new_text_cols == old_text_cols
+            && new_text_lines == old_text_lines
+        {
+            return Ok(());
+        }
+        if new_inner_width != old_inner_width {
+            self.resize_frame_windows(f, new_inner_width, true)?;
+            let tab_bar_window = self.frame(f).tab_bar_window;
+            if self.is_window(tab_bar_window) {
+                let w = self.window_mut(tab_bar_window);
+                w.pixel_width = new_inner_width;
+                w.total_cols = new_inner_width / unit_width;
+            }
+            let tool_bar_window = self.frame(f).tool_bar_window;
+            if self.is_window(tool_bar_window) {
+                let w = self.window_mut(tool_bar_window);
+                w.pixel_width = new_inner_width;
+                w.total_cols = new_inner_width / unit_width;
+            }
+        } else if new_text_cols != old_text_cols {
+            self.funcall(sym::WINDOW__PIXEL_TO_TOTAL, &[f, sym::T])?;
+        }
+        if new_inner_height != old_inner_height
+            || self.window(r).pixel_top != self.frame_top_margin_height(f)
+        {
+            self.resize_frame_windows(f, new_inner_height, false)?;
+        } else if new_text_lines != old_text_lines {
+            self.funcall(sym::WINDOW__PIXEL_TO_TOTAL, &[f, Value::NIL])?;
+        }
+        let g = &mut self.frame_mut(f).geometry;
+        g.text_cols = new_text_cols;
+        g.text_lines = new_text_lines;
+        g.text_width = new_text_width;
+        g.text_height = new_text_height;
+        g.pixel_width = new_native_width;
+        g.pixel_height = new_native_height;
+        g.total_cols = g.pixel_width / g.column_width;
+        g.total_lines = g.pixel_height / g.line_height;
+        self.set_frame_garbaged(f);
+        self.frame_mut(f).flags.resized_p = true;
+        let frames = self.frames.list.clone();
+        if frames
+            .iter()
+            .any(|&frame1| self.frame_parent_frame(frame1) == f)
+        {
+            unreachable!("keep_ratio needs child frames");
+        }
+        Ok(())
     }
 
     pub fn frame_set_id(&mut self, f: Value, id: i64) -> LispResult<i64> {
@@ -1440,7 +1776,7 @@ fn f_visible_frame_list(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(value)
 }
 
-fn f_redirect_frame_focus(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_redirect_frame_focus(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_any_frame(args[0])?;
     let focus = arg(args, 1);
     if !focus.is_nil() {

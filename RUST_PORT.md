@@ -82,10 +82,10 @@ Ported but not yet complete (C kept):
 | `indent.c` | `indent.rs` | `compute-motion`, `vertical-motion`, `line-number-display-width` (they need the display iterator); an image `display` spec signals an error |
 | `casefiddle.c` | `casefiddle.rs` | a real port; the current version is a placeholder using Rust's Unicode tables |
 | `coding.c` | `coding.rs`, `coding/` | `encode_string_utf_8`/`decode_string_utf_8` (for `json.c`), file-name encoding |
-| `bytecode.c` | `bytecode.rs` | nothing but three opcodes obsolete since Emacs 24.1: `temp-output-buffer-setup`/`-show` signal an error, and `save-window-excursion` needs the unported window configurations; `debug-on-next-call` is not honored (as elsewhere in the port). The VM keeps its operands on `Lisp::stack` (so they are GC roots) and recurses for calls where C chains frames on its own stack; primitives are called through the subr table by name, not through function cells, as C calls `Fcar` and friends directly |
+| `bytecode.c` | `bytecode.rs` | nothing but two opcodes obsolete since Emacs 24.1: `temp-output-buffer-setup`/`-show` signal an error; `debug-on-next-call` is not honored (as elsewhere in the port). The VM keeps its operands on `Lisp::stack` (so they are GC roots) and recurses for calls where C chains frames on its own stack; primitives are called through the subr table by name, not through function cells, as C calls `Fcar` and friends directly |
 | `terminal.c` | `terminal.rs` | `delete-terminal` (needs `delete-frame`) |
-| `frame.c` | `frame.rs` | `delete-frame`, `adjust_frame_size`, `x-create-frame` |
-| `window.c` | `window.rs` | splitting, resizing, `window-list` |
+| `frame.c` | `frame.rs` | `delete-frame`, `x-create-frame`; `adjust_frame_size` is ported but stops with `unreachable!` where it would call a window system's size hook or resize child frames, which don't exist yet |
+| `window.c` | `window.rs` | splitting, resizing (`resize_frame_windows` handles only a leaf root window, the only kind the port can make), `window-list`; window configurations (`current-window-configuration`, `set-window-configuration`, `window-configuration-equal-p` and the dead-windows table) follow C |
 | `minibuf.c` | `minibuf.rs` | interactive reading (needs the command loop; it signals an error) |
 | `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface`; `internal-char-font` is ported |
 | `fontset.c` | `fontset.rs` | `new-fontset`, `set-fontset-font`, `fontset-info`, `fontset-font` |

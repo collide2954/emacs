@@ -236,7 +236,7 @@ fn f_set_marker(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.set_marker(args[0], args[1], args[2], false)
 }
 
-fn f_copy_marker(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_copy_marker(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (marker, kind) = (args[0], args[1]);
     let new = lisp.make_marker_object();
     lisp.marker_mut(new).insertion_type = !kind.is_nil();

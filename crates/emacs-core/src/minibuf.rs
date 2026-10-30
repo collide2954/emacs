@@ -236,7 +236,7 @@ impl Lisp {
     }
 }
 
-fn f_minibufferp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_minibufferp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = arg(args, 0);
     let buffer = if buffer.is_nil() {
         lisp.current_buffer

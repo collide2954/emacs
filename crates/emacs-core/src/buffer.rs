@@ -1226,6 +1226,16 @@ impl Lisp {
         if !self.buffer_live_p(buffer) {
             return Ok(true);
         }
+        let display_count = self
+            .buffer_local_get(buffer, sym::BUFFER_DISPLAY_COUNT)
+            .and_then(|v| v.as_fixnum())
+            .unwrap_or(0);
+        if display_count > 0 {
+            self.window_discard_buffer_from_dead_windows(buffer)?;
+        }
+        if !self.buffer_live_p(buffer) {
+            return Ok(true);
+        }
         if buffer == self.current_buffer {
             let other = self
                 .buffers

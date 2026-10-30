@@ -758,6 +758,10 @@ impl Lisp {
                 p.push('>' as u32);
                 Ok(())
             }
+            Vectorlike::WindowConfiguration(_) => {
+                p.push_str("#<window-configuration>");
+                Ok(())
+            }
             Vectorlike::Window(w) => {
                 p.push_str(&format!("#<window {}", w.sequence_number));
                 if self.is_buffer(w.contents) {

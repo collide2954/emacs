@@ -1712,7 +1712,7 @@ pub(crate) fn f_nthcdr(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(tail)
 }
 
-fn f_nth(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_nth(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let tail = f_nthcdr(lisp, args)?;
     lisp.car(tail)
 }
@@ -2697,7 +2697,7 @@ fn f_puthash(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.puthash(args[0], args[1], args[2])
 }
 
-fn f_remhash(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_remhash(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.hash_table_ref(args[1])?;
     if let Some(slot) = lisp.hash_lookup(args[1], args[0])? {
         lisp.hash_table_mut(args[1]).remove_slot(slot);
