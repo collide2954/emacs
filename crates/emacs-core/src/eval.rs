@@ -1139,10 +1139,12 @@ impl Lisp {
 
     pub fn functionp(&mut self, object: Value) -> bool {
         let mut object = object;
-        if object.is_symbol() && !object.is_nil() && !self.heap.symbol_ref(object).function.is_nil()
-        {
-            object = self.indirect_function(object);
-            if object.is_cons() && self.xcar(object) == sym::AUTOLOAD {
+        if self.symbolp(object) {
+            let bare = self.maybe_remove_pos_from_symbol(object);
+            if !bare.is_nil() && !self.heap.symbol_ref(bare).function.is_nil() {
+                object = self.indirect_function(bare);
+            }
+            if object.is_cons() && self.eq(self.xcar(object), sym::AUTOLOAD) {
                 let mut o = object;
                 for _ in 0..4 {
                     if !o.is_cons() {
@@ -1160,7 +1162,7 @@ impl Lisp {
             return self.is_closure(object);
         }
         if object.is_cons() {
-            return self.xcar(object) == sym::LAMBDA;
+            return self.eq(self.xcar(object), sym::LAMBDA);
         }
         false
     }

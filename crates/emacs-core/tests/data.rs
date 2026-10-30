@@ -19,6 +19,18 @@ fn symbols_with_position_as_symbols() {
             "(t 7 t nil)",
         ),
         (
+            "(setq swp-lambda (list (position-symbol 'lambda 3) '(x) 'x) swp-car (position-symbol 'car 5))",
+            "#<symbol car at 5>",
+        ),
+        (
+            "(list (functionp swp-lambda) (functionp swp-car))",
+            "(nil nil)",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (list (functionp swp-lambda) (functionp swp-car)))",
+            "(t t)",
+        ),
+        (
             "(defalias 'swp-mac (cons 'macro (function (lambda (x) (list 'quote x)))))",
             "swp-mac",
         ),

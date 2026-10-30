@@ -3,6 +3,20 @@ mod common;
 use common::check;
 
 #[test]
+fn overriding_plist_environment() {
+    check(&[
+        ("overriding-plist-environment", "nil"),
+        ("(special-variable-p 'overriding-plist-environment)", "t"),
+        ("(put 'opl-sym 'opl-prop 2)", "2"),
+        (
+            "(funcall (eval '(function (lambda () (let ((overriding-plist-environment '((opl-sym opl-prop 1)))) (list (get 'opl-sym 'opl-prop) (get 'opl-sym 'other))))) t))",
+            "(1 nil)",
+        ),
+        ("(get 'opl-sym 'opl-prop)", "2"),
+    ]);
+}
+
+#[test]
 fn buffer_hash() {
     check(&[
         ("(set-buffer (get-buffer-create \"bh\"))", "#<buffer bh>"),

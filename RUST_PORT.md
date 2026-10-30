@@ -57,6 +57,15 @@ for upstream changes since that file was refreshed and four `define-minor-mode` 
 strings that gain a `\\{...-map}` line, because the source-loaded preloaded Lisp has
 already loaded `compile`, `flymake` and `rect` (C's byte-compiled preload doesn't).
 
+Then byte-compile the preloaded Lisp. First compile `emacs-lisp/macroexp.el`, `cconv.el`,
+`byte-opt.el` and `bytecomp.el`, one `target/debug/emacs --batch --no-site-file
+--no-site-lisp -f batch-byte-compile FILE` each, as `lisp/Makefile`'s `compile-first`
+does. Then compile the files a batch boot lists in `load-history` (except the loaddefs
+files and `subdirs.el`) with `load-prefer-newer` and `byte-compile-warnings` set as in
+`BYTE_COMPILE_FLAGS`; one session for all of them works, since loadup has already loaded
+them all, as upstream's bootstrap Emacs has. The `.elc` files are ignored by git. This
+takes about 13 minutes with a debug build.
+
 ## Status
 
 C files fully replaced and deleted: `keymap.c`, `regex-emacs.c`, `search.c`, `casetab.c`,
@@ -150,13 +159,14 @@ are accepted wherever C's `SYMBOLP` accepts them: `check_symbol`, `eval`, `funca
 `macroexpand` and the `symbolp` opcode). The `.elc` files that `byte-compile-file` writes
 load and run with `emacs --batch -l`, lazy `#@` docstrings included.
 
-`emacs` without `--batch` stops while loading `elisp-mode.el` with
-`(wrong-type-argument stringp nil)`. This is expected for now: the preloaded Lisp loads
-from source, so eager macro-expansion of `flymake-log` loads `flymake.el`, which requires
-`project.el`, whose `defcustom` calls `locate-user-emacs-file` before
-`user-emacs-directory` is set (outside batch mode that function checks the directory). C Emacs never meets this, because it runs `loadup.el` only in batch to make the
-dump and an interactive start restores the dump. Interactive startup needs the heap
-snapshot (the pdumper replacement) or byte-compiled Lisp.
+With the preloaded Lisp byte-compiled (see Build and run), `emacs` without `--batch` runs
+`loadup.el` and startup to the end in about three seconds and exits, as there is no
+command loop or frontend yet; `--batch` boots in about six seconds instead of a minute.
+Without the `.elc` files an interactive start stops while loading `elisp-mode.el` with
+`(wrong-type-argument stringp nil)`: eager macro-expansion of `flymake-log` loads
+`flymake.el`, which requires `project.el`, whose `defcustom` calls
+`locate-user-emacs-file` before `user-emacs-directory` is set. C Emacs never meets this,
+because its preloaded files are always compiled.
 
 ## Coding
 

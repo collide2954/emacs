@@ -131,6 +131,7 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::YES_OR_NO_PROMPT, Value::NIL);
     let prompt = lisp.string("(yes or no) ");
     lisp.set_plain_value(sym::YES_OR_NO_PROMPT, prompt);
+    lisp.defvar(sym::OVERRIDING_PLIST_ENVIRONMENT, Value::NIL);
     lisp.defvar(sym::REQUIRE_NESTING_LIST, Value::NIL);
 }
 
