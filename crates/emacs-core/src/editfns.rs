@@ -1594,7 +1594,11 @@ fn styled_format_inner(lisp: &mut Lisp, args: &[Value], message: bool) -> LispRe
         let mut arg = args[n];
         let mut conversion = conversion;
         if conversion == 'S' || (conversion == 's' && !arg.is_string() && !arg.is_symbol()) {
-            let chars = lisp.print_to_chars(arg, conversion == 'S')?;
+            let count = lisp.specpdl.len();
+            lisp.bind_print_escapes(true)?;
+            let chars = lisp.print_to_chars(arg, conversion == 'S');
+            lisp.unbind_to(count)?;
+            let chars = chars?;
             if chars.iter().any(|&c| c >= 0x80) {
                 multibyte = true;
             }

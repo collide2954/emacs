@@ -61,6 +61,7 @@ pub struct Printer {
     circle: Option<HashMap<Value, i64>>,
     next_label: i64,
     new_backquote_output: usize,
+    to_function: bool,
 }
 
 impl Printer {
@@ -111,16 +112,83 @@ impl Lisp {
     }
 
     pub fn prin1_to_string(&mut self, value: Value) -> String {
-        let chars = self.print_to_chars(value, true).unwrap_or_default();
-        chars_to_display_string(&chars)
+        self.print_to_display_string(value, true)
     }
 
     pub fn princ_to_string(&mut self, value: Value) -> String {
-        let chars = self.print_to_chars(value, false).unwrap_or_default();
+        self.print_to_display_string(value, false)
+    }
+
+    fn print_to_display_string(&mut self, value: Value, escape: bool) -> String {
+        let count = self.specpdl.len();
+        let chars = self
+            .bind_print_escapes(true)
+            .and_then(|()| self.print_to_chars(value, escape))
+            .unwrap_or_default();
+        let _ = self.unbind_to(count);
         chars_to_display_string(&chars)
     }
 
     pub fn print_to_chars(&mut self, value: Value, escape: bool) -> LispResult<Vec<u32>> {
+        self.print_to_chars_for(value, escape, false)
+    }
+
+    fn print_destination(&self, printcharfun: Value) -> Value {
+        let dest = if printcharfun.is_nil() {
+            self.plain_value(sym::STANDARD_OUTPUT)
+        } else {
+            printcharfun
+        };
+        if dest.is_nil() { sym::T } else { dest }
+    }
+
+    fn print_destination_multibyte(&self, dest: Value) -> Option<bool> {
+        let buffer = if self.is_buffer(dest) {
+            dest
+        } else if self.is_marker(dest) {
+            self.marker(dest).buffer
+        } else {
+            return None;
+        };
+        if !self.is_buffer(buffer) {
+            return None;
+        }
+        Some(self.buffer(buffer).text.multibyte)
+    }
+
+    fn print_destination_is_function(&self, dest: Value) -> bool {
+        dest != sym::T && self.print_destination_multibyte(dest).is_none()
+    }
+
+    pub fn bind_print_escapes(&mut self, multibyte: bool) -> LispResult<()> {
+        if !multibyte && !self.var_true(sym::PRINT_ESCAPE_MULTIBYTE) {
+            self.specbind(sym::PRINT_ESCAPE_MULTIBYTE, sym::T)?;
+        }
+        if multibyte && !self.var_true(sym::PRINT_ESCAPE_NONASCII) {
+            self.specbind(sym::PRINT_ESCAPE_NONASCII, sym::T)?;
+        }
+        Ok(())
+    }
+
+    fn print_to_destination_chars(
+        &mut self,
+        value: Value,
+        escape: bool,
+        dest: Value,
+    ) -> LispResult<Vec<u32>> {
+        if let Some(multibyte) = self.print_destination_multibyte(dest) {
+            self.bind_print_escapes(multibyte)?;
+        }
+        let to_function = self.print_destination_is_function(dest);
+        self.print_to_chars_for(value, escape, to_function)
+    }
+
+    fn print_to_chars_for(
+        &mut self,
+        value: Value,
+        escape: bool,
+        to_function: bool,
+    ) -> LispResult<Vec<u32>> {
         let base = self.stack.len();
         self.stack.push(value);
         let circle = if !self.plain_value(sym::PRINT_CIRCLE).is_nil() {
@@ -135,6 +203,7 @@ impl Lisp {
             circle,
             next_label: 1,
             new_backquote_output: 0,
+            to_function,
         };
         let r = self.print_object(&mut p, value, escape);
         self.stack.truncate(base);
@@ -266,8 +335,24 @@ impl Lisp {
                 } else {
                     let chars = self.string_char_vec(obj);
                     let multibyte = self.string_multibyte(obj);
+                    let escape_nonascii = self.var_true(sym::PRINT_ESCAPE_NONASCII);
                     for c in chars {
-                        if !multibyte && c >= 0x80 {
+                        if p.to_function {
+                            p.push(c);
+                        } else if escape_nonascii
+                            && (if multibyte {
+                                character::char_byte8_p(c)
+                            } else {
+                                c >= 0x80
+                            })
+                        {
+                            let byte = if multibyte {
+                                character::char_to_byte8(c) as u32
+                            } else {
+                                c
+                            };
+                            p.push_str(&format!("\\{byte:03o}"));
+                        } else if !multibyte && c >= 0x80 {
                             p.push(character::byte8_to_char(c as u8));
                         } else {
                             p.push(c);
@@ -329,8 +414,6 @@ impl Lisp {
                     p.push(c);
                 } else if escape_control && (c < 32 || c == 127) {
                     octal_out(p, c, data.get(i).copied());
-                } else if !multibyte && c >= 0x80 {
-                    p.push(character::byte8_to_char(c as u8));
                 } else {
                     p.push(c);
                 }
@@ -1119,7 +1202,10 @@ fn with_overrides<T>(
 
 fn f_prin1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (object, printcharfun, overrides) = (args[0], args[1], args[2]);
-    let chars = with_overrides(lisp, overrides, |l| l.print_to_chars(object, true))?;
+    let dest = lisp.print_destination(printcharfun);
+    let chars = with_overrides(lisp, overrides, |l| {
+        l.print_to_destination_chars(object, true, dest)
+    })?;
     lisp.print_to_stream(&chars, printcharfun)?;
     Ok(object)
 }
@@ -1127,6 +1213,7 @@ fn f_prin1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_prin1_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (object, noescape, overrides) = (args[0], args[1], args[2]);
     let chars = with_overrides(lisp, overrides, |l| {
+        l.bind_print_escapes(true)?;
         l.print_to_chars(object, noescape.is_nil())
     })?;
     let multibyte = chars
@@ -1144,19 +1231,28 @@ fn f_error_message_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if !obj.is_cons() && !obj.is_nil() {
         return Err(lisp.wrong_type(sym::CONSP, obj));
     }
-    let s = lisp.error_message_string(obj)?;
+    let s = with_overrides(lisp, Value::NIL, |l| {
+        l.bind_print_escapes(true)?;
+        l.error_message_string(obj)
+    })?;
     Ok(lisp.string(&s))
 }
 
 fn f_princ(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let chars = lisp.print_to_chars(args[0], false)?;
+    let dest = lisp.print_destination(args[1]);
+    let chars = with_overrides(lisp, Value::NIL, |l| {
+        l.print_to_destination_chars(args[0], false, dest)
+    })?;
     lisp.print_to_stream(&chars, args[1])?;
     Ok(args[0])
 }
 
 fn f_print(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let dest = lisp.print_destination(args[1]);
     let mut chars = vec![10];
-    chars.extend(lisp.print_to_chars(args[0], true)?);
+    chars.extend(with_overrides(lisp, Value::NIL, |l| {
+        l.print_to_destination_chars(args[0], true, dest)
+    })?);
     chars.push(10);
     lisp.print_to_stream(&chars, args[1])?;
     Ok(args[0])

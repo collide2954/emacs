@@ -64,7 +64,9 @@ does. Then compile the files a batch boot lists in `load-history` (except the lo
 files and `subdirs.el`) with `load-prefer-newer` and `byte-compile-warnings` set as in
 `BYTE_COMPILE_FLAGS`; one session for all of them works, since loadup has already loaded
 them all, as upstream's bootstrap Emacs has. The `.elc` files are ignored by git. This
-takes about 13 minutes with a debug build.
+takes about 8 minutes with a debug build. `.elc` files written before 0.1.69 have wrong
+docstring positions (their bytecode strings hold raw bytes instead of octal escapes), so
+rebuild them.
 
 ## Status
 
@@ -75,7 +77,8 @@ Ported but not yet complete (C kept):
 
 | C file | Rust | Missing |
 | --- | --- | --- |
-| `alloc.c`, `data.c`, `eval.c`, `fns.c`, `print.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
+| `alloc.c`, `data.c`, `eval.c`, `fns.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
+| `print.c` | `print.rs` | assorted primitives; the printer builds its output as characters before writing it to the destination, but applies `print_prepare`'s and `print_string`'s destination rules: raw bytes become octal escapes in multibyte buffers and in `prin1-to-string` (which `.elc` docstring positions depend on) and reach a function as Latin-1 characters |
 | `lread.c` | `lread.rs` | assorted primitives; `load`, `openp` and `locate-file-internal` follow C (handlers, `load-prefer-newer`, the `.elc` version check, emacs-mule `.elc` files from before Emacs 22, text-mode reading of source files on Windows), but a loaded file is read whole and decoded up front rather than byte by byte, and the lexical-binding cookie check is an approximation of `lisp_file_lexical_cookie` |
 | `character.c` | `charfns.rs` | `get-byte`, display-table aware `string-width` |
 | `emacs.c` | `emacs.rs` | argument handling (`sort_args`, `argmatch`, the option sequence in `main`, `init_cmdargs`) is ported, but `-t` and the daemon options exit with an error because there is no tty frontend and no daemon support; `kill-emacs` and `shut_down_emacs` are ported, except that a string ARG is never stuffed as input (C only does that on a tty) and `shut_down_emacs` has no subprocesses to kill; on Windows, RESTART starts the new Emacs from the saved argv with Rust's argument quoting and inherited standard handles, not from the raw `GetCommandLine` string |
@@ -132,12 +135,15 @@ evaluated arguments of every backtrace frame it will unwind into a rooted list; 
 that calls `backtrace` then sees the same arguments C's still-intact frames show.
 
 ERT runs upstream test files, with the generated loaddefs and the byte-compiled preloaded
-Lisp from Build and run: `emacs --batch -Q -l ert -l test/src/data-tests.el -f
-ert-run-tests-batch-and-exit` runs that file's tests, but printing the backtrace of each
-failing test takes from seconds to many minutes: `ert.el`, `backtrace.el` and `cl-print.el`
-aren't byte-compiled, and the interpreter needs 0.2 to 2 seconds per frame. Failures seen so
-far come from unported or outdated primitives such as `buffer-local-toplevel-value` and
-`makunbound` of built-in variables.
+Lisp from Build and run, plus byte-compiled copies of the files ERT loads (`ert`,
+`backtrace`, `cl-print`, `pp`, `debug`, `ewoc`, `find-func`, `help-mode`, `help-fns`,
+`cl-extra` and `radix-tree`, compiled in one session like the preloaded files):
+`emacs --batch -Q -l ert -l test/src/data-tests.el -f ert-run-tests-batch-and-exit` runs all
+64 tests in about a minute, 50 as expected. The failures come from unported or outdated
+primitives: `buffer-local-toplevel-value`, `makunbound` of built-in variables, variable
+watchers, `kill-all-local-variables`, argument checks in the comparison functions and
+`cl-type-of` of a process. Printing a failing test's backtrace still takes about four
+seconds, mostly spent printing ERT's interpreted test closures.
 
 `crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
 writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
