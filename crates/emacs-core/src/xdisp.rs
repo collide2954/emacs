@@ -214,6 +214,13 @@ impl Lisp {
         Ok(())
     }
 
+    pub fn estimate_mode_line_height(&self, f: Value) -> i64 {
+        if self.frame(f).window_p() {
+            unreachable!("window-system frames need FRAME_FONT and realized mode-line faces");
+        }
+        1
+    }
+
     pub fn message_with_string(&mut self, m: &str, string: Value, log: bool) -> LispResult<()> {
         self.check_string(string)?;
         let noninteractive = self.noninteractive();

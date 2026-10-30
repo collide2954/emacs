@@ -463,6 +463,41 @@ impl Lisp {
         Ok(val)
     }
 
+    pub fn fast_c_string_match_internal(
+        &mut self,
+        regexp: Value,
+        string: &[u8],
+        table: Value,
+    ) -> LispResult<isize> {
+        let regexp = crate::fns::f_string_make_unibyte(self, &[regexp])?;
+        let idx = self.compile_pattern(regexp, table, false, false)?;
+        let mut pattern = self.take_pattern(idx);
+        let val = {
+            let env = self.regex_env(None);
+            let size = string.len();
+            regex::re_search(
+                &env,
+                &mut pattern,
+                Text::single(string),
+                0,
+                size as isize,
+                None,
+                size,
+            )
+        };
+        self.restore_pattern(idx, pattern);
+        Ok(val)
+    }
+
+    pub fn fast_c_string_match_ignore_case(
+        &mut self,
+        regexp: Value,
+        string: &[u8],
+    ) -> LispResult<isize> {
+        let table = self.ascii_canon_table;
+        self.fast_c_string_match_internal(regexp, string, table)
+    }
+
     fn set_search_regs(&mut self, beg_byte: usize, nbytes: usize) {
         if !self.bound_var(sym::INHIBIT_CHANGING_MATCH_DATA).is_nil() {
             return;

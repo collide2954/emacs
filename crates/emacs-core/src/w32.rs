@@ -101,6 +101,57 @@ pub fn w32_get_long_filename(name: &[u8]) -> Option<Vec<u8>> {
 }
 
 #[cfg(windows)]
+pub const D_OK: i64 = 8;
+
+#[cfg(windows)]
+fn is_exec(name: &str) -> bool {
+    name.rfind('.').is_some_and(|i| {
+        let ext = &name[i..];
+        [".exe", ".com", ".bat", ".cmd"]
+            .iter()
+            .any(|e| ext.eq_ignore_ascii_case(e))
+    })
+}
+
+#[cfg(windows)]
+fn access_attrs(path: &std::path::Path) -> std::io::Result<u32> {
+    use std::io::{Error, ErrorKind};
+    emacs_w32::file_attributes_wide(path).map_err(|w32err| match w32err {
+        123 | 161 | 2 | 3 | 15 | 21 | 53 | 67 => Error::from(ErrorKind::NotFound),
+        _ => Error::from(ErrorKind::PermissionDenied),
+    })
+}
+
+#[cfg(windows)]
+pub fn faccessat(path: &std::path::Path, mode: i64) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    use std::os::windows::fs::MetadataExt;
+    let name = path.to_string_lossy();
+    let mut mode = mode;
+    if name.ends_with(['/', '\\']) && mode == 0 {
+        mode |= D_OK;
+    }
+    let mut attributes = access_attrs(path)?;
+    if attributes & emacs_w32::FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        attributes = match std::fs::metadata(path) {
+            Ok(m) => m.file_attributes(),
+            Err(_) => access_attrs(path)?,
+        };
+    }
+    let denied = Error::from(ErrorKind::PermissionDenied);
+    if mode & 1 != 0 && !(is_exec(&name) || attributes & emacs_w32::FILE_ATTRIBUTE_DIRECTORY != 0) {
+        return Err(denied);
+    }
+    if mode & 2 != 0 && attributes & emacs_w32::FILE_ATTRIBUTE_READONLY != 0 {
+        return Err(denied);
+    }
+    if mode & D_OK != 0 && attributes & emacs_w32::FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(denied);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn until_nul(bytes: &[u8]) -> &[u8] {
     let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
     &bytes[..end]

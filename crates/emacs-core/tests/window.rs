@@ -166,3 +166,39 @@ fn window_cycling() {
         ),
     ]);
 }
+
+#[test]
+fn window_line_and_divider_sizes() {
+    check(&[
+        ("(window-scroll-bar-width)", "0"),
+        ("(window-scroll-bar-height)", "0"),
+        ("(window-right-divider-width)", "0"),
+        ("(window-bottom-divider-width)", "0"),
+        ("(window-bottom-divider-width (minibuffer-window))", "0"),
+        ("(window-mode-line-height)", "1"),
+        ("(window-mode-line-height (minibuffer-window))", "0"),
+        ("(window-header-line-height)", "0"),
+        ("(window-tab-line-height)", "0"),
+        (
+            "(progn (setq header-line-format \"h\") (window-header-line-height))",
+            "1",
+        ),
+        (
+            "(progn (setq tab-line-format \"t\") (window-tab-line-height))",
+            "1",
+        ),
+        (
+            "(progn (set-window-parameter nil 'mode-line-format 'none) (window-mode-line-height))",
+            "0",
+        ),
+        (
+            "(progn (set-window-parameter nil 'header-line-format 'none) (window-header-line-height))",
+            "0",
+        ),
+        (
+            "(window-mode-line-height 'foo)",
+            "error: (wrong-type-argument window-live-p foo)",
+        ),
+        ("(window-scroll-bar-width (frame-root-window))", "0"),
+    ]);
+}

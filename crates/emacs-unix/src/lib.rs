@@ -35,6 +35,11 @@ pub fn kill(pid: i64, sig: i32) -> io::Result<()> {
     result(unsafe { libc::kill(pid as libc::pid_t, sig) })
 }
 
+pub fn faccessat_eaccess(path: &Path, mode: i32) -> io::Result<()> {
+    let path = c_path(path)?;
+    result(unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) })
+}
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn rename_noreplace(old: &Path, new: &Path) -> io::Result<()> {
     let old = c_path(old)?;

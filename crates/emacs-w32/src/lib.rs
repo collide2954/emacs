@@ -11,8 +11,8 @@ use windows_sys::Win32::Globalization::{
     LOCALE_USE_CP_ACP,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_ATTRIBUTE_DIRECTORY, FindClose, FindFirstFileW, GetFileAttributesA,
-    INVALID_FILE_ATTRIBUTES, WIN32_FIND_DATAW,
+    FindClose, FindFirstFileW, GetFileAttributesA, GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
+    WIN32_FIND_DATAW,
 };
 use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_COPY_ALLOWED, MoveFileExW};
 use windows_sys::Win32::System::Console::{
@@ -30,6 +30,9 @@ use windows_sys::Win32::System::SystemInformation::GetTickCount64;
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
 use windows_sys::Win32::UI::Shell::{CSIDL_APPDATA, SHGetFolderPathA};
 
+pub use windows_sys::Win32::Storage::FileSystem::{
+    FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
+};
 pub use windows_sys::Win32::System::Registry::{REG_EXPAND_SZ, REG_SZ};
 
 pub const LOCALE_USER_DEFAULT: u32 = 0x0400;
@@ -237,6 +240,15 @@ fn wide(path: &Path) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+pub fn file_attributes_wide(path: &Path) -> Result<u32, u32> {
+    let path = wide(path);
+    let attrs = unsafe { GetFileAttributesW(path.as_ptr()) };
+    if attrs == INVALID_FILE_ATTRIBUTES {
+        return Err(unsafe { GetLastError() });
+    }
+    Ok(attrs)
 }
 
 pub fn move_file_no_replace(old: &Path, new: &Path) -> std::io::Result<()> {

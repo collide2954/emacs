@@ -75,7 +75,8 @@ Ported but not yet complete (C kept):
 
 | C file | Rust | Missing |
 | --- | --- | --- |
-| `alloc.c`, `data.c`, `eval.c`, `fns.c`, `lread.c`, `print.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
+| `alloc.c`, `data.c`, `eval.c`, `fns.c`, `print.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
+| `lread.c` | `lread.rs` | assorted primitives; `load`, `openp` and `locate-file-internal` follow C (handlers, `load-prefer-newer`, the `.elc` version check, emacs-mule `.elc` files from before Emacs 22, text-mode reading of source files on Windows), but a loaded file is read whole and decoded up front rather than byte by byte, and the lexical-binding cookie check is an approximation of `lisp_file_lexical_cookie` |
 | `character.c` | `charfns.rs` | `get-byte`, display-table aware `string-width` |
 | `emacs.c` | `emacs.rs` | argument handling (`sort_args`, `argmatch`, the option sequence in `main`, `init_cmdargs`) is ported, but `-t` and the daemon options exit with an error because there is no tty frontend and no daemon support; `kill-emacs` and `shut_down_emacs` are ported, except that a string ARG is never stuffed as input (C only does that on a tty) and `shut_down_emacs` has no subprocesses to kill; on Windows, RESTART starts the new Emacs from the saved argv with Rust's argument quoting and inherited standard handles, not from the raw `GetCommandLine` string |
 | `buffer.c`, `marker.c`, `insdel.c`, `textprop.c`, `editfns.c`, `fileio.c` | same names | assorted primitives; the overlay DEFUNs in `overlay.rs` are still approximations (only `overlays_in`, `overlays_at` and `sort_overlays` follow C), and `replace_range` is approximated by `replace_range_chars`; `do-auto-save`, the auto-save DEFUNs, `insert-file-contents` and `write-region` follow C; `prepare_to_modify_buffer` locks the visited file as C does but doesn't save the region text for `select-active-regions` |
@@ -94,7 +95,7 @@ Ported but not yet complete (C kept):
 | `bytecode.c` | `bytecode.rs` | nothing but two opcodes obsolete since Emacs 24.1: `temp-output-buffer-setup`/`-show` signal an error; `debug-on-next-call` is not honored (as elsewhere in the port). The VM keeps its operands on `Lisp::stack` (so they are GC roots) and recurses for calls where C chains frames on its own stack; primitives are called through the subr table by name, not through function cells, as C calls `Fcar` and friends directly |
 | `terminal.c` | `terminal.rs` | `delete-terminal` (needs `delete-frame`) |
 | `frame.c` | `frame.rs` | `delete-frame`, `x-create-frame`; `adjust_frame_size` is ported but stops with `unreachable!` where it would call a window system's size hook or resize child frames, which don't exist yet |
-| `window.c` | `window.rs` | splitting, resizing (`resize_frame_windows` handles only a leaf root window, the only kind the port can make), `window-list`; window configurations (`current-window-configuration`, `set-window-configuration`, `window-configuration-equal-p` and the dead-windows table) follow C |
+| `window.c` | `window.rs` | splitting, resizing (`resize_frame_windows` handles only a leaf root window, the only kind the port can make), `window-list`; window configurations (`current-window-configuration`, `set-window-configuration`, `window-configuration-equal-p` and the dead-windows table) follow C, as do the mode/header/tab line, divider and scroll bar size DEFUNs (without glyph matrices, line heights always come from `estimate_mode_line_height`; horizontal scroll bars don't exist, as in C without toolkit scroll bars) |
 | `minibuf.c` | `minibuf.rs` | interactive reading (needs the command loop; it signals an error) |
 | `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface`; `internal-char-font` is ported |
 | `fontset.c` | `fontset.rs` | `new-fontset`, `set-fontset-font`, `fontset-info`, `fontset-font` |
@@ -130,10 +131,11 @@ exit passes through them, so when a signal or throw picks its target it copies t
 evaluated arguments of every backtrace frame it will unwind into a rooted list; a cleanup
 that calls `backtrace` then sees the same arguments C's still-intact frames show.
 
-ERT runs upstream test files only partly: `current-window-configuration` isn't ported,
-and a failing `should` is reported as "aborted with non-local exit" instead of "failed".
-(Without generated loaddefs, cl-lib's autoloads such as `cl-coerce` are missing too; see
-Build and run.)
+ERT runs upstream test files, with the generated loaddefs and the byte-compiled preloaded
+Lisp from Build and run: `emacs --batch -Q -l ert -l test/src/data-tests.el -f
+ert-run-tests-batch-and-exit` runs 23 of that file's 64 tests (21 pass; the failures come
+from unported primitives such as `buffer-local-toplevel-value`), then hangs while printing
+the backtrace of a failing `data-aset-string`.
 
 `crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
 writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and

@@ -587,22 +587,24 @@ impl Lisp {
             let c = self.charset(id);
             (c.min_code, c.max_code)
         };
+        let map = self.unibyte_string(b".map");
+        let txt = self.unibyte_string(b".txt");
+        let suffixes = self.list(&[map, txt]);
+        let count = self.specpdl.len();
+        self.specbind(sym::FILE_NAME_HANDLER_ALIST, Value::NIL)?;
         let path = self.charset_map_path()?;
-        let name = self.string_to_rust(mapfile);
-        let suffixes = vec![".map".to_string(), ".txt".to_string()];
-        let Some(file) = self.locate_file(path, &name, &suffixes) else {
-            let msg = self.string("Loading charset map");
-            let reason = self.string("No such file or directory");
-            return Err(self.signal_list(sym::FILE_MISSING, &[msg, reason, mapfile]));
-        };
-        let bytes = match std::fs::read(&file) {
-            Ok(b) => b,
-            Err(e) => {
-                let msg = self.string("Loading charset map");
-                let reason = self.string(&e.to_string());
-                return Err(self.signal_list(sym::FILE_ERROR, &[msg, reason, mapfile]));
+        let (fd, _) = self.openp(path, mapfile, suffixes, Value::NIL, false, false)?;
+        let mut file = match fd {
+            Ok(crate::lread::OpenpFd::File(file)) => file,
+            Ok(_) => {
+                let e = std::io::Error::from(std::io::ErrorKind::InvalidInput);
+                return Err(self.file_error("Loading charset map", &e, mapfile));
             }
+            Err(e) => return Err(self.file_error("Loading charset map", &e, mapfile)),
         };
+        self.unbind_to(count)?;
+        let mut bytes = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut file, &mut bytes);
         let mut entries = Vec::new();
         let mut pos = 0usize;
         let mut ch = -1i32;

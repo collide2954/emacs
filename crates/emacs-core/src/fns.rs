@@ -1515,7 +1515,7 @@ fn f_string_make_multibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.string_from_chars(&chars, true))
 }
 
-fn f_string_make_unibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_string_make_unibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let s = lisp.check_string(args[0])?;
     if !lisp.string_multibyte(s) {
         return Ok(s);

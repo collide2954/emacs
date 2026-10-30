@@ -1,4 +1,5 @@
 use crate::error::LispResult;
+use crate::frame::VerticalScrollBarType;
 use crate::lisp::Lisp;
 use crate::object::{Vectorlike, Weakness};
 use crate::subr::Subr;
@@ -199,6 +200,8 @@ impl SaveWindowData {
     }
 }
 
+const USE_HORIZONTAL_SCROLL_BARS: bool = false;
+
 const SW_WINDOW: usize = 0;
 const SW_BUFFER: usize = 1;
 const SW_OLD_BUFFER: usize = 2;
@@ -324,6 +327,28 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-pixel-top", 0, 1, f_window_pixel_top),
     Subr::fixed("window-left-column", 0, 1, f_window_left_column),
     Subr::fixed("window-top-line", 0, 1, f_window_top_line),
+    Subr::fixed("window-mode-line-height", 0, 1, f_window_mode_line_height),
+    Subr::fixed(
+        "window-header-line-height",
+        0,
+        1,
+        f_window_header_line_height,
+    ),
+    Subr::fixed("window-tab-line-height", 0, 1, f_window_tab_line_height),
+    Subr::fixed(
+        "window-right-divider-width",
+        0,
+        1,
+        f_window_right_divider_width,
+    ),
+    Subr::fixed(
+        "window-bottom-divider-width",
+        0,
+        1,
+        f_window_bottom_divider_width,
+    ),
+    Subr::fixed("window-scroll-bar-width", 0, 1, f_window_scroll_bar_width),
+    Subr::fixed("window-scroll-bar-height", 0, 1, f_window_scroll_bar_height),
     Subr::fixed("window-hscroll", 0, 1, f_window_hscroll),
     Subr::fixed("window-point", 0, 1, f_window_point),
     Subr::fixed("window-old-point", 0, 1, f_window_old_point),
@@ -1000,15 +1025,193 @@ impl Lisp {
         left + right
     }
 
-    fn window_scroll_bar_area_width(&self, w: Value) -> i64 {
+    fn window_vertical_scroll_bar_type(&self, w: Value) -> VerticalScrollBarType {
         let win = self.window(w);
-        if !self.window_frame_window_p(w) || win.vertical_scroll_bar_type.is_nil() {
-            return 0;
+        if win.flags.pseudo_window_p {
+            VerticalScrollBarType::None
+        } else if win.vertical_scroll_bar_type == sym::T {
+            self.frame(win.frame).vertical_scroll_bar_type
+        } else if win.vertical_scroll_bar_type == sym::LEFT {
+            VerticalScrollBarType::Left
+        } else if win.vertical_scroll_bar_type == sym::RIGHT {
+            VerticalScrollBarType::Right
+        } else {
+            VerticalScrollBarType::None
         }
+    }
+
+    fn window_has_vertical_scroll_bar(&self, w: Value) -> bool {
+        self.window_vertical_scroll_bar_type(w) != VerticalScrollBarType::None
+    }
+
+    fn window_config_scroll_bar_width(&self, w: Value) -> i64 {
+        let win = self.window(w);
         if win.scroll_bar_width >= 0 {
             win.scroll_bar_width
         } else {
-            self.frame_scroll_bar_area_width(win.frame)
+            self.frame(win.frame).geometry.config_scroll_bar_width
+        }
+    }
+
+    fn window_scroll_bar_area_width(&self, w: Value) -> i64 {
+        if self.window_has_vertical_scroll_bar(w) {
+            self.window_config_scroll_bar_width(w)
+        } else {
+            0
+        }
+    }
+
+    fn window_has_horizontal_scroll_bar(&self, w: Value) -> bool {
+        if !USE_HORIZONTAL_SCROLL_BARS {
+            return false;
+        }
+        let win = self.window(w);
+        if win.flags.pseudo_window_p || (win.mini && win.horizontal_scroll_bar_type != sym::BOTTOM)
+        {
+            false
+        } else if win.horizontal_scroll_bar_type == sym::T {
+            self.frame(win.frame).flags.horizontal_scroll_bars
+        } else {
+            win.horizontal_scroll_bar_type == sym::BOTTOM
+        }
+    }
+
+    fn window_config_scroll_bar_height(&self, w: Value) -> i64 {
+        let win = self.window(w);
+        if win.scroll_bar_height >= 0 {
+            win.scroll_bar_height
+        } else {
+            self.frame(win.frame).geometry.config_scroll_bar_height
+        }
+    }
+
+    fn window_scroll_bar_area_height(&self, w: Value) -> i64 {
+        if self.window_has_horizontal_scroll_bar(w) {
+            self.window_config_scroll_bar_height(w)
+        } else {
+            0
+        }
+    }
+
+    fn window_frame_line_height(&self, w: Value) -> i64 {
+        self.frame(self.window(w).frame).geometry.line_height
+    }
+
+    fn window_rightmost_p(&self, w: Value) -> bool {
+        let win = self.window(w);
+        let root = self.window(self.frame(win.frame).root_window);
+        win.pixel_left + win.pixel_width == root.pixel_left + root.pixel_width
+    }
+
+    fn window_bottommost_p(&self, w: Value) -> bool {
+        let win = self.window(w);
+        let root = self.window(self.frame(win.frame).root_window);
+        win.pixel_top + win.pixel_height == root.pixel_top + root.pixel_height
+    }
+
+    fn window_right_divider_width(&self, w: Value) -> i64 {
+        if self.window_rightmost_p(w) {
+            0
+        } else {
+            self.frame(self.window(w).frame)
+                .geometry
+                .right_divider_width
+        }
+    }
+
+    fn window_bottom_divider_width(&self, w: Value) -> i64 {
+        let win = self.window(w);
+        let root = self.frame(win.frame).root_window;
+        if (self.window_bottommost_p(w) && self.window(root).next.is_nil())
+            || win.prev == root
+            || win.flags.pseudo_window_p
+        {
+            0
+        } else {
+            self.frame(win.frame).geometry.bottom_divider_width
+        }
+    }
+
+    fn window_wants_line(&self, w: Value, format_symbol: Value, lines_below: i64) -> bool {
+        let format = self.window_parameter(w, format_symbol);
+        let win = self.window(w);
+        self.is_buffer(win.contents)
+            && !win.mini
+            && !win.flags.pseudo_window_p
+            && format != sym::NONE
+            && (!format.is_nil()
+                || !self
+                    .buffer_local_value(format_symbol, win.contents)
+                    .is_nil())
+            && win.pixel_height > (lines_below + 1) * self.window_frame_line_height(w)
+    }
+
+    pub fn window_wants_mode_line(&self, w: Value) -> bool {
+        self.window_wants_line(w, sym::MODE_LINE_FORMAT, 0)
+    }
+
+    pub fn window_wants_header_line(&self, w: Value) -> bool {
+        let below = i64::from(self.window_wants_mode_line(w));
+        self.window_wants_line(w, sym::HEADER_LINE_FORMAT, below)
+    }
+
+    pub fn window_wants_tab_line(&self, w: Value) -> bool {
+        let below =
+            i64::from(self.window_wants_mode_line(w)) + i64::from(self.window_wants_header_line(w));
+        self.window_wants_line(w, sym::TAB_LINE_FORMAT, below)
+    }
+
+    fn current_mode_line_height(&mut self, w: Value) -> i64 {
+        let height = self.window(w).mode_line_height;
+        if height >= 0 {
+            return height;
+        }
+        let height = self.estimate_mode_line_height(self.window(w).frame);
+        self.window_mut(w).mode_line_height = height;
+        height
+    }
+
+    fn current_header_line_height(&mut self, w: Value) -> i64 {
+        let height = self.window(w).header_line_height;
+        if height >= 0 {
+            return height;
+        }
+        let height = self.estimate_mode_line_height(self.window(w).frame);
+        self.window_mut(w).header_line_height = height;
+        height
+    }
+
+    fn current_tab_line_height(&mut self, w: Value) -> i64 {
+        let height = self.window(w).tab_line_height;
+        if height >= 0 {
+            return height;
+        }
+        let height = self.estimate_mode_line_height(self.window(w).frame);
+        self.window_mut(w).tab_line_height = height;
+        height
+    }
+
+    pub fn window_mode_line_height(&mut self, w: Value) -> i64 {
+        if self.window_wants_mode_line(w) {
+            self.current_mode_line_height(w)
+        } else {
+            0
+        }
+    }
+
+    pub fn window_header_line_height(&mut self, w: Value) -> i64 {
+        if self.window_wants_header_line(w) {
+            self.current_header_line_height(w)
+        } else {
+            0
+        }
+    }
+
+    pub fn window_tab_line_height(&mut self, w: Value) -> i64 {
+        if self.window_wants_tab_line(w) {
+            self.current_tab_line_height(w)
+        } else {
+            0
         }
     }
 
@@ -1627,6 +1830,41 @@ fn f_window_left_column(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_window_top_line(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     valid_int(lisp, args, |w| w.top_line)
+}
+
+fn f_window_mode_line_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window_mode_line_height(w)))
+}
+
+fn f_window_header_line_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window_header_line_height(w)))
+}
+
+fn f_window_tab_line_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window_tab_line_height(w)))
+}
+
+fn f_window_right_divider_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window_right_divider_width(w)))
+}
+
+fn f_window_bottom_divider_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window_bottom_divider_width(w)))
+}
+
+fn f_window_scroll_bar_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window_scroll_bar_area_width(w)))
+}
+
+fn f_window_scroll_bar_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window_scroll_bar_area_height(w)))
 }
 
 fn f_window_hscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {

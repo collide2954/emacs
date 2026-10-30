@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use num_bigint::BigInt;
 use num_traits::Num as _;
@@ -11,6 +11,9 @@ use crate::object::{BoolVector, Interned, LispString, Obarray, Vectorlike};
 use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
+
+const EMACS_MULE_LEADING_CODE_PRIVATE_11: u8 = 0x9A;
+const EMACS_MULE_LEADING_CODE_PRIVATE_12: u8 = 0x9B;
 
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("read", 0, 1, f_read),
@@ -79,7 +82,7 @@ pub fn init_vars(lisp: &mut Lisp) {
         sym::INTERNAL__GET_DEFAULT_LEXICAL_BINDING_FUNCTION,
         Value::NIL,
     );
-    let regexp = lisp.string("^;;;.\\([0-9]+\\)");
+    let regexp = lisp.string("^;;;.\\(in Emacs version\\|bytecomp version FSF\\)");
     lisp.defvar(sym::BYTECOMP_VERSION_REGEXP, regexp);
 }
 
@@ -89,6 +92,7 @@ pub enum SourceKind {
         data: std::rc::Rc<Vec<u8>>,
         multibyte: bool,
     },
+    EmacsMule(std::rc::Rc<Vec<u8>>),
     Function(Value),
     Buffer(Value),
 }
@@ -108,6 +112,16 @@ impl Source {
                 data: std::rc::Rc::new(data),
                 multibyte,
             },
+            pos: 0,
+            chars_read: 0,
+            unread: Vec::new(),
+            from_file: false,
+        }
+    }
+
+    pub fn emacs_mule(data: Vec<u8>) -> Source {
+        Source {
+            kind: SourceKind::EmacsMule(std::rc::Rc::new(data)),
             pos: 0,
             chars_read: 0,
             unread: Vec::new(),
@@ -216,6 +230,18 @@ impl<'a> Reader<'a> {
                     Ok(b as i64)
                 }
             }
+            SourceKind::EmacsMule(data) => {
+                if self.source.pos >= data.len() {
+                    return Ok(-1);
+                }
+                self.source.chars_read += 1;
+                let c = data[self.source.pos];
+                self.source.pos += 1;
+                if c < 0x80 {
+                    return Ok(c as i64);
+                }
+                self.read_emacs_mule_char(&data, c)
+            }
             SourceKind::Function(f) => {
                 let v = self.with_roots(|l| l.funcall(f, &[]))?;
                 self.source.chars_read += 1;
@@ -241,9 +267,60 @@ impl<'a> Reader<'a> {
                 self.with_roots(|l| l.funcall(f, &[Value::fixnum(c)]))?;
             }
             SourceKind::Buffer(b) => self.lisp.buffer_unread_char(b),
-            SourceKind::Bytes { .. } => self.source.unread.push(c),
+            SourceKind::Bytes { .. } | SourceKind::EmacsMule(_) => self.source.unread.push(c),
         }
         Ok(())
+    }
+
+    fn read_emacs_mule_char(&mut self, data: &[u8], c: u8) -> LispResult<i64> {
+        let len = self.lisp.charsets.emacs_mule_bytes[c as usize] as usize;
+        if len == 1 {
+            return Ok(character::byte8_to_char(c) as i64);
+        }
+        let lead = self.source.pos;
+        let mut buf = [c, 0, 0, 0];
+        for slot in buf.iter_mut().take(len).skip(1) {
+            let b = data.get(self.source.pos).copied();
+            if b.is_some() {
+                self.source.pos += 1;
+            }
+            match b {
+                Some(b) if b >= 0xA0 => *slot = b,
+                _ => {
+                    self.source.pos = lead;
+                    return Ok(character::byte8_to_char(buf[0]) as i64);
+                }
+            }
+        }
+        let charset = |b: u8| self.lisp.charsets.emacs_mule_charset[b as usize];
+        let (id, code) = if len == 2 {
+            (charset(buf[0]), (buf[1] & 0x7F) as u32)
+        } else if len == 3 {
+            if buf[0] == EMACS_MULE_LEADING_CODE_PRIVATE_11
+                || buf[0] == EMACS_MULE_LEADING_CODE_PRIVATE_12
+            {
+                (charset(buf[1]), (buf[2] & 0x7F) as u32)
+            } else {
+                (
+                    charset(buf[0]),
+                    (((buf[1] as u32) << 8) | buf[2] as u32) & 0x7F7F,
+                )
+            }
+        } else {
+            (
+                charset(buf[1]),
+                (((buf[2] as u32) << 8) | buf[3] as u32) & 0x7F7F,
+            )
+        };
+        let ch = if id < 0 {
+            -1
+        } else {
+            self.lisp.decode_char(id, code)?
+        };
+        if ch < 0 {
+            return Err(self.invalid_syntax("invalid multibyte form"));
+        }
+        Ok(ch as i64)
     }
 
     fn end_of_file(&mut self) -> crate::error::Flow {
@@ -1689,58 +1766,215 @@ impl Lisp {
         self.unbind_to_value(count, Ok(r))
     }
 
-    fn get_load_suffixes(&mut self) -> Vec<String> {
-        let mut out = Vec::new();
+    pub fn get_load_suffixes(&mut self) -> LispResult {
+        let mut lst = Value::NIL;
         let suffixes = self.plain_value(sym::LOAD_SUFFIXES);
-        let reps = self.plain_value(sym::LOAD_FILE_REP_SUFFIXES);
-        let mut s = suffixes;
-        while s.is_cons() {
-            let suffix = self.xcar(s);
-            let suffix = self.string_to_rust(suffix);
-            let mut r = reps;
-            while r.is_cons() {
-                let rep = self.xcar(r);
-                let rep = self.string_to_rust(rep);
-                out.push(format!("{suffix}{rep}"));
-                r = self.xcdr(r);
+        for suffix in tail_safe_items(self, suffixes) {
+            let exts = self.plain_value(sym::LOAD_FILE_REP_SUFFIXES);
+            for ext in tail_safe_items(self, exts) {
+                let s = crate::fns::f_concat(self, &[suffix, ext])?;
+                lst = self.cons(s, lst);
             }
-            s = self.xcdr(s);
         }
-        out
+        crate::fns::f_nreverse(self, &[lst])
     }
 
-    pub fn locate_file(&mut self, path: Value, file: &str, suffixes: &[String]) -> Option<PathBuf> {
-        let candidate = Path::new(file);
-        let mut dirs: Vec<PathBuf> = Vec::new();
-        if candidate.is_absolute() {
-            dirs.push(PathBuf::new());
+    pub fn openp(
+        &mut self,
+        path: Value,
+        str: Value,
+        suffixes: Value,
+        predicate: Value,
+        newer: bool,
+        no_native: bool,
+    ) -> LispResult<(std::io::Result<OpenpFd>, Value)> {
+        let base = self.stack.len();
+        self.stack
+            .extend_from_slice(&[path, str, suffixes, predicate]);
+        let r = self.openp_1(path, str, suffixes, predicate, newer, no_native);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn openp_1(
+        &mut self,
+        path: Value,
+        str: Value,
+        suffixes: Value,
+        predicate: Value,
+        newer: bool,
+        _no_native: bool,
+    ) -> LispResult<(std::io::Result<OpenpFd>, Value)> {
+        use std::io::{Error, ErrorKind};
+        let str = self.check_string(str)?;
+        let suffix_list = tail_safe_items(self, suffixes);
+        for &suffix in &suffix_list {
+            self.check_string(suffix)?;
+        }
+        let mut last_errno = Error::from(ErrorKind::NotFound);
+        let mut save: Option<(OpenpFd, (i64, i64), Value)> = None;
+        let absolute = complete_filename_p(self.string_bytes(str));
+        let dirs: Vec<Option<Value>> = if path.is_nil() {
+            vec![None]
         } else {
-            let mut p = path;
-            while p.is_cons() {
-                let dir = self.xcar(p);
-                if dir.is_string() {
-                    dirs.push(PathBuf::from(self.string_to_rust(dir)));
-                } else if dir.is_nil() {
-                    let cwd = self.plain_value(sym::DEFAULT_DIRECTORY);
-                    if cwd.is_string() {
-                        dirs.push(PathBuf::from(self.string_to_rust(cwd)));
+            tail_safe_items(self, path).into_iter().map(Some).collect()
+        };
+        let suffix_list = if suffixes.is_nil() {
+            let empty = self.unibyte_string(b"");
+            self.stack.push(empty);
+            vec![empty]
+        } else {
+            suffix_list
+        };
+        let fixnat = predicate.as_fixnum().filter(|n| *n >= 0);
+        for dir in dirs {
+            let mut filename = match dir {
+                None => str,
+                Some(dir) => self.expand_file_name(str, dir)?,
+            };
+            if !complete_filename_p(self.string_bytes(filename)) {
+                let directory = self
+                    .buffer_local_get(self.current_buffer, sym::DEFAULT_DIRECTORY)
+                    .unwrap_or(Value::NIL);
+                self.stack.push(filename);
+                filename = self.expand_file_name(filename, directory)?;
+                if !complete_filename_p(self.string_bytes(filename)) {
+                    continue;
+                }
+            }
+            self.stack.push(filename);
+            let bytes = self.string_bytes(filename);
+            let prefixlen =
+                if self.string_chars(filename) > 2 && bytes[0] == b'/' && bytes[1] == b':' {
+                    2
+                } else {
+                    0
+                };
+            let stem = bytes[prefixlen..].to_vec();
+            let filename_multibyte = self.string_multibyte(filename);
+            for (i, &suffix) in suffix_list.iter().enumerate() {
+                let mut name = stem.clone();
+                name.extend_from_slice(self.string_bytes(suffix));
+                let string = if !filename_multibyte && !self.string_multibyte(suffix) {
+                    self.unibyte_string(&name)
+                } else {
+                    self.make_string(&name)
+                };
+                self.stack.push(string);
+                let handler = self.find_file_name_handler(string, sym::FILE_EXISTS_P)?;
+                if (handler.is_some() || (!predicate.is_nil() && predicate != sym::T))
+                    && fixnat.is_none()
+                {
+                    let exists = if predicate.is_nil() || predicate == sym::T {
+                        !crate::fileio::f_file_readable_p(self, &[string])?.is_nil()
                     } else {
-                        dirs.push(std::env::current_dir().unwrap_or_default());
+                        let tmp = self.funcall(predicate, &[string])?;
+                        if tmp.is_nil() {
+                            false
+                        } else if tmp == sym::DIR_OK
+                            || crate::fileio::f_file_directory_p(self, &[string])?.is_nil()
+                        {
+                            true
+                        } else {
+                            last_errno = Error::from(ErrorKind::IsADirectory);
+                            false
+                        }
+                    };
+                    if exists {
+                        return Ok((Ok(OpenpFd::Magic), string));
+                    }
+                } else {
+                    let pfn = PathBuf::from(self.string_to_rust(string));
+                    let missing = |e: &Error| {
+                        matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory)
+                    };
+                    let mut fd = None;
+                    if let Some(mode) = fixnat {
+                        if mode > i32::MAX as i64 {
+                            last_errno = Error::from(ErrorKind::InvalidInput);
+                        } else {
+                            match crate::fileio::sys_faccessat(&pfn, mode) {
+                                Ok(()) => match crate::fileio::file_directory_p(&pfn) {
+                                    Ok(()) => last_errno = Error::from(ErrorKind::IsADirectory),
+                                    Err(e) if missing(&e) => fd = Some((OpenpFd::Exists, (0, 0))),
+                                    Err(e) => last_errno = e,
+                                },
+                                Err(e) if !missing(&e) => last_errno = e,
+                                Err(_) => {}
+                            }
+                        }
+                    } else {
+                        let opened = if cfg!(windows) {
+                            crate::fileio::sys_faccessat(&pfn, 4)
+                                .and_then(|()| std::fs::File::open(&pfn))
+                        } else {
+                            std::fs::File::open(&pfn)
+                        };
+                        match opened {
+                            Err(e) if !missing(&e) => last_errno = e,
+                            Err(_) => {}
+                            Ok(f) => match f.metadata() {
+                                Err(e) => last_errno = e,
+                                Ok(m) if m.is_dir() => {
+                                    last_errno = Error::from(ErrorKind::IsADirectory)
+                                }
+                                Ok(m) => {
+                                    fd = Some((OpenpFd::File(f), crate::fileio::stat_mtime(&m)))
+                                }
+                            },
+                        }
+                    }
+                    if let Some((fd, mtime)) = fd {
+                        if newer && fixnat.is_none() {
+                            if save.as_ref().is_none_or(|(_, t, _)| mtime > *t) {
+                                save = Some((fd, mtime, string));
+                            }
+                        } else {
+                            return Ok((Ok(fd), string));
+                        }
+                    }
+                    if i + 1 == suffix_list.len()
+                        && let Some((fd, _, string)) = save.take()
+                    {
+                        return Ok((Ok(fd), string));
                     }
                 }
-                p = self.xcdr(p);
+            }
+            if absolute {
+                break;
             }
         }
-        for dir in dirs {
-            for suffix in suffixes {
-                let full = dir.join(format!("{file}{suffix}"));
-                if full.is_file() {
-                    return Some(full);
-                }
-            }
-        }
-        None
+        Ok((Err(last_errno), Value::NIL))
     }
+}
+
+pub enum OpenpFd {
+    File(std::fs::File),
+    Exists,
+    Magic,
+}
+
+fn tail_safe_items(lisp: &Lisp, list: Value) -> Vec<Value> {
+    let mut out = Vec::new();
+    let mut tail = list;
+    let mut tortoise = list;
+    while tail.is_cons() {
+        out.push(lisp.xcar(tail));
+        tail = lisp.xcdr(tail);
+        if out.len() % 2 == 0 {
+            tortoise = lisp.xcdr(tortoise);
+            if tortoise == tail {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn complete_filename_p(s: &[u8]) -> bool {
+    let sep = |c: u8| c == b'/' || (cfg!(windows) && c == b'\\');
+    s.first().is_some_and(|&c| sep(c))
+        || (cfg!(windows) && s.len() > 2 && s[1] == b':' && sep(s[2]))
 }
 
 fn restore_autoload_queue(lisp: &mut Lisp, old: Value) -> LispResult<()> {
@@ -2031,32 +2265,13 @@ fn f_mapatoms(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 fn f_get_load_suffixes(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    let suffixes = lisp.get_load_suffixes();
-    let values: Vec<Value> = suffixes.iter().map(|s| lisp.string(s)).collect();
-    Ok(lisp.list(&values))
+    lisp.get_load_suffixes()
 }
 
 fn f_locate_file_internal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let (filename, path, suffixes, _predicate) = (args[0], args[1], args[2], args[3]);
-    lisp.check_string(filename)?;
-    let mut sfx = Vec::new();
-    let mut s = suffixes;
-    while s.is_cons() {
-        let item = lisp.xcar(s);
-        sfx.push(lisp.string_to_rust(item));
-        s = lisp.xcdr(s);
-    }
-    if sfx.is_empty() {
-        sfx.push(String::new());
-    }
-    let name = lisp.string_to_rust(filename);
-    match lisp.locate_file(path, &name, &sfx) {
-        Some(found) => {
-            let s = found.to_string_lossy().replace('\\', "/");
-            Ok(lisp.string(&s))
-        }
-        None => Ok(Value::NIL),
-    }
+    let (filename, path, suffixes, predicate) = (args[0], args[1], args[2], args[3]);
+    let (_, file) = lisp.openp(path, filename, suffixes, predicate, false, true)?;
+    Ok(file)
 }
 
 fn f_get_file_char(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
@@ -2064,7 +2279,7 @@ fn f_get_file_char(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
         return Err(lisp.error("get-file-char misused"));
     };
     let byte = match &source.kind {
-        SourceKind::Bytes { data, .. } if source.pos < data.len() => {
+        SourceKind::Bytes { data, .. } | SourceKind::EmacsMule(data) if source.pos < data.len() => {
             let b = data[source.pos] as i64;
             source.pos += 1;
             b
@@ -2132,122 +2347,352 @@ fn skip_to_form(lisp: &mut Lisp, stream: Value) -> LispResult<i64> {
     result
 }
 
-fn f_load(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let (file, noerror, nomessage, nosuffix, must_suffix) =
-        (args[0], args[1], args[2], args[3], args[4]);
-    let file = lisp.check_string(file)?;
-    let name = lisp.string_to_rust(file);
-    let found = if name.is_empty() {
-        None
-    } else {
-        let has_suffix = name.ends_with(".el") || name.ends_with(".elc");
-        let has_dir = name.contains('/') || name.contains('\\');
-        let must = !must_suffix.is_nil() && !has_suffix && !has_dir;
-        let suffixes: Vec<String> = if !nosuffix.is_nil() {
-            vec![String::new()]
-        } else {
-            let mut s = lisp.get_load_suffixes();
-            if !must {
-                let reps = lisp.plain_value(sym::LOAD_FILE_REP_SUFFIXES);
-                let mut r = reps;
-                while r.is_cons() {
-                    let rep = lisp.xcar(r);
-                    s.push(lisp.string_to_rust(rep));
-                    r = lisp.xcdr(r);
-                }
+fn safe_to_load_version(lisp: &mut Lisp, file: Value, fd: &mut std::fs::File) -> LispResult<i32> {
+    use std::io::{Read, Seek, SeekFrom};
+    if fd.metadata().is_ok_and(|st| !st.is_file()) {
+        return Ok(0);
+    }
+    let mut buf = [0u8; 512];
+    let nbytes = fd.read(&mut buf).unwrap_or(0);
+    let mut version = 1;
+    if nbytes > 0 {
+        let mut i = 0;
+        while i < nbytes && buf[i] != b'\n' {
+            if i == 4 {
+                version = buf[i] as i8 as i32;
             }
-            s
-        };
-        let path = lisp.plain_value(sym::LOAD_PATH);
-        lisp.locate_file(path, &name, &suffixes)
-    };
-    let Some(found) = found else {
-        if noerror.is_nil() {
-            let msg = lisp.string("Cannot open load file");
-            let detail = lisp.string("No such file or directory");
-            return Err(lisp.signal_list(sym::FILE_MISSING, &[msg, detail, file]));
+            i += 1;
         }
-        return Ok(Value::NIL);
+        let regexp = lisp.plain_value(sym::BYTECOMP_VERSION_REGEXP);
+        if i >= nbytes || lisp.fast_c_string_match_ignore_case(regexp, &buf[i..nbytes])? < 0 {
+            version = 0;
+        }
+    }
+    if let Err(e) = fd.seek(SeekFrom::Start(0)) {
+        return Err(lisp.file_error("Seeking to start of file", &e, file));
+    }
+    Ok(version)
+}
+
+fn record_load_unwind(lisp: &mut Lisp, old: Value) -> LispResult<()> {
+    lisp.set_plain_value(sym::LOADS_IN_PROGRESS, old);
+    Ok(())
+}
+
+fn load_warn_unescaped_character_literals(lisp: &mut Lisp, file: Value) -> LispResult<()> {
+    let function = lisp
+        .heap
+        .symbol_ref(sym::BYTE_RUN_UNESCAPED_CHARACTER_LITERALS_WARNING)
+        .function;
+    let warning = if function.is_nil() {
+        Value::NIL
+    } else {
+        lisp.funcall(function, &[])?
     };
-    let found_str = found.to_string_lossy().replace('\\', "/");
-    let found_value = lisp.string(&found_str);
-    lisp.stack.push(found_value);
+    if !warning.is_nil() {
+        let base = lisp.stack.len();
+        lisp.stack.extend_from_slice(&[file, warning]);
+        let format = lisp.string("Loading `%s': %s");
+        let r = crate::editfns::f_message(lisp, &[format, file, warning]);
+        lisp.stack.truncate(base);
+        r?;
+    }
+    Ok(())
+}
+
+fn suffix_p(lisp: &Lisp, string: Value, suffix: &str) -> bool {
+    lisp.string_bytes(string).ends_with(suffix.as_bytes())
+}
+
+#[cfg(windows)]
+fn text_mode(bytes: Vec<u8>) -> Vec<u8> {
+    let end = bytes.iter().position(|&b| b == 0x1A).unwrap_or(bytes.len());
+    let mut out = Vec::with_capacity(end);
+    for i in 0..end {
+        if bytes[i] == b'\r' && i + 1 < end && bytes[i + 1] == b'\n' {
+            continue;
+        }
+        out.push(bytes[i]);
+    }
+    out
+}
+
+fn f_load(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let base = lisp.stack.len();
+    lisp.stack.extend_from_slice(&args[..5]);
+    let r = load(lisp, args[0], args[1], args[2], args[3], args[4]);
+    lisp.stack.truncate(base);
+    r
+}
+
+fn load(
+    lisp: &mut Lisp,
+    file: Value,
+    noerror: Value,
+    nomessage: Value,
+    nosuffix: Value,
+    must_suffix: Value,
+) -> LispResult {
+    use std::io::{Error, ErrorKind};
     let count = lisp.specpdl.len();
+    let file = lisp.check_string(file)?;
+    if let Some(handler) = lisp.find_file_name_handler(file, sym::LOAD)? {
+        return lisp.funcall(
+            handler,
+            &[sym::LOAD, file, noerror, nomessage, nosuffix, must_suffix],
+        );
+    }
+    let file = if !noerror.is_nil() {
+        let file = lisp.condition_case_internal(
+            sym::T,
+            |l| crate::fileio::f_substitute_in_file_name(l, &[file]),
+            |_, _| Ok(Value::NIL),
+        )?;
+        if file.is_nil() {
+            return Ok(Value::NIL);
+        }
+        file
+    } else {
+        crate::fileio::f_substitute_in_file_name(lisp, &[file])?
+    };
+    lisp.stack.push(file);
+    let no_native = suffix_p(lisp, file, ".elc");
+    let (fd, found) = if lisp.string_chars(file) == 0 {
+        (Err(Error::from(ErrorKind::NotFound)), Value::NIL)
+    } else {
+        let mut must_suffix = must_suffix;
+        if !must_suffix.is_nil()
+            && (suffix_p(lisp, file, ".el")
+                || suffix_p(lisp, file, ".elc")
+                || !crate::fileio::f_file_name_directory(lisp, &[file])?.is_nil())
+        {
+            must_suffix = Value::NIL;
+        }
+        let suffixes = if !nosuffix.is_nil() {
+            Value::NIL
+        } else {
+            let suffixes = lisp.get_load_suffixes()?;
+            if must_suffix.is_nil() {
+                let reps = lisp.plain_value(sym::LOAD_FILE_REP_SUFFIXES);
+                crate::fns::f_append(lisp, &[suffixes, reps])?
+            } else {
+                suffixes
+            }
+        };
+        lisp.stack.push(suffixes);
+        let mut load_path = lisp.plain_value(sym::LOAD_PATH);
+        let filter = lisp.plain_value(sym::LOAD_PATH_FILTER_FUNCTION);
+        if lisp.functionp(filter) {
+            load_path = lisp.funcall(filter, &[load_path, file, suffixes])?;
+        }
+        let newer = lisp.var_true(sym::LOAD_PREFER_NEWER);
+        lisp.openp(load_path, file, suffixes, Value::NIL, newer, no_native)?
+    };
+    lisp.stack.push(found);
+    let mut fd = match fd {
+        Ok(fd) => fd,
+        Err(e) => {
+            if noerror.is_nil() {
+                return Err(lisp.file_error("Cannot open load file", &e, file));
+            }
+            return Ok(Value::NIL);
+        }
+    };
+    if lisp.plain_value(sym::USER_INIT_FILE) == sym::T {
+        lisp.set_plain_value(sym::USER_INIT_FILE, found);
+    }
+    if matches!(fd, OpenpFd::Magic) {
+        let handler = if !lisp.equal(found, file)? {
+            lisp.find_file_name_handler(found, sym::T)?
+        } else {
+            lisp.find_file_name_handler(found, sym::LOAD)?
+        };
+        if let Some(handler) = handler {
+            return lisp.funcall(handler, &[sym::LOAD, found, noerror, nomessage, sym::T]);
+        }
+        #[cfg(windows)]
+        if let Ok(f) = std::fs::File::open(lisp.string_to_rust(found)) {
+            fd = OpenpFd::File(f);
+        }
+    }
     let loads = lisp.plain_value(sym::LOADS_IN_PROGRESS);
     let mut load_count = 0;
-    let mut tem = loads;
-    while tem.is_cons() {
-        let item = lisp.xcar(tem);
-        if lisp.equal(found_value, item)? {
+    for item in tail_safe_items(lisp, loads) {
+        if lisp.equal(found, item)? {
             load_count += 1;
             if load_count > 3 {
-                let data = lisp.cons(found_value, loads);
+                let data = lisp.cons(found, loads);
                 return Err(lisp.signal_error("Recursive load", data));
             }
         }
-        tem = lisp.xcdr(tem);
     }
-    let new_loads = lisp.cons(found_value, loads);
-    lisp.specbind(sym::LOADS_IN_PROGRESS, new_loads)?;
+    lisp.record_unwind(record_load_unwind, loads);
+    let new_loads = lisp.cons(found, loads);
+    lisp.set_plain_value(sym::LOADS_IN_PROGRESS, new_loads);
     lisp.specbind(sym::LEXICAL_BINDING, Value::NIL)?;
+    let found_eff = found;
+    let hist_file_name = if !lisp.plain_value(sym::PURIFY_FLAG).is_nil() {
+        let directory = crate::fileio::f_file_name_directory(lisp, &[file])?;
+        lisp.stack.push(directory);
+        let name = crate::fileio::f_file_name_nondirectory(lisp, &[found_eff])?;
+        crate::fns::f_concat(lisp, &[directory, name])?
+    } else {
+        found_eff
+    };
+    lisp.stack.push(hist_file_name);
+    let mut version = -1;
     lisp.specbind(sym::LREAD_UNESCAPED_CHARACTER_LITERALS, Value::NIL)?;
-    let is_elc = found_str.ends_with(".elc");
-    if !is_elc {
-        let source_fn = lisp.plain_value(sym::LOAD_SOURCE_FILE_FUNCTION);
-        if !source_fn.is_nil() {
-            let noerr = if noerror.is_nil() { Value::NIL } else { sym::T };
-            let nomsg = if nomessage.is_nil() {
+    lisp.record_unwind(load_warn_unescaped_character_literals, file);
+    let is_elc = suffix_p(lisp, found, ".elc");
+    let mut compiled = false;
+    let mut newer = false;
+    let compiled_file = is_elc
+        || match &mut fd {
+            OpenpFd::File(f) => {
+                version = safe_to_load_version(lisp, file, f)?;
+                version > 1
+            }
+            _ => false,
+        };
+    if compiled_file {
+        if !matches!(fd, OpenpFd::Magic) {
+            if version < 0
+                && let OpenpFd::File(f) = &mut fd
+            {
+                version = safe_to_load_version(lisp, file, f)?;
+            }
+            if version == 0 {
+                let message = format!(
+                    "File `{}' was not compiled in Emacs",
+                    lisp.string_to_rust(found)
+                );
+                return Err(lisp.error(&message));
+            }
+            compiled = true;
+            if !lisp.var_true(sym::LOAD_PREFER_NEWER) && is_elc {
+                let compiled_name = lisp.string_to_rust(found);
+                let mut source_name = compiled_name.clone();
+                source_name.pop();
+                if let (Ok(s1), Ok(s2)) = (
+                    std::fs::metadata(&compiled_name),
+                    std::fs::metadata(&source_name),
+                ) {
+                    let (t1, t2) = (
+                        crate::fileio::stat_mtime(&s1),
+                        crate::fileio::stat_mtime(&s2),
+                    );
+                    if t1 < t2 {
+                        newer = true;
+                        if !nomessage.is_nil()
+                            && !lisp.var_true(sym::FORCE_LOAD_MESSAGES)
+                            && t1 != (0, 0)
+                        {
+                            let msg_file = crate::fns::f_substring(
+                                lisp,
+                                &[found, Value::fixnum(0), Value::fixnum(-1)],
+                            )?;
+                            lisp.message_with_string(
+                                "Source file `%s' newer than byte-compiled file; using older file",
+                                msg_file,
+                                true,
+                            )?;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        let source_file_function = lisp.plain_value(sym::LOAD_SOURCE_FILE_FUNCTION);
+        if !source_file_function.is_nil() {
+            drop(fd);
+            let noerror = if noerror.is_nil() { Value::NIL } else { sym::T };
+            let nomessage = if nomessage.is_nil() || lisp.var_true(sym::FORCE_LOAD_MESSAGES) {
                 Value::NIL
             } else {
                 sym::T
             };
-            let r = lisp.funcall(source_fn, &[found_value, found_value, noerr, nomsg]);
-            lisp.stack.pop();
-            return lisp.unbind_to_value(count, r);
+            let val = lisp.funcall(
+                source_file_function,
+                &[found, hist_file_name, noerror, nomessage],
+            );
+            return lisp.unbind_to_value(count, val);
         }
     }
-    let bytes = match std::fs::read(&found) {
-        Ok(b) => b,
-        Err(e) => {
-            let msg = lisp.string("Opening input file");
-            let detail = lisp.string(&e.to_string());
-            return Err(lisp.signal_list(sym::FILE_ERROR, &[msg, detail, found_value]));
+    let bytes = match fd {
+        OpenpFd::File(f) => {
+            use std::io::Read;
+            #[cfg(windows)]
+            let stream = {
+                drop(f);
+                std::fs::File::open(lisp.string_to_rust(found)).map(|mut f| {
+                    let mut bytes = Vec::new();
+                    let _ = f.read_to_end(&mut bytes);
+                    if compiled { bytes } else { text_mode(bytes) }
+                })
+            };
+            #[cfg(not(windows))]
+            let stream = {
+                let mut f = f;
+                let mut bytes = Vec::new();
+                let _ = f.read_to_end(&mut bytes);
+                Ok(bytes)
+            };
+            stream
         }
+        _ => Err(Error::from(ErrorKind::InvalidInput)),
+    };
+    let bytes = match bytes {
+        Ok(bytes) => bytes,
+        Err(e) => return Err(lisp.file_error("Opening stdio stream", &e, file)),
+    };
+    if !lisp.plain_value(sym::PURIFY_FLAG).is_nil() {
+        let list = lisp.plain_value(sym::PRELOADED_FILE_LIST);
+        let list = lisp.cons(file, list);
+        lisp.set_plain_value(sym::PRELOADED_FILE_LIST, list);
+    }
+    let message = if !compiled {
+        "Loading %s (source)..."
+    } else if newer {
+        "Loading %s (compiled; note, source file is newer)..."
+    } else {
+        "Loading %s..."
     };
     if nomessage.is_nil() || lisp.var_true(sym::FORCE_LOAD_MESSAGES) {
-        let kind = if is_elc { "" } else { " (source)" };
-        lisp.message_raw(&format!("Loading {name}{kind}..."));
+        lisp.message_with_string(message, file, true)?;
     }
-    lisp.specbind(sym::LOAD_FILE_NAME, found_value)?;
-    lisp.specbind(sym::LOAD_TRUE_FILE_NAME, found_value)?;
+    lisp.specbind(sym::LOAD_FILE_NAME, hist_file_name)?;
+    lisp.specbind(sym::LOAD_TRUE_FILE_NAME, found)?;
     lisp.specbind(sym::INHIBIT_FILE_NAME_OPERATION, Value::NIL)?;
     lisp.specbind(sym::LOAD_IN_PROGRESS, sym::T)?;
-    let lexical = if is_elc {
-        false
+    let from = if compiled { Value::NIL } else { file };
+    let lexical = get_lexical_binding(lisp, lexical_cookie(&bytes), from)?;
+    lisp.set(sym::LEXICAL_BINDING, lexical)?;
+    let (mut source, readcharfun) = if version == 0 || version >= 22 {
+        let (data, _) = decode_utf8_emacs(&bytes);
+        (Source::from_bytes(data, true), sym::GET_FILE_CHAR)
     } else {
-        lexical_cookie(&bytes).unwrap_or(false)
+        lisp.specbind(sym::LOAD_FORCE_DOC_STRINGS, sym::T)?;
+        (Source::emacs_mule(bytes), sym::GET_EMACS_MULE_FILE_CHAR)
     };
-    let lexical_value = if lexical { sym::T } else { Value::NIL };
-    lisp.set(sym::LEXICAL_BINDING, lexical_value)?;
-    let (data, _) = decode_utf8_emacs(&bytes);
-    let mut source = Source::from_bytes(data, true);
     source.from_file = true;
     let previous = lisp.infile.replace(source);
     let r = readevalloop(
         lisp,
-        sym::GET_FILE_CHAR,
-        found_value,
+        readcharfun,
+        hist_file_name,
         false,
         Value::NIL,
         Value::NIL,
         Value::NIL,
     );
     lisp.infile = previous;
-    lisp.stack.pop();
     lisp.unbind_to_value(count, r)?;
-    let after = sym::DO_AFTER_LOAD_EVALUATION;
-    if !lisp.heap.symbol_ref(after).function.is_nil() {
-        lisp.funcall(after, &[found_value])?;
+    if !crate::data::f_fboundp(lisp, &[sym::DO_AFTER_LOAD_EVALUATION])?.is_nil() {
+        lisp.funcall(sym::DO_AFTER_LOAD_EVALUATION, &[hist_file_name])?;
+    }
+    if !lisp.noninteractive() && (nomessage.is_nil() || lisp.var_true(sym::FORCE_LOAD_MESSAGES)) {
+        let done = format!("{message}done");
+        lisp.message_with_string(&done, file, true)?;
     }
     Ok(sym::T)
 }
@@ -2432,8 +2877,8 @@ fn buffer_lexical_cookie(lisp: &Lisp, buffer: Value) -> Option<bool> {
     lexical_cookie(&head)
 }
 
-fn get_lexical_binding(lisp: &mut Lisp, stream: Value, from: Value) -> LispResult {
-    match buffer_lexical_cookie(lisp, stream) {
+fn get_lexical_binding(lisp: &mut Lisp, cookie: Option<bool>, from: Value) -> LispResult {
+    match cookie {
         Some(true) => Ok(sym::T),
         Some(false) => Ok(Value::NIL),
         None => {
@@ -2480,7 +2925,8 @@ fn f_eval_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         lisp.temp_set_point(buf, begv);
         let local = call_named(lisp, "local-variable-p", &[sym::LEXICAL_BINDING, buf])?;
         if local.is_nil() {
-            let lexical = get_lexical_binding(lisp, buf, buf)?;
+            let cookie = buffer_lexical_cookie(lisp, buf);
+            let lexical = get_lexical_binding(lisp, cookie, buf)?;
             lisp.specbind(sym::LEXICAL_BINDING, lexical)?;
         }
         let begv = lisp.buffer(buf).begv;

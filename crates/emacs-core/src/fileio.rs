@@ -844,7 +844,7 @@ pub(crate) fn f_expand_file_name(lisp: &mut Lisp, args: &[Value]) -> LispResult 
     lisp.expand_file_name(args[0], args[1])
 }
 
-fn f_substitute_in_file_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_substitute_in_file_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let s = lisp.check_string(args[0])?;
     if let Some(r) = lisp.handled(sym::SUBSTITUTE_IN_FILE_NAME, &[s])? {
         return Ok(r);
@@ -1010,7 +1010,7 @@ fn f_file_executable_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-fn f_file_readable_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_file_readable_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     predicate(lisp, args, sym::FILE_READABLE_P, |p| {
         if p.is_dir() {
             std::fs::read_dir(p).is_ok()
@@ -1054,8 +1054,40 @@ pub(crate) fn f_file_symlink_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     }
 }
 
-fn f_file_directory_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_file_directory_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     predicate(lisp, args, sym::FILE_DIRECTORY_P, Path::is_dir)
+}
+
+pub(crate) fn sys_faccessat(path: &Path, mode: i64) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        crate::w32::faccessat(path, mode)
+    }
+    #[cfg(unix)]
+    {
+        emacs_unix::faccessat_eaccess(path, mode as i32)
+    }
+}
+
+pub(crate) fn file_directory_p(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        crate::w32::faccessat(path, crate::w32::D_OK).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::PermissionDenied {
+                std::io::Error::from(std::io::ErrorKind::NotADirectory)
+            } else {
+                e
+            }
+        })
+    }
+    #[cfg(unix)]
+    {
+        match std::fs::metadata(path) {
+            Ok(m) if m.is_dir() => Ok(()),
+            Ok(_) => Err(std::io::Error::from(std::io::ErrorKind::NotADirectory)),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 fn f_file_accessible_directory_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
