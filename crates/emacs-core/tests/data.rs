@@ -221,8 +221,40 @@ fn arrays() {
         ("(aref [1] 5)", "error: (args-out-of-range [1] 5)"),
         ("(let ((v (vector 1 2))) (aset v 0 9) v)", "[9 2]"),
         (
-            "(let ((s (copy-sequence \"abc\"))) (aset s 1 ?é) s)",
-            "\"aéc\"",
+            "(let ((s (copy-sequence \"abc\"))) (aset s 1 ?é) (list (multibyte-string-p s) (aref s 1)))",
+            "(nil 233)",
+        ),
+        (
+            "(let ((s (copy-sequence \"abc\"))) (aset s 2 255) (list (multibyte-string-p s) (aref s 2)))",
+            "(nil 255)",
+        ),
+        (
+            "(aset (copy-sequence \"abc\") 1 256)",
+            "error: (error \"Attempt to store non-byte value into unibyte string\")",
+        ),
+        (
+            "(aset (copy-sequence \"abc\") 1 #x3fff80)",
+            "error: (error \"Attempt to store non-byte value into unibyte string\")",
+        ),
+        (
+            "(let ((s (copy-sequence \"abçdef\"))) (aset s 4 ?E) s)",
+            "\"abçdEf\"",
+        ),
+        (
+            "(aset (copy-sequence \"abçdef\") 2 ?c)",
+            "error: (error \"Attempt to replace non-ASCII char in multibyte string\")",
+        ),
+        (
+            "(aset (copy-sequence \"abçdef\") 1 #xe9)",
+            "error: (error \"Attempt to store non-ASCII char into multibyte string\")",
+        ),
+        (
+            "(aset (copy-sequence \"abc\") 5 'x)",
+            "error: (args-out-of-range \"abc\" 5)",
+        ),
+        (
+            "(aset (copy-sequence \"abc\") 1 'x)",
+            "error: (wrong-type-argument characterp x)",
         ),
         (
             "(let ((b (make-bool-vector 3 nil))) (aset b 1 t) b)",

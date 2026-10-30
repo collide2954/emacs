@@ -133,9 +133,11 @@ that calls `backtrace` then sees the same arguments C's still-intact frames show
 
 ERT runs upstream test files, with the generated loaddefs and the byte-compiled preloaded
 Lisp from Build and run: `emacs --batch -Q -l ert -l test/src/data-tests.el -f
-ert-run-tests-batch-and-exit` runs 23 of that file's 64 tests (21 pass; the failures come
-from unported primitives such as `buffer-local-toplevel-value`), then hangs while printing
-the backtrace of a failing `data-aset-string`.
+ert-run-tests-batch-and-exit` runs that file's tests, but printing the backtrace of each
+failing test takes from seconds to many minutes: `ert.el`, `backtrace.el` and `cl-print.el`
+aren't byte-compiled, and the interpreter needs 0.2 to 2 seconds per frame. Failures seen so
+far come from unported or outdated primitives such as `buffer-local-toplevel-value` and
+`makunbound` of built-in variables.
 
 `crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
 writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and

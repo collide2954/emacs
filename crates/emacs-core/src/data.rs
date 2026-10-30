@@ -691,38 +691,27 @@ impl Lisp {
     pub fn aset_value(&mut self, array: Value, idx: Value, newelt: Value) -> LispResult {
         let i = self.check_fixnum(idx)?;
         if array.is_string() {
-            let c = self.check_character(newelt)?;
-            let s = self.heap.string_ref(array);
-            if i < 0 || i as usize >= s.chars {
+            let chars = self.heap.string_ref(array).chars;
+            if i < 0 || i as usize >= chars {
                 return Err(self.args_out_of_range(array, idx));
             }
+            let c = self.check_character(newelt)?;
             let i = i as usize;
-            if !s.multibyte {
-                if character::single_byte_char_p(c) || character::char_byte8_p(c) {
-                    let byte = character::char_to_byte8(c);
-                    if byte >= 0x80 && character::ascii_char_p(c) {
-                        unreachable!();
-                    }
-                    if c < 0x80 || character::char_byte8_p(c) {
-                        self.heap.string_mut(array).data[i] = byte;
-                        return Ok(newelt);
-                    }
+            if self.string_multibyte(array) {
+                if c > 0x7f {
+                    return Err(self.error("Attempt to store non-ASCII char into multibyte string"));
                 }
-                let s = self.heap.string_mut(array);
-                let mut data = character::str_to_multibyte(&s.data);
-                let offset = character::char_offset_to_byte(&data, i);
-                let (_, len) = character::string_char(&data[offset..]);
-                let replacement = character::char_string(c);
-                data.splice(offset..offset + len, replacement);
-                s.data = data;
-                s.multibyte = true;
-                return Ok(newelt);
+                let offset = character::char_offset_to_byte(self.string_bytes(array), i);
+                if self.string_bytes(array)[offset] > 0x7f {
+                    return Err(self.error("Attempt to replace non-ASCII char in multibyte string"));
+                }
+                self.heap.string_mut(array).data[offset] = c as u8;
+            } else {
+                if c > 0xff {
+                    return Err(self.error("Attempt to store non-byte value into unibyte string"));
+                }
+                self.heap.string_mut(array).data[i] = c as u8;
             }
-            let s = self.heap.string_mut(array);
-            let offset = character::char_offset_to_byte(&s.data, i);
-            let (_, len) = character::string_char(&s.data[offset..]);
-            let replacement = character::char_string(c);
-            s.data.splice(offset..offset + len, replacement);
             return Ok(newelt);
         }
         if !array.is_vectorlike() {
