@@ -109,3 +109,9 @@ impl Sha1Ctx {
         digest
     }
 }
+
+pub fn sha1_buffer(buffer: &[u8]) -> Vec<u8> {
+    let mut ctx = Sha1Ctx::default();
+    ctx.process_bytes(buffer);
+    ctx.finish().to_vec()
+}

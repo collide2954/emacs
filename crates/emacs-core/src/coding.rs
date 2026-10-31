@@ -686,6 +686,14 @@ impl Lisp {
         self.hash_table(self.codings.hash_table).entries[id as usize].map_or(Value::NIL, |(k, _)| k)
     }
 
+    pub fn preferred_coding_system(&self) -> Value {
+        let id = self.codings.categories[self.codings.priorities[0]].id;
+        if id < 0 {
+            return Value::NIL;
+        }
+        self.coding_id_name(id)
+    }
+
     pub fn coding_id_attrs(&self, id: i64) -> Value {
         self.vector_items(self.coding_id_spec(id))[0]
     }

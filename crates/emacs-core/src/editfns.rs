@@ -143,6 +143,11 @@ impl Lisp {
         c
     }
 
+    pub fn fetch_char(&self, pos: usize) -> u32 {
+        let b = self.cur();
+        b.text.char_at_byte(b.text.char_to_byte(pos))
+    }
+
     pub fn goto_char_internal(&mut self, pos: usize) {
         let b = self.cur_mut();
         let pos = pos.clamp(b.begv, b.zv);
@@ -722,7 +727,7 @@ fn f_char_after(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if pos < b.begv as i64 || pos >= b.zv as i64 {
         return Ok(Value::NIL);
     }
-    Ok(Value::fixnum(lisp.char_at_pos(pos as usize) as i64))
+    Ok(Value::fixnum(lisp.fetch_char(pos as usize) as i64))
 }
 
 fn f_char_before(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -741,7 +746,7 @@ fn f_char_before(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if pos <= b.begv as i64 || pos > b.zv as i64 {
         return Ok(Value::NIL);
     }
-    Ok(Value::fixnum(lisp.char_at_pos(pos as usize - 1) as i64))
+    Ok(Value::fixnum(lisp.fetch_char(pos as usize - 1) as i64))
 }
 
 fn login_name() -> String {

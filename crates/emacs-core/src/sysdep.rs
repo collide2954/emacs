@@ -139,6 +139,24 @@ fn os_random_seed() -> Option<u32> {
     emacs_unix::getrandom(&mut buf).then(|| u32::from_ne_bytes(buf))
 }
 
+#[cfg(windows)]
+pub fn getrandom(buf: &mut [u8]) -> std::io::Result<usize> {
+    if emacs_w32::crypt_gen_random(buf) {
+        Ok(buf.len())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+pub fn getrandom(buf: &mut [u8]) -> std::io::Result<usize> {
+    if emacs_unix::getrandom(buf) {
+        Ok(buf.len())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
 pub fn init_random(lisp: &mut Lisp) {
     let v = os_random_seed().unwrap_or_else(|| {
         let (sec, nsec) = current_timespec();

@@ -91,8 +91,11 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("require", 1, 3, f_require),
     Subr::fixed("load-average", 0, 1, f_load_average),
     Subr::fixed("locale-info", 1, 1, f_locale_info),
+    Subr::fixed("base64-encode-region", 2, 3, f_base64_encode_region).interactive("r"),
+    Subr::fixed("base64url-encode-region", 2, 3, f_base64url_encode_region).interactive("r"),
     Subr::fixed("base64-encode-string", 1, 2, f_base64_encode_string),
     Subr::fixed("base64url-encode-string", 1, 2, f_base64url_encode_string),
+    Subr::fixed("base64-decode-region", 2, 4, f_base64_decode_region).interactive("r"),
     Subr::fixed("base64-decode-string", 1, 3, f_base64_decode_string),
     Subr::fixed("sxhash-eq", 1, 1, f_sxhash_eq),
     Subr::fixed("sxhash-eql", 1, 1, f_sxhash_eql),
@@ -124,6 +127,8 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("maphash", 2, 2, f_maphash),
     Subr::fixed("define-hash-table-test", 3, 3, f_define_hash_table_test),
     Subr::fixed("secure-hash-algorithms", 0, 0, f_secure_hash_algorithms),
+    Subr::fixed("md5", 1, 5, f_md5),
+    Subr::fixed("secure-hash", 2, 5, f_secure_hash),
     Subr::fixed("string-search", 2, 3, f_string_search),
     Subr::fixed("object-intervals", 1, 1, f_object_intervals),
     Subr::fixed("buffer-line-statistics", 0, 1, f_buffer_line_statistics),
@@ -1630,6 +1635,282 @@ fn f_buffer_hash(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.unibyte_string(&digest))
 }
 
+impl Lisp {
+    pub fn extract_data_from_object(&mut self, spec: Value) -> LispResult<Vec<u8>> {
+        let base = self.stack.len();
+        self.stack.push(spec);
+        let r = self.extract_data_from_object_1(spec);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn extract_data_from_object_1(&mut self, mut spec: Value) -> LispResult<Vec<u8>> {
+        let mut object = self.xcar(spec);
+        let mut fields = [Value::NIL; 4];
+        for field in &mut fields {
+            if spec.is_cons() {
+                spec = self.xcdr(spec);
+            }
+            *field = self.car_safe(spec);
+        }
+        let [start, end, mut coding_system, noerror] = fields;
+        let mut start_byte = 0;
+        let mut end_byte = 0;
+        if object.is_string() {
+            if coding_system.is_nil() {
+                coding_system = if self.string_multibyte(object) {
+                    self.preferred_coding_system()
+                } else {
+                    sym::RAW_TEXT
+                };
+            }
+            if !self.coding_system_p(coding_system)? {
+                if !noerror.is_nil() {
+                    coding_system = sym::RAW_TEXT;
+                } else {
+                    return Err(self.signal_list(sym::CODING_SYSTEM_ERROR, &[coding_system]));
+                }
+            }
+            if self.string_multibyte(object) {
+                object =
+                    self.code_convert_string(object, coding_system, Value::NIL, true, false, true)?;
+                self.stack.push(object);
+            }
+            let size = self.string_chars(object);
+            let (start_char, end_char) = self.validate_subarray(object, start, end, size)?;
+            start_byte = if start_char == 0 {
+                0
+            } else {
+                self.string_char_to_byte_index(object, start_char)
+            };
+            end_byte = if end_char == size {
+                self.string_bytes(object).len()
+            } else {
+                self.string_char_to_byte_index(object, end_char)
+            };
+        } else if self.is_buffer(object) {
+            let prev = self.current_buffer;
+            let count = self.specpdl.len();
+            self.record_unwind_current_buffer();
+            self.set_buffer_internal(object);
+            let (string, buffer_coding_system) =
+                self.extract_buffer_data(object, start, end, coding_system, noerror)?;
+            self.set_buffer_internal(prev);
+            self.specpdl.truncate(count);
+            object = string;
+            self.stack.push(object);
+            if self.string_multibyte(object) {
+                object = self.code_convert_string(
+                    object,
+                    buffer_coding_system,
+                    Value::NIL,
+                    true,
+                    false,
+                    false,
+                )?;
+                self.stack.push(object);
+            }
+            end_byte = self.string_bytes(object).len();
+        } else if object == sym::IV_AUTO {
+            let Some(start_hold) = start.as_fixnum().filter(|&n| n >= 0) else {
+                let message =
+                    self.doprnt("Without a length, `iv-auto' can't be used; see Elisp manual");
+                return Err(self.error(&message));
+            };
+            let lim = start_hold as usize;
+            let mut data = vec![0u8; lim];
+            let mut p = 0;
+            while p < lim {
+                match crate::sysdep::getrandom(&mut data[p..]) {
+                    Ok(gotten) => p += gotten,
+                    Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(err) => {
+                        let string = self.string("Getting random data");
+                        let errstring = self.string(&err.to_string());
+                        return Err(self.signal_list(sym::FILE_ERROR, &[string, errstring]));
+                    }
+                }
+                p += 1;
+            }
+            object = self.unibyte_string(&data);
+            end_byte = lim;
+        }
+        if !object.is_string() {
+            let arg = if object.is_nil() {
+                self.string("nil")
+            } else {
+                object
+            };
+            return Err(self.signal_error("Invalid object argument", arg));
+        }
+        Ok(self.string_bytes(object)[start_byte..end_byte].to_vec())
+    }
+
+    fn extract_buffer_data(
+        &mut self,
+        object: Value,
+        start: Value,
+        end: Value,
+        mut coding_system: Value,
+        noerror: Value,
+    ) -> LispResult<(Value, Value)> {
+        let mut b = if start.is_nil() {
+            self.cur().begv as i64
+        } else {
+            self.fix_position(start)?
+        };
+        let mut e = if end.is_nil() {
+            self.cur().zv as i64
+        } else {
+            self.fix_position(end)?
+        };
+        if b > e {
+            std::mem::swap(&mut b, &mut e);
+        }
+        if !(self.cur().begv as i64 <= b && e <= self.cur().zv as i64) {
+            return Err(self.args_out_of_range(start, end));
+        }
+        if coding_system.is_nil() {
+            let for_write = self.find_symbol_value(sym::CODING_SYSTEM_FOR_WRITE);
+            if !for_write.is_nil() {
+                coding_system = for_write;
+            } else {
+                let mut force_raw_text = false;
+                coding_system = self.find_symbol_value(sym::BUFFER_FILE_CODING_SYSTEM);
+                if coding_system.is_nil()
+                    || !self.local_variable_in(sym::BUFFER_FILE_CODING_SYSTEM, self.current_buffer)
+                {
+                    coding_system = Value::NIL;
+                    if !self.cur().text.multibyte {
+                        force_raw_text = true;
+                    }
+                }
+                let filename = self
+                    .buffer_local_get(object, sym::BUFFER_FILE_NAME)
+                    .unwrap_or(Value::NIL);
+                if coding_system.is_nil() && !filename.is_nil() {
+                    let val = crate::coding::f_find_operation_coding_system(
+                        self,
+                        &[
+                            sym::WRITE_REGION,
+                            Value::fixnum(b),
+                            Value::fixnum(e),
+                            filename,
+                        ],
+                    )?;
+                    if val.is_cons() && !self.xcdr(val).is_nil() {
+                        coding_system = self.xcdr(val);
+                        self.stack.push(coding_system);
+                    }
+                }
+                if coding_system.is_nil() {
+                    let default = self.find_symbol_value(sym::BUFFER_FILE_CODING_SYSTEM);
+                    if !default.is_nil() {
+                        coding_system = default;
+                    }
+                }
+                let select = self.plain_value(sym::SELECT_SAFE_CODING_SYSTEM_FUNCTION);
+                if !force_raw_text && !crate::data::f_fboundp(self, &[select])?.is_nil() {
+                    coding_system = self.funcall(
+                        select,
+                        &[
+                            Value::fixnum(b),
+                            Value::fixnum(e),
+                            coding_system,
+                            Value::NIL,
+                        ],
+                    )?;
+                    self.stack.push(coding_system);
+                }
+                if force_raw_text {
+                    coding_system = sym::RAW_TEXT;
+                }
+            }
+            if !self.coding_system_p(coding_system)? {
+                if !noerror.is_nil() {
+                    coding_system = sym::RAW_TEXT;
+                } else {
+                    return Err(self.signal_list(sym::CODING_SYSTEM_ERROR, &[coding_system]));
+                }
+            }
+        }
+        let string = self.buffer_substring_value(b as usize, e as usize, false);
+        Ok((string, coding_system))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn secure_hash(
+    lisp: &mut Lisp,
+    algorithm: Value,
+    object: Value,
+    start: Value,
+    end: Value,
+    coding_system: Value,
+    noerror: Value,
+    binary: Value,
+) -> LispResult {
+    lisp.check_symbol(algorithm)?;
+    let spec = lisp.list(&[object, start, end, coding_system, noerror]);
+    let input = lisp.extract_data_from_object(spec)?;
+    let hash_func: fn(&[u8]) -> Vec<u8> = if algorithm == sym::MD5 {
+        crate::md5::md5_buffer
+    } else if algorithm == sym::SHA1 {
+        crate::sha1::sha1_buffer
+    } else if algorithm == sym::SHA224 {
+        crate::sha256::sha224_buffer
+    } else if algorithm == sym::SHA256 {
+        crate::sha256::sha256_buffer
+    } else if algorithm == sym::SHA384 {
+        crate::sha512::sha384_buffer
+    } else if algorithm == sym::SHA512 {
+        crate::sha512::sha512_buffer
+    } else if algorithm == sym::SHA3_224 {
+        crate::sha3::sha3_224_buffer
+    } else if algorithm == sym::SHA3_256 {
+        crate::sha3::sha3_256_buffer
+    } else if algorithm == sym::SHA3_384 {
+        crate::sha3::sha3_384_buffer
+    } else if algorithm == sym::SHA3_512 {
+        crate::sha3::sha3_512_buffer
+    } else {
+        let name = lisp.symbol_name_string(algorithm);
+        return Err(lisp.error(&format!("Invalid algorithm arg: {name}")));
+    };
+    let digest = hash_func(&input);
+    if binary.is_nil() {
+        Ok(lisp.unibyte_string(&make_digest_string(&digest)))
+    } else {
+        Ok(lisp.unibyte_string(&digest))
+    }
+}
+
+fn f_md5(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    secure_hash(
+        lisp,
+        sym::MD5,
+        args[0],
+        args[1],
+        args[2],
+        args[3],
+        args[4],
+        Value::NIL,
+    )
+}
+
+fn f_secure_hash(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    secure_hash(
+        lisp,
+        args[0],
+        args[1],
+        args[2],
+        args[3],
+        Value::NIL,
+        Value::NIL,
+        args[4],
+    )
+}
+
 fn f_line_number_at_pos(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (position, absolute) = (args[0], args[1]);
     let cb = lisp.current_buffer;
@@ -3064,110 +3345,310 @@ fn f_locale_info(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
 const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const B64URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-fn base64_encode(input: &[u8], line_break: bool, url: bool, pad: bool) -> Vec<u8> {
-    let table = if url { B64URL } else { B64 };
-    let mut out = Vec::with_capacity(input.len() * 4 / 3 + 4);
-    let mut counter = 0;
-    for chunk in input.chunks(3) {
-        if line_break && counter == 19 {
-            out.push(b'\n');
-            counter = 0;
-        }
-        let b = [
-            chunk[0],
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-        ];
-        out.push(table[(b[0] >> 2) as usize]);
-        out.push(table[(((b[0] & 3) << 4) | (b[1] >> 4)) as usize]);
-        if chunk.len() > 1 {
-            out.push(table[(((b[1] & 0xF) << 2) | (b[2] >> 6)) as usize]);
-        } else if pad {
-            out.push(b'=');
-        }
-        if chunk.len() > 2 {
-            out.push(table[(b[2] & 0x3F) as usize]);
-        } else if pad {
-            out.push(b'=');
-        }
-        counter += 1;
+const MIME_LINE_LENGTH: usize = 76;
+
+fn base64_char_to_value(c: u8, base64url: bool) -> i8 {
+    match c {
+        b'\t' | b'\n' | 0x0c | b'\r' | b' ' => -1,
+        b'A'..=b'Z' => (c - b'A' + 1) as i8,
+        b'a'..=b'z' => (c - b'a' + 27) as i8,
+        b'0'..=b'9' => (c - b'0' + 53) as i8,
+        b'+' if !base64url => 63,
+        b'/' if !base64url => 64,
+        b'-' if base64url => 63,
+        b'_' if base64url => 64,
+        _ => 0,
     }
-    out
 }
 
-fn base64_encode_string(lisp: &mut Lisp, args: &[Value], url: bool) -> LispResult {
-    let s = lisp.check_string(args[0])?;
-    let bytes = if lisp.string_multibyte(s) {
-        let chars = lisp.string_char_vec(s);
-        let mut out = Vec::with_capacity(chars.len());
-        for c in chars {
-            if c < 0x80 || character::char_byte8_p(c) {
-                out.push(character::char_to_byte8(c));
-            } else if c < 0x100 {
-                out.push(c as u8);
+fn base64_encode_char(from: &[u8], i: &mut usize, multibyte: bool) -> Option<u32> {
+    if multibyte {
+        let (c, bytes) = character::string_char(&from[*i..]);
+        *i += bytes;
+        if character::char_byte8_p(c) {
+            Some(u32::from(character::char_to_byte8(c)))
+        } else if c >= 128 {
+            None
+        } else {
+            Some(c)
+        }
+    } else {
+        let c = from[*i];
+        *i += 1;
+        Some(u32::from(c))
+    }
+}
+
+fn base64_encode_1(
+    from: &[u8],
+    line_break: bool,
+    pad: bool,
+    base64url: bool,
+    multibyte: bool,
+) -> Option<Vec<u8>> {
+    let b64_value_to_char = if base64url { B64URL } else { B64 };
+    let length = from.len();
+    let allength = length + length / 3 + 1;
+    let mut e = Vec::with_capacity(allength + allength / MIME_LINE_LENGTH + 1 + 6);
+    let mut counter = 0;
+    let mut i = 0;
+    while i < length {
+        let c = base64_encode_char(from, &mut i, multibyte)?;
+        if line_break {
+            if counter < MIME_LINE_LENGTH / 4 {
+                counter += 1;
             } else {
-                return Err(lisp.error("Multibyte character in data for base64 encoding"));
+                e.push(b'\n');
+                counter = 1;
             }
         }
-        out
+        e.push(b64_value_to_char[(0x3f & (c >> 2)) as usize]);
+        let value = (0x03 & c) << 4;
+        if i == length {
+            e.push(b64_value_to_char[value as usize]);
+            if pad {
+                e.extend_from_slice(b"==");
+            }
+            break;
+        }
+        let c = base64_encode_char(from, &mut i, multibyte)?;
+        e.push(b64_value_to_char[(value | (0x0f & (c >> 4))) as usize]);
+        let value = (0x0f & c) << 2;
+        if i == length {
+            e.push(b64_value_to_char[value as usize]);
+            if pad {
+                e.push(b'=');
+            }
+            break;
+        }
+        let c = base64_encode_char(from, &mut i, multibyte)?;
+        e.push(b64_value_to_char[(value | (0x03 & (c >> 6))) as usize]);
+        e.push(b64_value_to_char[(0x3f & c) as usize]);
+    }
+    Some(e)
+}
+
+fn base64_decode_next(
+    from: &[u8],
+    f: &mut usize,
+    base64url: bool,
+    ignore_invalid: bool,
+) -> Option<(u8, i8)> {
+    while *f < from.len() {
+        let c = from[*f];
+        *f += 1;
+        let v1 = base64_char_to_value(c, base64url);
+        if !(v1 < 0 || (v1 == 0 && ignore_invalid)) {
+            return Some((c, v1));
+        }
+    }
+    None
+}
+
+fn base64_decode_put(e: &mut Vec<u8>, c: u8, multibyte: bool) {
+    if multibyte && c & 0x80 != 0 {
+        character::push_char(e, character::byte8_to_char(c));
     } else {
-        lisp.string_bytes(s).to_vec()
+        e.push(c);
+    }
+}
+
+fn base64_decode_1(
+    from: &[u8],
+    base64url: bool,
+    multibyte: bool,
+    ignore_invalid: bool,
+) -> Option<(Vec<u8>, usize)> {
+    let mut f = 0;
+    let mut e = Vec::with_capacity(if multibyte {
+        from.len() * 2
+    } else {
+        from.len()
+    });
+    let mut nchars = 0;
+    loop {
+        let Some((_, v1)) = base64_decode_next(from, &mut f, base64url, ignore_invalid) else {
+            return Some((e, nchars));
+        };
+        if v1 == 0 {
+            return None;
+        }
+        let mut value = ((v1 - 1) as u32) << 18;
+        let (_, v1) = base64_decode_next(from, &mut f, base64url, ignore_invalid)?;
+        if v1 == 0 {
+            return None;
+        }
+        value += ((v1 - 1) as u32) << 12;
+        base64_decode_put(&mut e, (value >> 16 & 0xff) as u8, multibyte);
+        nchars += 1;
+        let Some((mut c, v1)) = base64_decode_next(from, &mut f, base64url, ignore_invalid) else {
+            if !base64url && !ignore_invalid {
+                return None;
+            }
+            return Some((e, nchars));
+        };
+        if c == b'=' {
+            loop {
+                if f == from.len() {
+                    return None;
+                }
+                c = from[f];
+                f += 1;
+                if base64_char_to_value(c, base64url) >= 0 {
+                    break;
+                }
+            }
+            if c != b'=' {
+                return None;
+            }
+            continue;
+        }
+        if v1 == 0 {
+            return None;
+        }
+        value += ((v1 - 1) as u32) << 6;
+        base64_decode_put(&mut e, (value >> 8 & 0xff) as u8, multibyte);
+        nchars += 1;
+        let Some((c, v1)) = base64_decode_next(from, &mut f, base64url, ignore_invalid) else {
+            if !base64url && !ignore_invalid {
+                return None;
+            }
+            return Some((e, nchars));
+        };
+        if c == b'=' {
+            continue;
+        }
+        if v1 == 0 {
+            return None;
+        }
+        value += (v1 - 1) as u32;
+        base64_decode_put(&mut e, (value & 0xff) as u8, multibyte);
+        nchars += 1;
+    }
+}
+
+fn base64_encode_region_1(
+    lisp: &mut Lisp,
+    beg: Value,
+    end: Value,
+    line_break: bool,
+    pad: bool,
+    base64url: bool,
+) -> LispResult {
+    let old_pos = lisp.cur().pt;
+    let (beg, end) = lisp.validate_region(beg, end)?;
+    let (ibeg, iend, multibyte) = {
+        let text = &lisp.cur().text;
+        (
+            text.char_to_byte(beg),
+            text.char_to_byte(end),
+            text.multibyte,
+        )
     };
-    let line_break = !url && args[1].is_nil();
-    let pad = !url || args[1].is_nil();
-    let encoded = base64_encode(&bytes, line_break, url, pad);
-    Ok(lisp.unibyte_string(&encoded))
+    let data = lisp.cur().text.slice(ibeg - 1, iend - 1);
+    let Some(encoded) = base64_encode_1(&data, line_break, pad, base64url, multibyte) else {
+        return Err(lisp.error("Multibyte character in data for base64 encoding"));
+    };
+    let encoded_length = encoded.len();
+    lisp.set_pt_both(beg, ibeg);
+    lisp.insert_internal(&encoded, encoded_length, &[], false, false)?;
+    lisp.del_range_byte(ibeg + encoded_length, iend + encoded_length)?;
+    let old_pos = if old_pos >= end {
+        old_pos + encoded_length - (end - beg)
+    } else if old_pos > beg {
+        beg
+    } else {
+        old_pos
+    };
+    lisp.goto_char_internal(old_pos);
+    Ok(Value::fixnum(encoded_length as i64))
+}
+
+fn f_base64_encode_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    base64_encode_region_1(lisp, args[0], args[1], args[2].is_nil(), true, false)
+}
+
+fn f_base64url_encode_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    base64_encode_region_1(lisp, args[0], args[1], false, args[2].is_nil(), true)
+}
+
+fn base64_encode_string_1(
+    lisp: &mut Lisp,
+    string: Value,
+    line_break: bool,
+    pad: bool,
+    base64url: bool,
+) -> LispResult {
+    let string = lisp.check_string(string)?;
+    let multibyte = lisp.string_multibyte(string);
+    let encoded = base64_encode_1(
+        lisp.string_bytes(string),
+        line_break,
+        pad,
+        base64url,
+        multibyte,
+    );
+    match encoded {
+        Some(encoded) => Ok(lisp.unibyte_string(&encoded)),
+        None => Err(lisp.error("Multibyte character in data for base64 encoding")),
+    }
 }
 
 fn f_base64_encode_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    base64_encode_string(lisp, args, false)
+    base64_encode_string_1(lisp, args[0], args[1].is_nil(), true, false)
 }
 
 fn f_base64url_encode_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    base64_encode_string(lisp, args, true)
+    base64_encode_string_1(lisp, args[0], false, args[1].is_nil(), true)
+}
+
+fn f_base64_decode_region(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (base64url, ignore_invalid) = (args[2], args[3]);
+    let old_pos = lisp.cur().pt;
+    let multibyte = lisp.cur().text.multibyte;
+    let (beg, end) = lisp.validate_region(args[0], args[1])?;
+    let (ibeg, iend) = {
+        let text = &lisp.cur().text;
+        (text.char_to_byte(beg), text.char_to_byte(end))
+    };
+    let data = lisp.cur().text.slice(ibeg - 1, iend - 1);
+    let Some((decoded, inserted_chars)) = base64_decode_1(
+        &data,
+        !base64url.is_nil(),
+        multibyte,
+        !ignore_invalid.is_nil(),
+    ) else {
+        return Err(lisp.error("Invalid base64 data"));
+    };
+    lisp.set_pt_both(beg, ibeg);
+    lisp.insert_1_both(&decoded, inserted_chars, &[], false, true, false)?;
+    lisp.signal_after_change(beg, 0, inserted_chars)?;
+    let pt = lisp.cur().pt;
+    lisp.del_range(pt, end + inserted_chars)?;
+    let old_pos = if old_pos >= end {
+        old_pos + inserted_chars - (end - beg)
+    } else if old_pos > beg {
+        beg
+    } else {
+        old_pos
+    };
+    let zv = lisp.cur().zv;
+    lisp.goto_char_internal(old_pos.min(zv));
+    Ok(Value::fixnum(inserted_chars as i64))
 }
 
 fn f_base64_decode_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let s = lisp.check_string(args[0])?;
-    let url = !args[1].is_nil();
-    let ignore_invalid = !args[2].is_nil();
-    let input = lisp.string_bytes(s).to_vec();
-    let decode = |c: u8| -> Option<u8> {
-        match c {
-            b'A'..=b'Z' => Some(c - b'A'),
-            b'a'..=b'z' => Some(c - b'a' + 26),
-            b'0'..=b'9' => Some(c - b'0' + 52),
-            b'+' if !url => Some(62),
-            b'/' if !url => Some(63),
-            b'-' if url => Some(62),
-            b'_' if url => Some(63),
-            _ => None,
-        }
-    };
-    let mut bits = 0u32;
-    let mut nbits = 0;
-    let mut out = Vec::new();
-    for &c in &input {
-        if c == b'=' {
-            break;
-        }
-        if c.is_ascii_whitespace() {
-            continue;
-        }
-        match decode(c) {
-            Some(v) => {
-                bits = (bits << 6) | v as u32;
-                nbits += 6;
-                if nbits >= 8 {
-                    nbits -= 8;
-                    out.push((bits >> nbits) as u8);
-                }
-            }
-            None if ignore_invalid => {}
-            None => return Err(lisp.error("Invalid base64 data")),
-        }
+    let string = lisp.check_string(args[0])?;
+    let decoded = base64_decode_1(
+        lisp.string_bytes(string),
+        !args[1].is_nil(),
+        false,
+        !args[2].is_nil(),
+    );
+    match decoded {
+        Some((decoded, _)) => Ok(lisp.unibyte_string(&decoded)),
+        None => Err(lisp.error("Invalid base64 data")),
     }
-    Ok(lisp.unibyte_string(&out))
 }
 
 fn reduce_emacs_uint_to_fixnum(x: u64) -> Value {
@@ -3351,9 +3832,18 @@ fn f_define_hash_table_test(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 fn f_secure_hash_algorithms(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    let names = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512"];
-    let symbols: Vec<Value> = names.iter().map(|n| lisp.intern(n)).collect();
-    Ok(lisp.list(&symbols))
+    Ok(lisp.list(&[
+        sym::MD5,
+        sym::SHA1,
+        sym::SHA224,
+        sym::SHA256,
+        sym::SHA384,
+        sym::SHA512,
+        sym::SHA3_224,
+        sym::SHA3_256,
+        sym::SHA3_384,
+        sym::SHA3_512,
+    ]))
 }
 
 fn f_string_search(lisp: &mut Lisp, args: &[Value]) -> LispResult {

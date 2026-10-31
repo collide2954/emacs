@@ -1281,7 +1281,7 @@ impl Lisp {
         b.pt_byte = bytepos;
     }
 
-    fn del_range_byte(&mut self, from_byte: usize, to_byte: usize) -> LispResult<()> {
+    pub(crate) fn del_range_byte(&mut self, from_byte: usize, to_byte: usize) -> LispResult<()> {
         let b = self.cur();
         let from_byte = from_byte.max(b.begv_byte);
         let to_byte = to_byte.min(b.zv_byte);

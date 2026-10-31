@@ -294,8 +294,39 @@ impl Lisp {
         if nchars == 0 {
             return Ok(());
         }
-        let pt = self.cur().pt;
-        self.prepare_to_modify_buffer(pt, pt)?;
+        let nchars = if self.cur().text.multibyte {
+            nchars
+        } else {
+            bytes.len()
+        };
+        self.insert_1_both(bytes, nchars, props, inherit, true, before_markers)?;
+        let pt = self.cur().pt - nchars;
+        self.signal_after_change(pt, 0, nchars)?;
+        let new_pt = self.cur().pt;
+        self.update_compositions(pt, new_pt, crate::composite::CHECK_BORDER)
+    }
+
+    pub fn insert_1_both(
+        &mut self,
+        bytes: &[u8],
+        nchars: usize,
+        props: &[PropRun],
+        inherit: bool,
+        prepare: bool,
+        before_markers: bool,
+    ) -> LispResult<()> {
+        if nchars == 0 {
+            return Ok(());
+        }
+        let nchars = if self.cur().text.multibyte {
+            nchars
+        } else {
+            bytes.len()
+        };
+        if prepare {
+            let pt = self.cur().pt;
+            self.prepare_to_modify_buffer(pt, pt)?;
+        }
         let buffer = self.current_buffer;
         let (pt, pt_byte) = {
             let b = self.cur();
@@ -321,9 +352,7 @@ impl Lisp {
                 b.begv_byte += bytes.len();
             }
         }
-        self.signal_after_change(pt, 0, nchars)?;
-        let new_pt = self.cur().pt;
-        self.update_compositions(pt, new_pt, crate::composite::CHECK_BORDER)
+        Ok(())
     }
 
     pub fn insert_from_gap(
