@@ -86,7 +86,7 @@ Ported but not yet complete (C kept):
 | `cmds.c` | `editfns.rs` | nothing |
 | `dired.c` | `dired.rs` | on Windows, inode, device and link count come from w32.c's fallback (std can't read them without `unsafe`) |
 | `callint.c` | `callint.rs` | `call-interactively` (needs the command loop) |
-| `process.c` | `process.rs` | everything but `get-buffer-process` (which finds nothing, as no process objects exist yet), `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask), and `wait_reading_process_output`, which is the subprocess-free variant C uses on MS-DOS (it runs timers and sleeps, and never wakes for keyboard input because there is no input queue yet) |
+| `process.c` | `process.rs` | everything but `processp` and the Lisp fields of `struct Lisp_Process` (nothing creates a process yet), `get-buffer-process` (which finds nothing, as no process objects exist yet), `num-processors`, which ports gnulib's `nproc` on top of `std::thread::available_parallelism` (so on Windows it ignores the process affinity mask), and `wait_reading_process_output`, which is the subprocess-free variant C uses on MS-DOS (it runs timers and sleeps, and never wakes for keyboard input because there is no input queue yet) |
 | `term.c` | `term.rs` | `tty-frame-list-z-order`, `tty-frame-at` (need frame z-order); there is no tty frontend, so `decode_tty_terminal` never finds a tty |
 | `w32.c` | `w32.rs` | everything but `init_environment`, which doesn't report a missing temporary directory (that needs `command-error-default-function`), and leaves out `init_user_info` and w32term.c's mouse-button count; it sets variables with `SetEnvironmentVariableA` where C uses `_putenv`, and `getenv-internal` falls back to the process environment as C's does on Windows |
 | `w32proc.c` | `w32proc.rs` | the DEFUNs other than `w32-long-file-name`, `w32-get-console-codepage`, `w32-set-console-codepage` and their output-codepage counterparts; it has the variables |
@@ -138,12 +138,11 @@ ERT runs upstream test files, with the generated loaddefs and the byte-compiled 
 Lisp from Build and run, plus byte-compiled copies of the files ERT loads (`ert`,
 `backtrace`, `cl-print`, `pp`, `debug`, `ewoc`, `find-func`, `help-mode`, `help-fns`,
 `cl-extra` and `radix-tree`, compiled in one session like the preloaded files):
-`emacs --batch -Q -l ert -l test/src/data-tests.el -f ert-run-tests-batch-and-exit` runs all
-64 tests in about a minute, 50 as expected. The failures come from unported or outdated
-primitives: `buffer-local-toplevel-value`, `makunbound` of built-in variables, variable
-watchers, `kill-all-local-variables`, argument checks in the comparison functions and
-`cl-type-of` of a process. Printing a failing test's backtrace still takes about four
-seconds, mostly spent printing ERT's interpreted test closures.
+`emacs --batch -Q -l ert -l test/src/data-tests.el -f ert-run-tests-batch-and-exit` passes
+all 64 tests in a few seconds. Printing a failing test's backtrace takes about four seconds,
+mostly spent printing ERT's interpreted test closures. `cl-preloaded.el` checks which type
+predicates are defined while it is compiled, so `.elc` files from before 0.1.75, when
+`processp` was added, lack the `process` type; rebuild them.
 
 `crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
 writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and

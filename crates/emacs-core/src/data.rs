@@ -925,6 +925,7 @@ pub fn cl_type_of(lisp: &Lisp, object: Value) -> Value {
             Vectorlike::Frame(_) => sym::FRAME,
             Vectorlike::Window(_) => sym::WINDOW,
             Vectorlike::WindowConfiguration(_) => sym::WINDOW_CONFIGURATION,
+            Vectorlike::Process(_) => sym::PROCESS,
             Vectorlike::Font(f) => match f.kind {
                 crate::font::FontKind::Spec => sym::FONT_SPEC,
                 crate::font::FontKind::Entity => sym::FONT_ENTITY,

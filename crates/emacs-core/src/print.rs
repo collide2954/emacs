@@ -845,6 +845,17 @@ impl Lisp {
                 p.push_str("#<window-configuration>");
                 Ok(())
             }
+            Vectorlike::Process(process) => {
+                let chars = self.string_char_vec(process.name);
+                if escape {
+                    p.push_str("#<process ");
+                    p.out.extend(chars);
+                    p.push('>' as u32);
+                } else {
+                    p.out.extend(chars);
+                }
+                Ok(())
+            }
             Vectorlike::Window(w) => {
                 p.push_str(&format!("#<window {}", w.sequence_number));
                 if self.is_buffer(w.contents) {

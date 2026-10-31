@@ -235,6 +235,7 @@ pub enum Vectorlike {
     Window(Box<crate::window::Window>),
     WindowConfiguration(Box<crate::window::SaveWindowData>),
     Font(Box<crate::font::Font>),
+    Process(Box<crate::process::Process>),
 }
 
 impl Vectorlike {
@@ -336,6 +337,7 @@ impl Trace for Vectorlike {
             Vectorlike::Window(w) => w.trace(out),
             Vectorlike::WindowConfiguration(d) => d.trace(out),
             Vectorlike::Font(f) => f.trace(out),
+            Vectorlike::Process(p) => p.trace(out),
         }
     }
 }

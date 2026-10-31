@@ -4,14 +4,83 @@ use num_bigint::BigInt;
 
 use crate::error::LispResult;
 use crate::lisp::Lisp;
+use crate::object::Vectorlike;
 use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
 
 pub const SUBRS: &[Subr] = &[
+    Subr::fixed("processp", 1, 1, f_processp),
     Subr::fixed("num-processors", 0, 1, f_num_processors),
     Subr::fixed("get-buffer-process", 1, 1, f_get_buffer_process),
 ];
+
+#[derive(Clone, Debug)]
+pub struct Process {
+    pub tty_name: Value,
+    pub name: Value,
+    pub command: Value,
+    pub filter: Value,
+    pub sentinel: Value,
+    pub log: Value,
+    pub buffer: Value,
+    pub childp: Value,
+    pub plist: Value,
+    pub type_: Value,
+    pub mark: Value,
+    pub status: Value,
+    pub decode_coding_system: Value,
+    pub decoding_buf: Value,
+    pub encode_coding_system: Value,
+    pub encoding_buf: Value,
+    pub write_queue: Value,
+    pub gnutls_cred_type: Value,
+    pub gnutls_boot_parameters: Value,
+    pub stderrproc: Value,
+    pub thread: Value,
+}
+
+impl Process {
+    pub fn trace(&self, out: &mut Vec<Value>) {
+        out.extend_from_slice(&[
+            self.tty_name,
+            self.name,
+            self.command,
+            self.filter,
+            self.sentinel,
+            self.log,
+            self.buffer,
+            self.childp,
+            self.plist,
+            self.type_,
+            self.mark,
+            self.status,
+            self.decode_coding_system,
+            self.decoding_buf,
+            self.encode_coding_system,
+            self.encoding_buf,
+            self.write_queue,
+            self.gnutls_cred_type,
+            self.gnutls_boot_parameters,
+            self.stderrproc,
+            self.thread,
+        ]);
+    }
+}
+
+impl Lisp {
+    pub fn processp(&self, object: Value) -> bool {
+        object.is_vectorlike() && matches!(self.heap.vectorlike_ref(object), Vectorlike::Process(_))
+    }
+}
+
+fn f_processp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    Ok(if lisp.processp(args[0]) {
+        sym::T
+    } else {
+        Value::NIL
+    })
+}
 
 fn f_get_buffer_process(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = args[0];

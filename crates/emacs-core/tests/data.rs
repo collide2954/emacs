@@ -193,6 +193,8 @@ fn types() {
         ("(sequencep [1])", "t"),
         ("(arrayp \"s\")", "t"),
         ("(char-or-string-p 65)", "t"),
+        ("(processp (current-buffer))", "nil"),
+        ("(processp nil)", "nil"),
     ]);
 }
 
