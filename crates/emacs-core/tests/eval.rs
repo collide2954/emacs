@@ -212,6 +212,28 @@ fn let_varlist_checks() {
 }
 
 #[test]
+fn delayed_messages() {
+    check(&[
+        (
+            "(progn (fset 'dm-run (function (lambda (timeout work after) (save-current-buffer (set-buffer (get-buffer-create \"*Messages*\")) (let ((inhibit-read-only t)) (erase-buffer))) (let ((stop (+ (float-time) work))) (funcall-with-delayed-message timeout \"timed out\" (function (lambda () (while (< (float-time) stop)) (message \"finished\") 'done))))))) 'dm-run)",
+            "dm-run",
+        ),
+        (
+            "(list (dm-run 0.05 0.3 0) (save-current-buffer (set-buffer \"*Messages*\") (buffer-string)))",
+            "(done \"timed out\nfinished\n\")",
+        ),
+        (
+            "(list (dm-run 0.2 0.01 0) (let ((stop (+ (float-time) 0.4))) (while (< (float-time) stop))) (save-current-buffer (set-buffer \"*Messages*\") (buffer-string)))",
+            "(done nil \"finished\n\")",
+        ),
+        (
+            "(funcall-with-delayed-message 'x \"m\" 'ignore)",
+            "error: (wrong-type-argument numberp x)",
+        ),
+    ]);
+}
+
+#[test]
 fn delete_indirect_variable() {
     check(&[
         (

@@ -1,4 +1,5 @@
 pub mod alloc;
+pub mod atimer;
 pub mod boot_time;
 pub mod buffer;
 pub mod bytecode;

@@ -1,3 +1,4 @@
+use crate::atimer::{Atimer, AtimerId, AtimerType};
 use crate::error::{Flow, HandlerKind, LispResult, UNCAUGHT};
 use crate::lisp::{BacktraceArgs, Lisp, SpecBinding, UnwindFn};
 use crate::object::{Forward, SymbolValue, TrappedWrite, Vectorlike};
@@ -784,6 +785,8 @@ impl Lisp {
         self.gc_inhibited += 1;
         let r = if self.var_true(sym::QUIT_FLAG) && !self.var_true(sym::INHIBIT_QUIT) {
             self.process_quit_flag()
+        } else if self.pending_signals() {
+            self.process_pending_signals()
         } else {
             Ok(())
         };
@@ -792,7 +795,7 @@ impl Lisp {
     }
 
     pub fn maybe_quit(&mut self) -> LispResult<()> {
-        if self.var_true(sym::QUIT_FLAG) {
+        if self.var_true(sym::QUIT_FLAG) || self.pending_signals() {
             self.probably_quit()?;
         }
         Ok(())
@@ -2032,6 +2035,7 @@ fn f_while(lisp: &mut Lisp, args: Value) -> LispResult {
         if t.is_nil() {
             break;
         }
+        lisp.maybe_quit()?;
         lisp.progn(body)?;
     }
     Ok(Value::NIL)
@@ -2581,11 +2585,30 @@ fn f_backtrace_locals(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
+fn with_delayed_message_display(lisp: &mut Lisp, timer: &Atimer) -> LispResult<()> {
+    lisp.message3(timer.client_data)
+}
+
+fn with_delayed_message_cancel(lisp: &mut Lisp, timer: Value) -> LispResult<()> {
+    lisp.cancel_atimer(AtimerId::from_value(timer));
+    Ok(())
+}
+
 fn f_funcall_with_delayed_message(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (timeout, message, function) = (args[0], args[1], args[2]);
+    let count = lisp.specpdl.len();
     if !lisp.is_number(timeout) {
         return Err(lisp.wrong_type(sym::NUMBERP, timeout));
     }
     lisp.check_string(message)?;
-    lisp.call0(function)
+    let interval = crate::timefns::dtotimespec(lisp.number(timeout)?.to_f64());
+    let timer = lisp.start_atimer(
+        AtimerType::Relative,
+        interval,
+        with_delayed_message_display,
+        message,
+    );
+    lisp.record_unwind(with_delayed_message_cancel, timer.to_value());
+    let result = lisp.call0(function);
+    lisp.unbind_to_value(count, result)
 }

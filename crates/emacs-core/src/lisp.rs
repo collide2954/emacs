@@ -112,6 +112,7 @@ pub struct Lisp {
     pub fontsets: crate::fontset::Fontsets,
     pub xdisp: crate::xdisp::Xdisp,
     pub keyboard: crate::keyboard::Keyboard,
+    pub atimer: crate::atimer::Atimers,
     pub fileio: crate::fileio::FileIo,
     pub bc: crate::bytecode::Bytecode,
     pub subr_docs: std::collections::HashMap<usize, i64>,
@@ -320,6 +321,7 @@ impl Lisp {
             fontsets: crate::fontset::Fontsets::default(),
             xdisp: crate::xdisp::Xdisp::default(),
             keyboard: crate::keyboard::Keyboard::default(),
+            atimer: crate::atimer::Atimers::default(),
             fileio: crate::fileio::FileIo::default(),
             bc: crate::bytecode::Bytecode::default(),
             subr_docs: std::collections::HashMap::new(),
@@ -1083,6 +1085,7 @@ impl Lisp {
         }
         roots.extend_from_slice(&self.stack);
         roots.extend_from_slice(&self.flow_roots);
+        self.atimer.trace(&mut roots);
         for binding in &self.specpdl {
             match *binding {
                 SpecBinding::Let { symbol, old } => {

@@ -78,6 +78,7 @@ Ported but not yet complete (C kept):
 | C file | Rust | Missing |
 | --- | --- | --- |
 | `alloc.c`, `data.c`, `eval.c`, `fns.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
+| `atimer.c` | `atimer.rs` | `debug-timer-check` (checking builds only) and the timerfd and POSIX-timer paths: on every platform a thread stands in for `SIGALRM`, as `w32proc.c`'s `setitimer` emulation does on Windows, and sets `pending_signals`, which `maybe_quit` acts on; sleeps in `wait_reading_process_output` do not yet wake for a ripe timer |
 | `print.c` | `print.rs` | assorted primitives; the printer builds its output as characters before writing it to the destination, but applies `print_prepare`'s and `print_string`'s destination rules: raw bytes become octal escapes in multibyte buffers and in `prin1-to-string` (which `.elc` docstring positions depend on) and reach a function as Latin-1 characters |
 | `lread.c` | `lread.rs` | assorted primitives; `load`, `openp` and `locate-file-internal` follow C (handlers, `load-prefer-newer`, the `.elc` version check, emacs-mule `.elc` files from before Emacs 22, text-mode reading of source files on Windows), but a loaded file is read whole and decoded up front rather than byte by byte, and the lexical-binding cookie check is an approximation of `lisp_file_lexical_cookie` |
 | `character.c` | `charfns.rs` | `get-byte`, display-table aware `string-width` |
