@@ -342,8 +342,9 @@ impl Lisp {
             SymbolValue::Localized(l) => {
                 if let Some(per_buffer) = l.per_buffer
                     && !voide
+                    && !newval.is_nil()
                 {
-                    self.check_per_buffer_value(per_buffer.predicate, newval)?;
+                    self.check_fwd_predicate(per_buffer.predicate, newval)?;
                 }
                 let buffer = if where_.is_nil() {
                     self.current_buffer_value()
@@ -352,9 +353,9 @@ impl Lisp {
                 };
                 if self.buffer_local_get(buffer, target).is_some()
                     || (l.local_if_set
-                        && mode != SetMode::Unbind
+                        && matches!(mode, SetMode::Set | SetMode::Makunbound)
                         && !buffer.is_nil()
-                        && !self.let_shadows_global_binding_p(target))
+                        && !self.let_shadows_buffer_binding_p(target))
                 {
                     self.buffer_local_set(buffer, target, newval);
                 } else if let SymbolValue::Localized(l) = &mut self.heap.symbol_mut(target).value {
@@ -397,14 +398,40 @@ impl Lisp {
         self.error(&format!("Built-in variable may not be unbound : {name}"))
     }
 
-    fn check_per_buffer_value(&mut self, predicate: Value, newval: Value) -> LispResult<()> {
-        if newval.is_nil() || predicate.is_nil() {
-            return Ok(());
+    fn check_fwd_predicate(&mut self, predicate: Value, val: Value) -> LispResult<()> {
+        let fails = if predicate == sym::STRINGP {
+            !val.is_string()
+        } else if predicate == sym::SYMBOLP {
+            !val.is_symbol()
+        } else if predicate == sym::INTEGERP {
+            !self.is_integer(val)
+        } else if predicate == sym::NUMBERP || predicate == sym::FRACTION {
+            !self.is_number(val)
+        } else {
+            false
+        };
+        if fails {
+            let expected = if predicate == sym::FRACTION {
+                sym::NUMBERP
+            } else {
+                predicate
+            };
+            return Err(self.wrong_type(expected, val));
         }
-        let choice_key = self.intern("choice");
-        let choice = self.get(predicate, choice_key);
-        if !choice.is_nil() {
-            if self.memq(newval, choice).is_nil() {
+        if predicate == sym::FRACTION {
+            let range = self.get(sym::FRACTION, sym::RANGE);
+            let (min, max) = (self.xcar(range), self.xcdr(range));
+            let (lt1, eq1, _) = self.arithcompare(min, val)?;
+            let (lt2, eq2, _) = self.arithcompare(val, max)?;
+            if !((lt1 || eq1) && (lt2 || eq2)) {
+                let lo = self.prin1_to_string(min);
+                let hi = self.prin1_to_string(max);
+                let message = self.string(&format!("Value should be from {lo} to {hi}"));
+                return Err(self.signal_list(sym::ERROR, &[message, val]));
+            }
+        } else if predicate == sym::VERTICAL_SCROLL_BAR || predicate == sym::OVERWRITE_MODE {
+            let choice = self.get(predicate, sym::CHOICE);
+            if self.memq(val, choice).is_nil() {
                 let names = self.list_to_vec(choice)?;
                 let mut text = String::from("One of ");
                 for (i, name) in names.iter().enumerate() {
@@ -418,37 +445,28 @@ impl Lisp {
                     });
                 }
                 let message = self.string(&text);
-                return Err(self.signal_list(sym::ERROR, &[message, newval]));
+                return Err(self.signal_list(sym::ERROR, &[message, val]));
             }
-            return Ok(());
-        }
-        let range_key = self.intern("range");
-        let range = self.get(predicate, range_key);
-        if range.is_cons() {
-            let (min, max) = (self.xcar(range), self.xcdr(range));
-            let ok = self.is_number(newval) && {
-                let (lt1, eq1, _) = self.arithcompare(min, newval)?;
-                let (lt2, eq2, _) = self.arithcompare(newval, max)?;
-                (lt1 || eq1) && (lt2 || eq2)
-            };
-            if !ok {
-                let lo = self.prin1_to_string(min);
-                let hi = self.prin1_to_string(max);
-                let message = self.string(&format!("Value should be from {lo} to {hi}"));
-                return Err(self.signal_list(sym::ERROR, &[message, newval]));
-            }
-            return Ok(());
-        }
-        if self.functionp(predicate) && self.funcall(predicate, &[newval])?.is_nil() {
-            return Err(self.wrong_type(predicate, newval));
         }
         Ok(())
     }
 
-    fn let_shadows_global_binding_p(&self, symbol: Value) -> bool {
+    pub(crate) fn let_shadows_buffer_binding_p(&self, symbol: Value) -> bool {
+        let current = self.current_buffer_value();
         self.specpdl.iter().any(|b| {
-            matches!(*b, SpecBinding::Let { symbol: s, .. } | SpecBinding::LetDefault { symbol: s, .. } if s == symbol)
+            matches!(*b, SpecBinding::LetDefault { symbol: s, buffer, .. } if s == symbol && buffer == current)
         })
+    }
+
+    fn check_localizable(&mut self, variable: Value, target: Value) -> LispResult<()> {
+        if let SymbolValue::Forwarded(Forward::Kboard(_)) = self.heap.symbol_ref(target).value {
+            let name = self.symbol_name_string(variable);
+            return Err(self.error(&format!("Symbol {name} may not be buffer-local")));
+        }
+        if self.heap.symbol_ref(target).trapped_write == TrappedWrite::NoWrite {
+            return Err(self.signal_list(sym::SETTING_CONSTANT, &[variable]));
+        }
+        Ok(())
     }
 
     pub fn notify_variable_watchers(
@@ -1454,31 +1472,27 @@ fn f_set_default(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_make_variable_buffer_local(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let variable = lisp.check_symbol(args[0])?;
     let target = lisp.indirect_variable(variable);
-    if lisp.heap.symbol_ref(target).trapped_write == TrappedWrite::NoWrite {
-        let name = lisp.symbol_name_string(variable);
-        return Err(lisp.error(&format!("Symbol {name} may not be buffer-local")));
-    }
+    lisp.check_localizable(variable, target)?;
     lisp.make_localized(target, true)?;
-    lisp.heap.symbol_mut(target).special = true;
     Ok(variable)
 }
 
 pub(crate) fn f_make_local_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let variable = lisp.check_symbol(args[0])?;
     let target = lisp.indirect_variable(variable);
-    if lisp.heap.symbol_ref(target).trapped_write == TrappedWrite::NoWrite {
-        let name = lisp.symbol_name_string(variable);
-        return Err(lisp.error(&format!("Symbol {name} may not be buffer-local")));
-    }
+    lisp.check_localizable(variable, target)?;
     let buffer = lisp.current_buffer_value();
-    let value = lisp.find_symbol_value(target);
     lisp.make_localized(target, false)?;
     if !buffer.is_nil() && lisp.buffer_local_get(buffer, target).is_none() {
-        let initial = if value == sym::UNBOUND {
-            lisp.default_value_unchecked(target)
-        } else {
-            value
-        };
+        if lisp.per_buffer_info(target).is_none() && lisp.let_shadows_buffer_binding_p(target) {
+            let format = lisp.string("Making %s buffer-local while locally let-bound!");
+            let name = lisp.heap.symbol_ref(target).name;
+            lisp.stack.push(format);
+            let r = crate::editfns::f_message(lisp, &[format, name]);
+            lisp.stack.pop();
+            r?;
+        }
+        let initial = lisp.default_value_unchecked(target);
         lisp.buffer_local_set(buffer, target, initial);
     }
     Ok(variable)

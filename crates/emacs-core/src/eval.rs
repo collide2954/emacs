@@ -197,7 +197,8 @@ impl Lisp {
                     }
                     return Ok(());
                 }
-                SymbolValue::Localized(_) => {
+                SymbolValue::Localized(l) => {
+                    let per_buffer = l.per_buffer.is_some();
                     let old = self.find_symbol_value(target);
                     let buffer = self.current_buffer_value();
                     if self.local_binding_exists(target) {
@@ -211,8 +212,13 @@ impl Lisp {
                         self.specpdl.push(SpecBinding::LetDefault {
                             symbol: target,
                             old,
+                            buffer,
                         });
-                        self.set_default_internal(target, value, SetMode::Bind)?;
+                        if per_buffer {
+                            self.set_default_internal(target, value, SetMode::Bind)?;
+                        } else {
+                            self.set_internal(target, value, Value::NIL, SetMode::Bind)?;
+                        }
                     }
                     return Ok(());
                 }
@@ -258,10 +264,13 @@ impl Lisp {
                         self.set_plain_value(symbol, old);
                         Ok(())
                     }
-                    _ => self.set_internal(symbol, old, Value::NIL, SetMode::Unbind),
+                    SymbolValue::Plain(_) => {
+                        self.set_internal(symbol, old, Value::NIL, SetMode::Unbind)
+                    }
+                    _ => self.set_default_internal(symbol, old, SetMode::Unbind),
                 }
             }
-            SpecBinding::LetDefault { symbol, old } => {
+            SpecBinding::LetDefault { symbol, old, .. } => {
                 self.set_default_internal(symbol, old, SetMode::Unbind)
             }
             SpecBinding::LetLocal {

@@ -36,6 +36,7 @@ pub enum SpecBinding {
     LetDefault {
         symbol: Value,
         old: Value,
+        buffer: Value,
     },
     UnwindForms(Value),
     Unwind(UnwindFn, Value),
@@ -1021,11 +1022,16 @@ impl Lisp {
         roots.extend_from_slice(&self.flow_roots);
         for binding in &self.specpdl {
             match *binding {
-                SpecBinding::Let { symbol, old } | SpecBinding::LetDefault { symbol, old } => {
+                SpecBinding::Let { symbol, old } => {
                     roots.push(symbol);
                     roots.push(old);
                 }
                 SpecBinding::LetLocal {
+                    symbol,
+                    old,
+                    buffer,
+                }
+                | SpecBinding::LetDefault {
                     symbol,
                     old,
                     buffer,

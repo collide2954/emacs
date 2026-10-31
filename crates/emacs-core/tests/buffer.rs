@@ -212,6 +212,81 @@ fn buffer_local_variables() {
 }
 
 #[test]
+fn let_bindings_of_buffer_locals() {
+    check(&[
+        (
+            "(progn (defvar lb 0) (make-variable-buffer-local 'lb) (set-buffer (get-buffer-create \"lb1\")) (let ((other (get-buffer-create \"lb2\"))) (list (let ((lb 1)) (save-current-buffer (set-buffer other) (set 'lb 123) (list (local-variable-p 'lb) lb (default-value 'lb)))) (save-current-buffer (set-buffer other) (list (local-variable-p 'lb) lb)) (default-value 'lb))))",
+            "((t 123 1) (t 123) 0)",
+        ),
+        (
+            "(list (let ((lb 1)) (set 'lb 5) (list (local-variable-p 'lb) lb)) lb)",
+            "((nil 5) 0)",
+        ),
+        (
+            "(let ((other (get-buffer-create \"lb3\"))) (list (let ((left-margin 4)) (save-current-buffer (set-buffer other) (setq left-margin 9) (list (local-variable-p 'left-margin) (default-value 'left-margin)))) (buffer-local-value 'left-margin other) (default-value 'left-margin)))",
+            "((t 4) 9 0)",
+        ),
+        (
+            "(progn (defvar lu 1) (list (let ((lu 2)) (set (make-local-variable 'lu) 3) lu) lu (default-value 'lu) (local-variable-p 'lu)))",
+            "(3 3 1 t)",
+        ),
+        ("(make-local-variable t)", "error: (setting-constant t)"),
+        (
+            "(make-local-variable 'window-system)",
+            "error: (error \"Symbol window-system may not be buffer-local\")",
+        ),
+    ]);
+}
+
+#[test]
+fn per_buffer_predicates() {
+    check(&[
+        ("(get 'vertical-scroll-bar 'choice)", "(nil t left right)"),
+        ("(get 'fraction 'range)", "(0.0 . 1.0)"),
+        (
+            "(setq scroll-up-aggressively 2.7)",
+            "error: (error \"Value should be from 0.0 to 1.0\" 2.7)",
+        ),
+        ("(setq scroll-up-aggressively 0.5)", "0.5"),
+        (
+            "(setq scroll-up-aggressively 'abc)",
+            "error: (wrong-type-argument numberp abc)",
+        ),
+        (
+            "(setq default-directory 5)",
+            "error: (wrong-type-argument stringp 5)",
+        ),
+        (
+            "(setq overwrite-mode 'foo)",
+            "error: (error \"One of nil, overwrite-mode-textual or overwrite-mode-binary should be specified\" foo)",
+        ),
+        ("(setq vertical-scroll-bar 'left)", "left"),
+    ]);
+}
+
+#[test]
+fn kill_all_local_variables_kinds() {
+    check(&[
+        (
+            "(progn (set-buffer (get-buffer-create \"kr\")) (make-local-variable 'kr-foo) (put 'kr-foo 'permanent-local t) (setq kr-foo 'bar) (setq buffer-file-name \"/dummy\") (setq fill-column 20) (kill-all-local-variables) (list (local-variable-p 'kr-foo) buffer-file-name fill-column))",
+            "(t \"/dummy\" 70)",
+        ),
+        (
+            "(progn (kill-all-local-variables 'reset) (list (local-variable-p 'kr-foo) buffer-file-name))",
+            "(nil nil)",
+        ),
+        (
+            "(progn (set-default 'kp 123) (set (make-local-variable 'kp) t) (put 'kp 'permanent-local t) (setq kp-log nil) (add-variable-watcher 'kp (function (lambda (&rest args) (setq kp-log (cons args kp-log))))) (kill-all-local-variables 'permanent-local) (list (local-variable-p 'kp) kp kp-log))",
+            "(nil 123 nil)",
+        ),
+        (
+            "(progn (set (make-local-variable 'kp) t) (kill-all-local-variables t) (list (local-variable-p 'kp) (mapcar (function (lambda (e) (nth 2 e))) kp-log)))",
+            "(nil (makunbound set))",
+        ),
+    ]);
+}
+
+#[test]
 fn undo_records() {
     check(&[
         ("(set-buffer (get-buffer-create \"u\"))", "#<buffer u>"),

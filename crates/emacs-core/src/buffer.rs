@@ -610,6 +610,14 @@ pub fn init_vars(lisp: &mut Lisp) {
     ] {
         lisp.put(symbol, sym::PERMANENT_LOCAL, sym::T);
     }
+    let choice = lisp.list(&[Value::NIL, sym::T, sym::LEFT, sym::RIGHT]);
+    lisp.put(sym::VERTICAL_SCROLL_BAR, sym::CHOICE, choice);
+    let (min, max) = (lisp.float(0.0), lisp.float(1.0));
+    let range = lisp.cons(min, max);
+    lisp.put(sym::FRACTION, sym::RANGE, range);
+    let textual = lisp.intern("overwrite-mode-textual");
+    let choice = lisp.list(&[Value::NIL, textual, sym::OVERWRITE_MODE_BINARY]);
+    lisp.put(sym::OVERWRITE_MODE, sym::CHOICE, choice);
     lisp.defvar(sym::BEFORE_CHANGE_FUNCTIONS, Value::NIL);
     lisp.defvar(sym::AFTER_CHANGE_FUNCTIONS, Value::NIL);
     lisp.defvar(sym::FIRST_CHANGE_HOOK, Value::NIL);
@@ -1292,17 +1300,32 @@ impl Lisp {
         Ok(true)
     }
 
-    pub fn kill_all_local_variables(&mut self, kill_permanent: bool) -> LispResult<()> {
-        let buffer = self.current_buffer;
+    pub fn kill_all_local_variables(&mut self, kill_permanent: Value) -> LispResult<()> {
         self.run_hook(sym::CHANGE_MAJOR_MODE_HOOK)?;
-        let locals = self.buffer(buffer).local_vars.clone();
-        let mut kept = Vec::with_capacity(locals.len());
-        for (symbol, value) in locals {
-            let per_buffer = self.per_buffer_info(symbol);
-            if self.heap.symbol_ref(symbol).trapped_write == TrappedWrite::Trapped {
-                self.notify_variable_watchers(symbol, Value::NIL, sym::MAKUNBOUND, buffer)?;
+        let mut permanent_too = 0;
+        if !kill_permanent.is_nil() {
+            permanent_too = 2;
+            if kill_permanent == sym::PERMANENT_LOCAL {
+                permanent_too = 1;
+            } else if kill_permanent == sym::RESET {
+                permanent_too = 1;
+                self.reset_buffer(self.current_buffer);
             }
-            match per_buffer {
+        }
+        let buffer = self.current_buffer;
+        self.reset_buffer_local_variables(buffer, permanent_too)
+    }
+
+    fn reset_buffer_local_variables(&mut self, buffer: Value, permanent_too: u8) -> LispResult<()> {
+        let locals = self.buffer(buffer).local_vars.clone();
+        let base = self.stack.len();
+        for &(symbol, value) in &locals {
+            self.stack.push(symbol);
+            self.stack.push(value);
+        }
+        let mut kept = Vec::with_capacity(locals.len());
+        for &(symbol, value) in locals.iter().rev() {
+            match self.per_buffer_info(symbol) {
                 Some(PerBuffer {
                     always_local: true, ..
                 }) => {
@@ -1310,6 +1333,7 @@ impl Lisp {
                         kept.push((symbol, sym::FUNDAMENTAL_MODE));
                     } else if symbol == sym::MODE_NAME {
                         let name = self.string("Fundamental");
+                        self.stack.push(name);
                         kept.push((symbol, name));
                     } else if symbol == sym::BUFFER_INVISIBILITY_SPEC {
                         kept.push((symbol, sym::T));
@@ -1318,35 +1342,60 @@ impl Lisp {
                     }
                 }
                 Some(PerBuffer { permanent, .. }) => {
-                    if permanent && !kill_permanent {
+                    if permanent_too == 0 && permanent {
                         kept.push((symbol, value));
                     }
                 }
+                None if permanent_too == 1 => {}
                 None => {
-                    let prop = self.get(symbol, sym::PERMANENT_LOCAL);
-                    if !prop.is_nil() && !kill_permanent {
-                        if prop == sym::PERMANENT_LOCAL_HOOK && value.is_cons() {
-                            let mut new = Vec::new();
-                            let mut tail = value;
-                            while tail.is_cons() {
-                                let elt = self.xcar(tail);
-                                if elt == sym::T
-                                    || (elt.is_symbol()
-                                        && !self.get(elt, sym::PERMANENT_LOCAL_HOOK).is_nil())
-                                {
-                                    new.push(elt);
-                                }
-                                tail = self.xcdr(tail);
-                            }
-                            let list = self.list(&new);
-                            kept.push((symbol, list));
-                        } else {
-                            kept.push((symbol, value));
-                        }
+                    let trapped =
+                        |l: &Lisp| l.heap.symbol_ref(symbol).trapped_write == TrappedWrite::Trapped;
+                    if trapped(self) {
+                        let current = self.current_buffer;
+                        self.notify_variable_watchers(
+                            symbol,
+                            Value::NIL,
+                            sym::MAKUNBOUND,
+                            current,
+                        )?;
                     }
+                    let prop = self.get(symbol, sym::PERMANENT_LOCAL);
+                    if prop.is_nil() || permanent_too != 0 {
+                        continue;
+                    }
+                    let value = self.buffer_local_get(buffer, symbol).unwrap_or(value);
+                    if prop != sym::PERMANENT_LOCAL_HOOK {
+                        kept.push((symbol, value));
+                        continue;
+                    }
+                    let newlist = if value.is_cons() {
+                        let mut new = Vec::new();
+                        let mut tail = value;
+                        while tail.is_cons() {
+                            let elt = self.xcar(tail);
+                            if elt == sym::T
+                                || (elt.is_symbol()
+                                    && !self.get(elt, sym::PERMANENT_LOCAL_HOOK).is_nil())
+                            {
+                                new.push(elt);
+                            }
+                            tail = self.xcdr(tail);
+                        }
+                        self.list(&new)
+                    } else {
+                        value
+                    };
+                    self.stack.push(newlist);
+                    if trapped(self) {
+                        let current = self.current_buffer;
+                        self.notify_variable_watchers(symbol, newlist, sym::MAKUNBOUND, current)?;
+                    }
+                    kept.push((symbol, newlist));
                 }
             }
         }
+        kept.reverse();
+        self.stack.truncate(base);
         let down = self.ascii_downcase_table;
         let extras_ok = self.is_char_table(down)
             && self.char_table(down).extras[..3]
@@ -1791,6 +1840,6 @@ pub(crate) fn f_set_buffer_multibyte(lisp: &mut Lisp, args: &[Value]) -> LispRes
 }
 
 pub(crate) fn f_kill_all_local_variables(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    lisp.kill_all_local_variables(!args[0].is_nil())?;
+    lisp.kill_all_local_variables(args[0])?;
     Ok(Value::NIL)
 }
