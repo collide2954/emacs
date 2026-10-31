@@ -17,6 +17,12 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("make-interpreted-closure", 3, 5, f_make_interpreted_closure),
     Subr::special("function", 1, f_function),
     Subr::fixed("defvaralias", 2, 3, f_defvaralias),
+    Subr::fixed(
+        "internal-delete-indirect-variable",
+        1,
+        1,
+        f_internal_delete_indirect_variable,
+    ),
     Subr::fixed("default-toplevel-value", 1, 1, f_default_toplevel_value),
     Subr::fixed(
         "set-default-toplevel-value",
@@ -1651,6 +1657,18 @@ fn f_defvaralias(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(base_variable)
 }
 
+fn f_internal_delete_indirect_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let symbol = lisp.check_symbol(args[0])?;
+    if !matches!(lisp.heap.symbol_ref(symbol).value, SymbolValue::Alias(_)) {
+        let message = lisp.string("Cannot undeclare a variable that is not an alias");
+        return Err(lisp.signal_list(sym::ERROR, &[message, symbol]));
+    }
+    lisp.heap.symbol_mut(symbol).value = SymbolValue::Plain(sym::UNBOUND);
+    lisp.put(symbol, sym::VARIABLE_DOCUMENTATION, Value::NIL);
+    lisp.set(symbol, sym::UNBOUND)?;
+    Ok(symbol)
+}
+
 fn f_default_toplevel_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let symbol = args[0];
     let binding = lisp.default_toplevel_binding(symbol);
@@ -1895,15 +1913,17 @@ fn f_internal_make_var_non_special(lisp: &mut Lisp, args: &[Value]) -> LispResul
 
 fn f_let_star(lisp: &mut Lisp, args: Value) -> LispResult {
     let count = lisp.specpdl.len();
+    let base = lisp.stack.len();
     let lexenv = lisp.lexenv();
-    let mut varlist = lisp.xcar(args);
-    while varlist.is_cons() {
-        let elt = lisp.xcar(varlist);
-        let (var, val) = if elt.is_symbol() {
+    let varlist = lisp.xcar(args);
+    let mut li = lisp.for_each_tail(varlist);
+    while li.tail.is_cons() {
+        let elt = lisp.xcar(li.tail);
+        let (var, val) = if lisp.symbolp(elt) {
             (elt, Value::NIL)
         } else {
             let var = lisp.car(elt)?;
-            let rest = lisp.cdr(elt)?;
+            let rest = lisp.xcdr(elt);
             if !lisp.cdr(rest)?.is_nil() {
                 return Err(lisp.signal_error("`let' bindings can have only one value-form", elt));
             }
@@ -1929,12 +1949,11 @@ fn f_let_star(lisp: &mut Lisp, args: Value) -> LispResult {
         } else {
             lisp.specbind(var, val)?;
         }
-        varlist = lisp.xcdr(varlist);
+        lisp.tail_step(&mut li)?;
     }
-    if !varlist.is_nil() {
-        let all = lisp.xcar(args);
-        return Err(lisp.wrong_type(sym::LISTP, all));
-    }
+    let all = lisp.xcar(args);
+    lisp.check_list_end(li.tail, all)?;
+    lisp.stack.truncate(base);
     let body = lisp.xcdr(args);
     let value = lisp.progn(body);
     lisp.unbind_to_value(count, value)
@@ -1944,10 +1963,16 @@ fn f_let(lisp: &mut Lisp, args: Value) -> LispResult {
     let count = lisp.specpdl.len();
     let base = lisp.stack.len();
     let mut varlist = lisp.xcar(args);
-    while varlist.is_cons() {
+    let mut nvars = lisp.list_length(varlist)?;
+    lisp.stack.push(varlist);
+    let temps = lisp.stack.len();
+    let mut argnum = 0;
+    while argnum < nvars && varlist.is_cons() {
+        lisp.maybe_quit()?;
         let elt = lisp.xcar(varlist);
         varlist = lisp.xcdr(varlist);
-        let value = if elt.is_symbol() {
+        lisp.stack[base] = varlist;
+        let value = if lisp.symbolp(elt) {
             Value::NIL
         } else {
             let rest = lisp.cdr(elt)?;
@@ -1958,23 +1983,29 @@ fn f_let(lisp: &mut Lisp, args: Value) -> LispResult {
             lisp.eval(form)?
         };
         lisp.stack.push(value);
+        argnum += 1;
     }
-    let nvars = lisp.stack.len() - base;
+    nvars = argnum;
     let mut lexenv = lisp.lexenv();
-    let original_lexenv = lexenv;
-    let mut varlist = lisp.xcar(args);
-    for i in 0..nvars {
+    varlist = lisp.xcar(args);
+    argnum = 0;
+    while argnum < nvars && varlist.is_cons() {
         let elt = lisp.xcar(varlist);
         varlist = lisp.xcdr(varlist);
-        let var = if elt.is_symbol() { elt } else { lisp.car(elt)? };
+        let var = if lisp.symbolp(elt) {
+            elt
+        } else {
+            lisp.car(elt)?
+        };
         let var = lisp.maybe_remove_pos_from_symbol(var);
         if !var.is_symbol() {
             return Err(lisp.wrong_type(sym::SYMBOLP, var));
         }
-        let value = lisp.stack[base + i];
+        let value = lisp.stack[temps + argnum];
+        let current = lisp.lexenv();
         if !lexenv.is_nil()
             && !lisp.heap.symbol_ref(var).special
-            && lisp.memq(var, original_lexenv).is_nil()
+            && lisp.memq(var, current).is_nil()
         {
             let pair = lisp.cons(var, value);
             lexenv = lisp.cons(pair, lexenv);
@@ -1982,8 +2013,9 @@ fn f_let(lisp: &mut Lisp, args: Value) -> LispResult {
         } else {
             lisp.specbind(var, value)?;
         }
+        argnum += 1;
     }
-    if lexenv != original_lexenv {
+    if lexenv != lisp.lexenv() {
         lisp.specbind(sym::INTERNAL_INTERPRETER_ENVIRONMENT, lexenv)?;
     }
     let body = lisp.xcdr(args);

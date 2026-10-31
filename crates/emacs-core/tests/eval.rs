@@ -190,6 +190,42 @@ fn variables() {
 }
 
 #[test]
+fn let_varlist_checks() {
+    check(&[
+        ("(let 1)", "error: (wrong-type-argument listp 1)"),
+        ("(let [a])", "error: (wrong-type-argument listp [a])"),
+        ("(let (a . 1))", "error: (wrong-type-argument listp 1)"),
+        (
+            "(let* (a . 1))",
+            "error: (wrong-type-argument listp (a . 1))",
+        ),
+        (
+            "(let ((vars (list 'v))) (setcdr vars vars) (list (condition-case e (eval (list 'let vars) nil) (error (list (car e) (eq (car (cdr e)) vars)))) (condition-case e (eval (list 'let* vars) nil) (error (list (car e) (eq (car (cdr e)) vars))))))",
+            "((circular-list t) (circular-list t))",
+        ),
+        (
+            "(let ((vars (list 'a 'b 'c))) (setcdr (cdr (cdr vars)) (cdr vars)) (condition-case e (eval (list 'let* vars) nil) (error (list (car e) (eq (car (cdr e)) (cdr vars))))))",
+            "(circular-list nil)",
+        ),
+        ("(let ((a 1) b) (list a b))", "(1 nil)"),
+    ]);
+}
+
+#[test]
+fn delete_indirect_variable() {
+    check(&[
+        (
+            "(progn (defvar div-var 'foo) (defvaralias 'div-var1 'div-var \"Doc string.\") (internal-delete-indirect-variable 'div-var1) (list (indirect-variable 'div-var1) (boundp 'div-var1) (get 'div-var1 'variable-documentation) div-var))",
+            "(div-var1 nil nil foo)",
+        ),
+        (
+            "(internal-delete-indirect-variable 'div-var)",
+            "error: (error \"Cannot undeclare a variable that is not an alias\" div-var)",
+        ),
+    ]);
+}
+
+#[test]
 fn toplevel_values() {
     check(&[
         (

@@ -22,6 +22,15 @@ pub enum BacktraceArgs {
 
 pub type UnwindFn = fn(&mut Lisp, Value) -> LispResult<()>;
 
+const FOR_EACH_TAIL_THRESHOLD: usize = 4096;
+
+pub struct ForEachTail {
+    pub tail: Value,
+    tortoise: Value,
+    l: usize,
+    slot: usize,
+}
+
 #[derive(Clone, Copy)]
 pub enum SpecBinding {
     Let {
@@ -635,6 +644,60 @@ impl Lisp {
             return Err(self.wrong_type(sym::LISTP, list));
         }
         Ok(out)
+    }
+
+    pub fn for_each_tail(&mut self, list: Value) -> ForEachTail {
+        let slot = self.stack.len();
+        self.stack.push(list);
+        self.stack.push(list);
+        ForEachTail {
+            tail: list,
+            tortoise: list,
+            l: 0,
+            slot,
+        }
+    }
+
+    pub fn tail_step(&mut self, li: &mut ForEachTail) -> LispResult<()> {
+        li.tail = self.xcdr(li.tail);
+        self.stack[li.slot] = li.tail;
+        if li.tail == li.tortoise {
+            return Err(self.circular_list(li.tail));
+        }
+        li.l += 1;
+        if li.l & (FOR_EACH_TAIL_THRESHOLD - 1) == 0 {
+            self.maybe_quit()?;
+            if li.l.is_power_of_two() {
+                li.tortoise = li.tail;
+                self.stack[li.slot + 1] = li.tail;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn circular_list(&mut self, list: Value) -> Flow {
+        self.signal_list(sym::CIRCULAR_LIST, &[list])
+    }
+
+    pub fn check_list_end(&mut self, x: Value, y: Value) -> LispResult<()> {
+        if x.is_nil() {
+            Ok(())
+        } else {
+            Err(self.wrong_type(sym::LISTP, y))
+        }
+    }
+
+    pub fn list_length(&mut self, list: Value) -> LispResult<usize> {
+        let base = self.stack.len();
+        let mut i = 0;
+        let mut li = self.for_each_tail(list);
+        while li.tail.is_cons() {
+            i += 1;
+            self.tail_step(&mut li)?;
+        }
+        self.stack.truncate(base);
+        self.check_list_end(li.tail, li.tail)?;
+        Ok(i)
     }
 
     pub fn list_is_circular(&self, list: Value) -> bool {
