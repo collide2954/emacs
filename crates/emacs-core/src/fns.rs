@@ -1,16 +1,17 @@
 use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 
-use num_traits::ToPrimitive;
+use num_bigint::BigInt;
+use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::character;
-use crate::data::{Num, compare_nums};
+use crate::data::Num;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::{HashTable, LispString, Vectorlike, Weakness};
 use crate::subr::Subr;
 use crate::symbols as sym;
-use crate::value::Value;
+use crate::value::{Tag, Value};
 
 const FOR_EACH_TAIL_THRESHOLD: u64 = 4096;
 
@@ -969,10 +970,66 @@ impl Lisp {
         hash_u64(key.bits())
     }
 
-    pub fn string_compare(&self, a: Value, b: Value) -> Ordering {
-        let ca = self.string_char_vec(a);
-        let cb = self.string_char_vec(b);
-        ca.cmp(&cb)
+    pub fn string_cmp(&self, string1: Value, string2: Value) -> Ordering {
+        let (s1, s2) = (self.string_bytes(string1), self.string_bytes(string2));
+        let (m1, m2) = (
+            self.string_multibyte(string1),
+            self.string_multibyte(string2),
+        );
+        let (n1, n2) = (self.string_chars(string1), self.string_chars(string2));
+        let n = n1.min(n2);
+        let tail = |i: usize| {
+            if i < n2 {
+                Ordering::Less
+            } else if i < n1 {
+                Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        };
+        if (!m1 || n1 == s1.len()) && (!m2 || n2 == s2.len()) {
+            return s1[..n].cmp(&s2[..n]).then_with(|| tail(n));
+        }
+        if m1 && m2 {
+            let nb = s1.len().min(s2.len());
+            let mut b = 0;
+            while b < nb && s1[b] == s2[b] {
+                b += 1;
+            }
+            if b >= nb {
+                return if b < s2.len() {
+                    Ordering::Less
+                } else if b < s1.len() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Equal
+                };
+            }
+            while (s1[b] & 0xc0) == 0x80 {
+                b -= 1;
+            }
+            let (c1, _) = character::string_char(&s1[b..]);
+            let (c2, _) = character::string_char(&s2[b..]);
+            return c1.cmp(&c2);
+        }
+        let mut i = 0;
+        let mut byte = 0;
+        while i < n {
+            let (c1, c2) = if m1 {
+                let (c1, len) = character::string_char(&s1[byte..]);
+                byte += len;
+                (c1, u32::from(s2[i]))
+            } else {
+                let (c2, len) = character::string_char(&s2[byte..]);
+                byte += len;
+                (u32::from(s1[i]), c2)
+            };
+            i += 1;
+            if c1 != c2 {
+                return c1.cmp(&c2);
+            }
+        }
+        tail(i)
     }
 
     pub fn string_or_symbol_name(&mut self, v: Value) -> LispResult<Value> {
@@ -990,76 +1047,227 @@ impl Lisp {
         let mut a = a;
         let mut b = b;
         loop {
-            if self.is_number(a) && self.is_number(b) {
-                let na = self.number(a)?;
-                let nb = self.number(b)?;
-                let (lt, _, gt) = compare_nums(&na, &nb);
-                return Ok(if lt {
-                    Ordering::Less
-                } else if gt {
-                    Ordering::Greater
-                } else {
-                    Ordering::Equal
-                });
-            }
-            if a.is_symbol() {
-                if b.is_symbol() {
-                    let (na, nb) = (self.symbol_name(a), self.symbol_name(b));
-                    return Ok(self.string_compare(na, nb));
-                }
-                if a.is_nil() && b.is_cons() {
-                    return Ok(Ordering::Less);
-                }
-                return Err(self.signal_list(sym::TYPE_MISMATCH, &[a, b]));
-            }
-            if a.is_string() {
-                if b.is_string() {
-                    return Ok(self.string_compare(a, b));
-                }
-                return Err(self.signal_list(sym::TYPE_MISMATCH, &[a, b]));
-            }
-            if a.is_cons() {
-                if b.is_nil() {
-                    return Ok(Ordering::Greater);
-                }
-                if !b.is_cons() {
-                    return Err(self.signal_list(sym::TYPE_MISMATCH, &[a, b]));
-                }
-                let (ca, cb) = (self.xcar(a), self.xcar(b));
-                let c = self.value_cmp(ca, cb, maxdepth - 1)?;
-                if c != Ordering::Equal {
-                    return Ok(c);
-                }
-                a = self.xcdr(a);
-                b = self.xcdr(b);
-                continue;
-            }
-            if a.is_vectorlike() && b.is_vectorlike() {
-                let ia = match self.heap.vectorlike_ref(a) {
-                    Vectorlike::Vector(v) | Vectorlike::Record(v) => Some(v.clone()),
-                    _ => None,
-                };
-                let ib = match self.heap.vectorlike_ref(b) {
-                    Vectorlike::Vector(v) | Vectorlike::Record(v) => Some(v.clone()),
-                    _ => None,
-                };
-                if let (Some(ia), Some(ib)) = (ia, ib) {
-                    for (x, y) in ia.iter().zip(&ib) {
-                        let c = self.value_cmp(*x, *y, maxdepth - 1)?;
-                        if c != Ordering::Equal {
-                            return Ok(c);
-                        }
-                    }
-                    return Ok(ia.len().cmp(&ib.len()));
-                }
-                if let (Ok(x), Ok(y)) = (self.bool_vector_bits(a), self.bool_vector_bits(b)) {
-                    return Ok(x.cmp(&y));
-                }
+            if a == b {
                 return Ok(Ordering::Equal);
+            }
+            match a.tag() {
+                Tag::Fixnum => {
+                    let ia = a.as_fixnum().unwrap_or(0);
+                    if let Some(ib) = b.as_fixnum() {
+                        return Ok(if ia < ib {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        });
+                    }
+                    if b.is_float() {
+                        return Ok(fixnum_float_cmp(ia, self.heap.float_value(b)));
+                    }
+                    if let Some(bb) = self.bignum_ref(b) {
+                        return Ok(bigint_sign(bb).reverse());
+                    }
+                }
+                Tag::Symbol => {
+                    if b.is_symbol() {
+                        let (na, nb) = (self.symbol_name(a), self.symbol_name(b));
+                        return Ok(self.string_cmp(na, nb));
+                    }
+                    if b.is_cons() && a.is_nil() {
+                        return Ok(Ordering::Less);
+                    }
+                    if self.symbolp(b) {
+                        let bare = self.maybe_remove_pos_from_symbol(b);
+                        let (na, nb) = (self.symbol_name(a), self.symbol_name(bare));
+                        return Ok(self.string_cmp(na, nb));
+                    }
+                }
+                Tag::String => {
+                    if b.is_string() {
+                        return Ok(self.string_cmp(a, b));
+                    }
+                }
+                Tag::Cons => {
+                    let base = self.stack.len();
+                    let mut li = self.for_each_tail(b);
+                    let mut recurse = false;
+                    while li.tail.is_cons() {
+                        let (ca, cb) = (self.xcar(a), self.xcar(li.tail));
+                        let cmp = self.value_cmp(ca, cb, maxdepth - 1)?;
+                        if cmp != Ordering::Equal {
+                            self.stack.truncate(base);
+                            return Ok(cmp);
+                        }
+                        a = self.xcdr(a);
+                        if !a.is_cons() {
+                            b = self.xcdr(li.tail);
+                            recurse = true;
+                            break;
+                        }
+                        self.tail_step(&mut li)?;
+                    }
+                    self.stack.truncate(base);
+                    if recurse {
+                        continue;
+                    }
+                    b = li.tail;
+                    if b.is_nil() {
+                        return Ok(Ordering::Greater);
+                    }
+                }
+                Tag::Vectorlike => {
+                    if b.is_vectorlike() {
+                        if std::mem::discriminant(self.heap.vectorlike_ref(a))
+                            == std::mem::discriminant(self.heap.vectorlike_ref(b))
+                        {
+                            match self.value_cmp_same_type(a, b, maxdepth)? {
+                                SameType::Done(o) => return Ok(o),
+                                SameType::Recurse(na, nb) => {
+                                    a = na;
+                                    b = nb;
+                                    continue;
+                                }
+                            }
+                        }
+                    } else if self.bignum_ref(a).is_some() {
+                        return Ok(self.value_cmp(b, a, maxdepth)?.reverse());
+                    } else if self.is_symbol_with_pos(a)
+                        && self.var_true(sym::SYMBOLS_WITH_POS_ENABLED)
+                    {
+                        a = self.maybe_remove_pos_from_symbol(a);
+                        continue;
+                    }
+                }
+                Tag::Float => {
+                    let fa = self.heap.float_value(a);
+                    if b.is_float() {
+                        let fb = self.heap.float_value(b);
+                        return Ok(if fa < fb {
+                            Ordering::Less
+                        } else if fa > fb {
+                            Ordering::Greater
+                        } else {
+                            Ordering::Equal
+                        });
+                    }
+                    if let Some(ib) = b.as_fixnum() {
+                        return Ok(fixnum_float_cmp(ib, fa).reverse());
+                    }
+                    if let Some(bb) = self.bignum_ref(b) {
+                        if fa.is_nan() {
+                            return Ok(Ordering::Equal);
+                        }
+                        return Ok(mpz_cmp_d(bb, fa).reverse());
+                    }
+                }
             }
             return Err(self.signal_list(sym::TYPE_MISMATCH, &[a, b]));
         }
     }
+
+    fn value_cmp_same_type(&mut self, a: Value, b: Value, maxdepth: i32) -> LispResult<SameType> {
+        let done = |o| Ok(SameType::Done(o));
+        match (self.heap.vectorlike_ref(a), self.heap.vectorlike_ref(b)) {
+            (Vectorlike::Vector(va), Vectorlike::Vector(vb))
+            | (Vectorlike::Record(va), Vectorlike::Record(vb)) => {
+                let (va, vb) = (va.clone(), vb.clone());
+                for (x, y) in va.iter().zip(&vb) {
+                    let cmp = self.value_cmp(*x, *y, maxdepth - 1)?;
+                    if cmp != Ordering::Equal {
+                        return done(cmp);
+                    }
+                }
+                done(va.len().cmp(&vb.len()))
+            }
+            (Vectorlike::BoolVector(ba), Vectorlike::BoolVector(bb)) => done(ba.bits.cmp(&bb.bits)),
+            (Vectorlike::Marker(ma), Vectorlike::Marker(mb)) => {
+                let (pa, pb) = (ma.charpos, mb.charpos);
+                let buf_a = crate::marker::f_marker_buffer(self, &[a])?;
+                let buf_b = crate::marker::f_marker_buffer(self, &[b])?;
+                if buf_a.is_nil() {
+                    return done(if buf_b.is_nil() {
+                        Ordering::Equal
+                    } else {
+                        Ordering::Less
+                    });
+                }
+                if buf_b.is_nil() {
+                    return done(Ordering::Greater);
+                }
+                let cmp = self.value_cmp(buf_a, buf_b, maxdepth - 1)?;
+                if cmp != Ordering::Equal {
+                    return done(cmp);
+                }
+                done(pa.cmp(&pb))
+            }
+            (Vectorlike::Process(pa), Vectorlike::Process(pb)) => {
+                Ok(SameType::Recurse(pa.name, pb.name))
+            }
+            (Vectorlike::Buffer(ba), Vectorlike::Buffer(bb)) => {
+                let (na, nb) = (ba.name, bb.name);
+                if na.is_nil() {
+                    return done(if nb.is_nil() {
+                        Ordering::Equal
+                    } else {
+                        Ordering::Less
+                    });
+                }
+                if nb.is_nil() {
+                    return done(Ordering::Greater);
+                }
+                Ok(SameType::Recurse(na, nb))
+            }
+            (Vectorlike::Bignum(x), Vectorlike::Bignum(y)) => done(x.cmp(y)),
+            (
+                Vectorlike::SymbolWithPos { symbol: sa, .. },
+                Vectorlike::SymbolWithPos { symbol: sb, .. },
+            ) => Ok(SameType::Recurse(*sa, *sb)),
+            _ => done(Ordering::Equal),
+        }
+    }
+}
+
+enum SameType {
+    Done(Ordering),
+    Recurse(Value, Value),
+}
+
+fn fixnum_float_cmp(a: i64, b: f64) -> Ordering {
+    let fa = a as f64;
+    if fa == b {
+        let ib = b as i64;
+        a.cmp(&ib)
+    } else if fa < b {
+        Ordering::Less
+    } else if fa > b {
+        Ordering::Greater
+    } else {
+        Ordering::Equal
+    }
+}
+
+fn bigint_sign(b: &BigInt) -> Ordering {
+    b.sign().cmp(&num_bigint::Sign::NoSign)
+}
+
+fn mpz_cmp_d(b: &BigInt, d: f64) -> Ordering {
+    if d.is_infinite() {
+        return if d > 0.0 {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
+    }
+    let whole = d.trunc();
+    let truncated = BigInt::from_f64(whole).unwrap_or_default();
+    b.cmp(&truncated).then_with(|| {
+        if d > whole {
+            Ordering::Less
+        } else if d < whole {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    })
 }
 
 fn hash_u64(x: u64) -> u64 {
@@ -1092,44 +1300,104 @@ impl Lisp {
     }
 }
 
+const INTMASK: i64 = (1 << 62) - 1;
+
+fn make_ufixnum(n: i64) -> Value {
+    Value::fixnum(if n > crate::value::MOST_POSITIVE_FIXNUM {
+        n - INTMASK - 1
+    } else {
+        n
+    })
+}
+
+impl Lisp {
+    fn get_random_fixnum(&mut self, lim: i64) -> Value {
+        let difflim = INTMASK - lim + 1;
+        loop {
+            let r = self.get_random();
+            let remainder = r % lim;
+            let diff = r - remainder;
+            if difflim >= diff {
+                return Value::fixnum(remainder);
+            }
+        }
+    }
+
+    fn get_random_limb(&mut self) -> u64 {
+        if cfg!(windows) {
+            let mut r = 0;
+            for _ in 0..2 {
+                r = (r << 32) | self.get_random_ulong();
+            }
+            r
+        } else {
+            self.get_random_ulong()
+        }
+    }
+
+    fn get_random_limb_lim(&mut self, lim: u64) -> u64 {
+        let difflim = lim.wrapping_neg();
+        loop {
+            let r = self.get_random_limb();
+            if lim == 0 {
+                return r;
+            }
+            let remainder = r % lim;
+            let diff = r - remainder;
+            if difflim >= diff {
+                return remainder;
+            }
+        }
+    }
+
+    fn get_random_bignum(&mut self, limit: &BigInt) -> Value {
+        let lim_limb = limit.to_u64_digits().1;
+        let nlimbs = lim_limb.len();
+        let limhi = lim_limb[nlimbs - 1];
+        let mut r_limb = vec![0u64; nlimbs];
+        loop {
+            let rhi = self.get_random_limb_lim(limhi.wrapping_add(u64::from(1 < nlimbs)));
+            let mut edgy = rhi == limhi;
+            r_limb[nlimbs - 1] = rhi;
+            for i in (0..nlimbs - 1).rev() {
+                let ri = self.get_random_limb();
+                if edgy {
+                    if lim_limb[i] < ri {
+                        break;
+                    }
+                    edgy = lim_limb[i] == ri;
+                }
+                r_limb[i] = ri;
+            }
+            if !edgy {
+                break;
+            }
+        }
+        let bytes: Vec<u8> = r_limb.iter().flat_map(|limb| limb.to_le_bytes()).collect();
+        self.bignum(BigInt::from_bytes_le(num_bigint::Sign::Plus, &bytes))
+    }
+}
+
 fn f_random(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let limit = args[0];
-    if limit == sym::T {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0x1234_5678, |d| d.as_nanos() as u64);
-        lisp.rng_state = seed | 1;
+    if lisp.eq(limit, sym::T) {
+        crate::sysdep::init_random(lisp);
     } else if limit.is_string() {
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        lisp.string_bytes(limit).hash(&mut h);
-        lisp.rng_state = h.finish() | 1;
-    }
-    if let Some(n) = limit.as_fixnum()
-        && n > 0
-    {
-        let r = lisp.next_random() % n as u64;
-        return Ok(Value::fixnum(r as i64));
-    }
-    if let Some(b) = lisp.bignum_ref(limit).cloned()
-        && b > num_bigint::BigInt::from(0)
-    {
-        let bits = b.bits();
-        let mut acc = num_bigint::BigInt::from(0);
-        let mut produced = 0;
-        while produced < bits + 64 {
-            acc = (acc << 64) + num_bigint::BigInt::from(lisp.next_random());
-            produced += 64;
+        let seed = lisp.string_bytes(limit).to_vec();
+        lisp.seed_random(&seed);
+    } else if let Some(lim) = limit.as_fixnum() {
+        if lim <= 0 {
+            return Err(lisp.signal_list(sym::ARGS_OUT_OF_RANGE, &[limit]));
         }
-        let r = acc % b;
-        return Ok(lisp.bignum(r));
+        return Ok(lisp.get_random_fixnum(lim));
+    } else if let Some(lim) = lisp.bignum_ref(limit).cloned() {
+        if lim.sign() != num_bigint::Sign::Plus {
+            return Err(lisp.signal_list(sym::ARGS_OUT_OF_RANGE, &[limit]));
+        }
+        return Ok(lisp.get_random_bignum(&lim));
     }
-    let r = (lisp.next_random() >> 3) as i64 & crate::value::MOST_POSITIVE_FIXNUM;
-    let r = if lisp.next_random() & 1 == 1 {
-        r
-    } else {
-        r - crate::value::MOST_POSITIVE_FIXNUM - 1
-    };
-    Ok(Value::fixnum(r))
+    let r = lisp.get_random();
+    Ok(make_ufixnum(r))
 }
 
 fn make_digest_string(digest: &[u8]) -> Vec<u8> {
@@ -1358,7 +1626,7 @@ pub(crate) fn f_compare_strings(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 pub(crate) fn f_string_lessp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let a = lisp.string_or_symbol_name(args[0])?;
     let b = lisp.string_or_symbol_name(args[1])?;
-    Ok(bool_value(lisp.string_compare(a, b) == Ordering::Less))
+    Ok(bool_value(lisp.string_cmp(a, b) == Ordering::Less))
 }
 
 fn version_cmp(a: &[u32], b: &[u32]) -> Ordering {
@@ -1662,53 +1930,104 @@ fn f_take(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_ntake(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (n, list) = (args[0], args[1]);
-    let n = match n.as_fixnum() {
-        Some(n) => n,
-        None if lisp.is_bignum(n) => return Ok(list),
-        None => return Err(lisp.wrong_type(sym::INTEGERP, n)),
+    let mut m = match n.as_fixnum() {
+        Some(m) if m <= 0 => return Ok(Value::NIL),
+        Some(m) => m,
+        None => match lisp.bignum_ref(n) {
+            Some(b) if b.sign() == num_bigint::Sign::Minus => return Ok(Value::NIL),
+            Some(_) => crate::value::MOST_POSITIVE_FIXNUM,
+            None => return Err(lisp.wrong_type(sym::INTEGERP, n)),
+        },
     };
-    if n <= 0 {
-        return Ok(Value::NIL);
-    }
+    lisp.check_list(list)?;
     let mut tail = list;
-    for _ in 1..n {
-        if !tail.is_cons() {
-            return Ok(list);
-        }
+    m -= 1;
+    while m > 0 && tail.is_cons() {
         tail = lisp.xcdr(tail);
+        m -= 1;
     }
     if tail.is_cons() {
         lisp.heap.set_cdr(tail, Value::NIL);
+    } else if !tail.is_nil() {
+        return Err(lisp.wrong_type(sym::LISTP, list));
     }
     Ok(list)
 }
 
+const SMALL_LIST_LEN_MAX: i64 = 127;
+
+fn rarely_quit(lisp: &mut Lisp, count: i64) -> LispResult<()> {
+    if count as u16 == 0 {
+        lisp.maybe_quit()?;
+    }
+    Ok(())
+}
+
 pub(crate) fn f_nthcdr(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (n, list) = (args[0], args[1]);
-    let n = match n.as_fixnum() {
-        Some(n) => n,
-        None if lisp.bignum_ref(n).is_some() => {
-            let big = lisp.bignum_ref(n).cloned().unwrap_or_default();
-            if big < num_bigint::BigInt::from(0) {
-                return Ok(list);
-            }
-            let mut tail = list;
-            while tail.is_cons() {
+    let mut tail = list;
+    lisp.check_integer(n)?;
+    let large_num = i64::MAX;
+    let mut num;
+    if let Some(fixnum) = n.as_fixnum() {
+        num = fixnum;
+        if num <= SMALL_LIST_LEN_MAX {
+            while 0 < num {
+                if !tail.is_cons() {
+                    lisp.check_list_end(tail, list)?;
+                    return Ok(Value::NIL);
+                }
+                num -= 1;
                 tail = lisp.xcdr(tail);
             }
             return Ok(tail);
         }
-        None => return Err(lisp.wrong_type(sym::INTEGERP, n)),
-    };
-    let mut tail = list;
-    for _ in 0..n.max(0) {
-        if tail.is_nil() {
-            break;
+    } else {
+        if lisp
+            .bignum_ref(n)
+            .is_some_and(|b| b.sign() == num_bigint::Sign::Minus)
+        {
+            return Ok(tail);
         }
-        if !tail.is_cons() {
-            return Err(lisp.wrong_type(sym::LISTP, tail));
+        num = large_num;
+    }
+    let mut tortoise_num = num;
+    let mut saved_tail = tail;
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(tail);
+    while li.tail.is_cons() {
+        if li.tail == li.tortoise() {
+            tortoise_num = num;
         }
+        saved_tail = lisp.xcdr(li.tail);
+        num -= 1;
+        if num == 0 {
+            lisp.stack.truncate(base);
+            return Ok(saved_tail);
+        }
+        rarely_quit(lisp, num)?;
+        lisp.tail_step_safe(&mut li);
+    }
+    lisp.stack.truncate(base);
+    tail = saved_tail;
+    if !tail.is_cons() {
+        lisp.check_list_end(tail, list)?;
+        return Ok(Value::NIL);
+    }
+    let cycle_length = tortoise_num - num;
+    if let Some(big) = lisp.bignum_ref(n) {
+        let rem = (big % BigInt::from(cycle_length)).to_i64().unwrap_or(0);
+        num += rem;
+        if num < cycle_length {
+            num += cycle_length;
+        }
+        num -= large_num % cycle_length;
+    }
+    num %= cycle_length;
+    while 0 < num {
         tail = lisp.xcdr(tail);
+        rarely_quit(lisp, num)?;
+        num -= 1;
     }
     Ok(tail)
 }

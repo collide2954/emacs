@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.78"
+version = "0.1.79"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
@@ -19,6 +19,7 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
     "Win32_System_Environment",

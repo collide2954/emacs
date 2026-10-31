@@ -213,7 +213,7 @@ fn f_make_marker(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.make_marker_object())
 }
 
-fn f_marker_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_marker_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let m = lisp.check_marker(args[0])?;
     let b = lisp.marker(m).buffer;
     if lisp.buffer_live_p(b) {

@@ -51,6 +51,7 @@ pub mod sha1;
 pub mod subr;
 pub mod symbols;
 pub mod syntax;
+pub mod sysdep;
 pub mod term;
 pub mod termhooks;
 pub mod terminal;

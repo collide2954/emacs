@@ -182,6 +182,128 @@ fn sorting() {
 }
 
 #[test]
+fn take_and_nthcdr() {
+    check(&[
+        ("(ntake 1 'a)", "error: (wrong-type-argument listp a)"),
+        (
+            "(ntake 2 '(a . b))",
+            "error: (wrong-type-argument listp (a . b))",
+        ),
+        ("(ntake (- most-negative-fixnum 1) (list 1 2))", "nil"),
+        ("(ntake (1+ most-positive-fixnum) (list 1 2))", "(1 2)"),
+        ("(ntake 'x nil)", "error: (wrong-type-argument integerp x)"),
+        ("(ntake 0 'a)", "nil"),
+        ("(ntake 1 (list 1 2))", "(1)"),
+        (
+            "(nthcdr 2 '(1 . 2))",
+            "error: (wrong-type-argument listp (1 . 2))",
+        ),
+        ("(nthcdr 5 '(1 2))", "nil"),
+        ("(nthcdr -1 '(1))", "(1)"),
+        ("(nthcdr (expt 2 70) '(1 2))", "nil"),
+        (
+            "(let ((l (list 1 2 3))) (setcdr (cdr (cdr l)) l) (car (nthcdr 1000 l)))",
+            "2",
+        ),
+        (
+            "(let ((l (list 1 2 3))) (setcdr (cdr (cdr l)) l) (list (car (nthcdr (expt 2 70) l)) (car (nthcdr (1+ (expt 2 70)) l))))",
+            "(2 3)",
+        ),
+        ("(nthcdr 200 (make-list 150 1))", "nil"),
+    ]);
+}
+
+#[test]
+fn random_numbers() {
+    check(&[
+        ("(random -1)", "error: (args-out-of-range -1)"),
+        ("(random 0)", "error: (args-out-of-range 0)"),
+        (
+            "(random (- (expt 2 70)))",
+            "error: (args-out-of-range -1180591620717411303424)",
+        ),
+        ("(random 1)", "0"),
+        ("(equal (random \"seed\") (random \"seed\"))", "t"),
+        (
+            "(let ((n (random (expt 2 70)))) (and (integerp n) (<= 0 n) (< n (expt 2 70))))",
+            "t",
+        ),
+        (
+            "(let ((n (random))) (and (integerp n) (<= most-negative-fixnum n most-positive-fixnum)))",
+            "t",
+        ),
+        (
+            "(progn (get-buffer-create \" rn\") (string-match \"\\\\` rn-[0-9]+\\\\'\" (generate-new-buffer-name \" rn\")))",
+            "0",
+        ),
+    ]);
+}
+
+#[cfg(windows)]
+#[test]
+fn w32_random_generator() {
+    let mut r = emacs_core::sysdep::Random::default();
+    r.srandom(1);
+    assert_eq!(r.random(), -1_415_428_051);
+}
+
+#[cfg(unix)]
+#[test]
+fn glibc_random_generator() {
+    let mut r = emacs_core::sysdep::Random::default();
+    r.srandom(1);
+    assert_eq!(r.random(), 1_804_289_383);
+    assert_eq!(r.random(), 846_930_886);
+}
+
+#[test]
+fn value_ordering() {
+    check(&[
+        (
+            "(list (value< (position-symbol 'a 1) (position-symbol 'b 2)) (value< (position-symbol 'a 1) (position-symbol 'a 2)))",
+            "(t nil)",
+        ),
+        (
+            "(value< (position-symbol 'a 1) 'b)",
+            "error: (type-mismatch #<symbol a at 1> b)",
+        ),
+        (
+            "(let ((symbols-with-pos-enabled t)) (list (value< (position-symbol 'a 1) 'b) (value< 'a (position-symbol 'b 1))))",
+            "(t t)",
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"vo1\")) (insert \"abcdef\") (let ((other (get-buffer-create \"vo2\"))) (list (value< (copy-marker 2) (copy-marker 3)) (value< (make-marker) (copy-marker 3)) (value< (current-buffer) other) (value< other (current-buffer)) (value< (set-marker (make-marker) 1 other) (copy-marker 1)))))",
+            "(t t t nil nil)",
+        ),
+        (
+            "(let ((a (list 1 2 3)) (b (list 1 2 3))) (setcdr (cdr (cdr a)) a) (setcdr (cdr (cdr b)) b) (car (condition-case e (value< a b) (error e))))",
+            "circular-list",
+        ),
+        ("(value< (make-hash-table) (make-hash-table))", "nil"),
+        (
+            "(value< [1] (record 'a))",
+            "error: (type-mismatch [1] #s(a))",
+        ),
+        (
+            "(list (value< 1 1.5) (value< 2.0 1) (value< 0.0e+NaN 1))",
+            "(t nil nil)",
+        ),
+        (
+            "(list (value< (expt 2 70) 1) (value< 1 (expt 2 70)) (value< 1.0 (expt 2 70)))",
+            "(nil t t)",
+        ),
+        ("(value< '(1 . 2) '(1 . 3))", "t"),
+        ("(value< '(1 2) 'a)", "error: (type-mismatch (1 2) a)"),
+        ("(value< '(1) nil)", "nil"),
+        ("(value< nil '(1))", "t"),
+        (
+            "(list (string-lessp \"\\200\" (string-to-multibyte \"\\200a\")) (string-lessp (string-to-multibyte \"\\200a\") \"\\200\") (value< \"\\200\" \"\\200\"))",
+            "(t nil nil)",
+        ),
+    ]);
+}
+
+#[test]
 fn equality() {
     check(&[
         ("(equal '(1 (2 \"x\")) '(1 (2 \"x\")))", "t"),

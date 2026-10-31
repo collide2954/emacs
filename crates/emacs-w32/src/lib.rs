@@ -10,6 +10,9 @@ use windows_sys::Win32::Globalization::{
     GetACP, GetLocaleInfoA, GetUserDefaultUILanguage, IsValidCodePage, LOCALE_SABBREVLANGNAME,
     LOCALE_USE_CP_ACP,
 };
+use windows_sys::Win32::Security::Cryptography::{
+    CRYPT_SILENT, CRYPT_VERIFYCONTEXT, CryptAcquireContextA, CryptGenRandom, PROV_RSA_FULL,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     FindClose, FindFirstFileW, GetFileAttributesA, GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
     WIN32_FIND_DATAW,
@@ -240,6 +243,27 @@ fn wide(path: &Path) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+static CRYPTO_HPROV: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+fn init_crypt_random() -> usize {
+    let mut hprov: usize = 0;
+    let ok = unsafe {
+        CryptAcquireContextA(
+            &mut hprov,
+            std::ptr::null(),
+            std::ptr::null(),
+            PROV_RSA_FULL,
+            CRYPT_VERIFYCONTEXT | CRYPT_SILENT,
+        )
+    };
+    if ok == 0 { 0 } else { hprov }
+}
+
+pub fn crypt_gen_random(buf: &mut [u8]) -> bool {
+    let hprov = *CRYPTO_HPROV.get_or_init(init_crypt_random);
+    hprov != 0 && unsafe { CryptGenRandom(hprov, buf.len() as u32, buf.as_mut_ptr()) } != 0
 }
 
 pub fn file_attributes_wide(path: &Path) -> Result<u32, u32> {

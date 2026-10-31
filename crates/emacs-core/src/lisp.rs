@@ -31,6 +31,12 @@ pub struct ForEachTail {
     slot: usize,
 }
 
+impl ForEachTail {
+    pub fn tortoise(&self) -> Value {
+        self.tortoise
+    }
+}
+
 #[derive(Clone, Copy)]
 pub enum SpecBinding {
     Let {
@@ -113,6 +119,7 @@ pub struct Lisp {
     pub xdisp: crate::xdisp::Xdisp,
     pub keyboard: crate::keyboard::Keyboard,
     pub atimer: crate::atimer::Atimers,
+    pub random: crate::sysdep::Random,
     pub signaling_function: Value,
     pub fileio: crate::fileio::FileIo,
     pub bc: crate::bytecode::Bytecode,
@@ -231,6 +238,7 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::fontset::init_vars,
     crate::xfaces::init_vars,
     crate::xdisp::init_vars,
+    crate::sysdep::init_random,
     init_first_buffers,
     crate::minibuf::init_minibuf_once,
     crate::window::init_window_once,
@@ -323,6 +331,7 @@ impl Lisp {
             xdisp: crate::xdisp::Xdisp::default(),
             keyboard: crate::keyboard::Keyboard::default(),
             atimer: crate::atimer::Atimers::default(),
+            random: crate::sysdep::Random::default(),
             signaling_function: Value::NIL,
             fileio: crate::fileio::FileIo::default(),
             bc: crate::bytecode::Bytecode::default(),
@@ -663,20 +672,35 @@ impl Lisp {
     }
 
     pub fn tail_step(&mut self, li: &mut ForEachTail) -> LispResult<()> {
+        if self.tail_step_cyclep(li, true)? {
+            return Err(self.circular_list(li.tail));
+        }
+        Ok(())
+    }
+
+    pub fn tail_step_safe(&mut self, li: &mut ForEachTail) {
+        if let Ok(true) = self.tail_step_cyclep(li, false) {
+            li.tail = Value::NIL;
+        }
+    }
+
+    fn tail_step_cyclep(&mut self, li: &mut ForEachTail, check_quit: bool) -> LispResult<bool> {
         li.tail = self.xcdr(li.tail);
         self.stack[li.slot] = li.tail;
         if li.tail == li.tortoise {
-            return Err(self.circular_list(li.tail));
+            return Ok(true);
         }
         li.l += 1;
         if li.l & (FOR_EACH_TAIL_THRESHOLD - 1) == 0 {
-            self.maybe_quit()?;
+            if check_quit {
+                self.maybe_quit()?;
+            }
             if li.l.is_power_of_two() {
                 li.tortoise = li.tail;
                 self.stack[li.slot + 1] = li.tail;
             }
         }
-        Ok(())
+        Ok(false)
     }
 
     pub fn circular_list(&mut self, list: Value) -> Flow {

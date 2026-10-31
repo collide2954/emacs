@@ -35,6 +35,20 @@ pub fn kill(pid: i64, sig: i32) -> io::Result<()> {
     result(unsafe { libc::kill(pid as libc::pid_t, sig) })
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn getrandom(buf: &mut [u8]) -> bool {
+    let n = unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+    n == buf.len() as isize
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn getrandom(buf: &mut [u8]) -> bool {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(buf))
+        .is_ok()
+}
+
 pub fn strsignal(sig: i32) -> Option<String> {
     let name = unsafe { libc::strsignal(sig) };
     if name.is_null() {

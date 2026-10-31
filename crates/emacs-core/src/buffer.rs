@@ -908,29 +908,33 @@ impl Lisp {
 
     pub fn generate_new_buffer_name(&mut self, name: Value, ignore: Value) -> LispResult<Value> {
         let name = self.check_string(name)?;
-        let candidate_ok = |lisp: &mut Lisp, candidate: Value| -> bool {
-            (!ignore.is_nil() && lisp.string_bytes(candidate) == lisp.string_bytes(ignore))
-                || lisp.get_buffer(candidate).is_nil()
-        };
-        if candidate_ok(self, name) {
+        if (!ignore.is_nil() && !crate::fns::f_string_equal(self, &[name, ignore])?.is_nil())
+            || self.get_buffer(name).is_nil()
+        {
             return Ok(name);
         }
-        let base = self.string_to_rust(name);
-        let base = if base.starts_with(' ') {
-            let suffix = self.next_random() % 1_000_000;
-            format!("{base}-{suffix}")
+        let base = self.stack.len();
+        let genbase = if self.string_bytes(name).first() != Some(&b' ') {
+            name
         } else {
-            base
+            let i = self.get_random() % 1_000_000;
+            let lnumber = self.string(&format!("-{i}"));
+            let genbase = crate::fns::f_concat(self, &[name, lnumber])?;
+            if self.get_buffer(genbase).is_nil() {
+                return Ok(genbase);
+            }
+            genbase
         };
-        let candidate = self.string(&base);
-        if candidate_ok(self, candidate) {
-            return Ok(candidate);
-        }
+        self.stack.push(genbase);
         let mut count = 2;
         loop {
-            let candidate = self.string(&format!("{base}<{count}>"));
-            if candidate_ok(self, candidate) {
-                return Ok(candidate);
+            let lnumber = self.string(&format!("<{count}>"));
+            let gentemp = crate::fns::f_concat(self, &[genbase, lnumber])?;
+            if !crate::fns::f_string_equal(self, &[gentemp, ignore])?.is_nil()
+                || self.get_buffer(gentemp).is_nil()
+            {
+                self.stack.truncate(base);
+                return Ok(gentemp);
             }
             count += 1;
         }
