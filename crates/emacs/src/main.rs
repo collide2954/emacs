@@ -54,10 +54,7 @@ fn run(args: Vec<Vec<u8>>) -> i32 {
         let top_level = lisp.list(&[sym::LOAD, loadup]);
         lisp.set_plain_value(sym::TOP_LEVEL, top_level);
     }
-    let result = lisp.catch_all(|l| {
-        let form = l.plain_value(sym::TOP_LEVEL);
-        l.eval_with_lexical(form, sym::T)
-    });
+    let result = lisp.catch_all(|l| l.command_loop().map(|()| emacs_core::value::Value::NIL));
     let _ = lisp.stdout.flush();
     match result {
         Ok(_) => 0,

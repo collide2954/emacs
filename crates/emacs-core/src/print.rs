@@ -914,58 +914,122 @@ impl Lisp {
     }
 
     pub fn error_message_string(&mut self, obj: Value) -> LispResult<String> {
+        let message = f_error_message_string(self, &[obj])?;
+        Ok(self.string_to_rust(message))
+    }
+
+    pub fn write_string(&mut self, data: &str, stream: Value) -> LispResult<()> {
+        let chars: Vec<u32> = data.chars().map(u32::from).collect();
+        self.print_to_stream(&chars, stream)
+    }
+
+    pub fn print_error_message(
+        &mut self,
+        data: Value,
+        stream: Value,
+        context: Option<&str>,
+        caller: Value,
+    ) -> LispResult<()> {
         let base = self.stack.len();
-        self.stack.push(obj);
-        let r = self.error_message_string_1(obj);
+        self.stack.extend_from_slice(&[data, stream, caller]);
+        let r = self.print_error_message_1(data, stream, context, caller);
         self.stack.truncate(base);
         r
     }
 
-    fn error_message_string_1(&mut self, obj: Value) -> LispResult<String> {
-        let errname = self.car_safe(obj);
-        let data = self.cdr_safe(obj);
-        if errname == sym::ERROR {
-            let first = self.car_safe(data);
-            if first.is_string() {
-                let tail = self.cdr_safe(data);
-                let mut out = self.princ_to_string(first);
-                let items = self.list_to_vec(tail).unwrap_or_default();
-                for (i, item) in items.iter().enumerate() {
-                    out.push_str(if i == 0 { ": " } else { ", " });
-                    out.push_str(&self.prin1_to_string(*item));
+    fn print_error_message_1(
+        &mut self,
+        mut data: Value,
+        stream: Value,
+        context: Option<&str>,
+        caller: Value,
+    ) -> LispResult<()> {
+        if let Some(context) = context {
+            self.write_string(context, stream)?;
+        }
+        if !caller.is_nil() && self.symbolp(caller) {
+            let caller = self.maybe_remove_pos_from_symbol(caller);
+            let cname = self.symbol_name(caller);
+            let bytes = self.string_bytes(cname).to_vec();
+            let multibyte = self.string_multibyte(cname);
+            self.message_dolog(&bytes, false, multibyte)?;
+            self.message_dolog(b": ", false, false)?;
+        }
+        let errname = self.car(data)?;
+        let mut errmsg;
+        let file_error;
+        if self.eq(errname, sym::ERROR) {
+            data = self.cdr(data)?;
+            if !data.is_cons() {
+                data = Value::NIL;
+            }
+            errmsg = self.car(data)?;
+            file_error = Value::NIL;
+        } else {
+            let error_conditions = crate::fns::f_get(self, &[errname, sym::ERROR_CONDITIONS])?;
+            errmsg = crate::fns::f_get(self, &[errname, sym::ERROR_MESSAGE])?;
+            if !self
+                .heap
+                .symbol_ref(sym::SUBSTITUTE_COMMAND_KEYS)
+                .function
+                .is_nil()
+            {
+                let subs = self.safe_calln(sym::SUBSTITUTE_COMMAND_KEYS, &[errmsg])?;
+                if !subs.is_nil() {
+                    errmsg = subs;
+                    self.stack.push(errmsg);
                 }
-                return Ok(out);
             }
+            file_error = self.memq(sym::FILE_ERROR, error_conditions);
         }
-        let errmsg = if errname.is_symbol() {
-            self.get(errname, sym::ERROR_MESSAGE)
+        let mut tail = self.cdr_safe(data);
+        if self.eq(errname, sym::USER_ERROR)
+            && stream == sym::T
+            && !self.car_safe(tail).is_nil()
+            && self.cdr_safe(tail).is_nil()
+        {
+            self.xdisp.message_log_need_newline = false;
+            let message = self.xcar(tail);
+            return self.message3(message);
+        }
+        if !file_error.is_nil() && tail.is_cons() {
+            errmsg = self.xcar(tail);
+            tail = self.xcdr(tail);
+        }
+        let mut sep = Some(": ");
+        if !errmsg.is_string() {
+            self.write_string("peculiar error", stream)?;
+        } else if self.string_chars(errmsg) > 0 {
+            f_princ(self, &[errmsg, stream])?;
         } else {
-            Value::NIL
-        };
-        let file_error = if errname.is_symbol() {
-            let conds = self.get(errname, sym::ERROR_CONDITIONS);
-            !self.memq(sym::FILE_ERROR, conds).is_nil()
-        } else {
-            false
-        };
-        let (mut out, tail) = if file_error && data.is_cons() {
-            (self.princ_to_string(self.xcar(data)), self.xcdr(data))
-        } else if errmsg.is_string() {
-            (self.string_to_rust(errmsg), data)
-        } else {
-            ("peculiar error".to_string(), data)
-        };
-        let items = self.list_to_vec(tail).unwrap_or_default();
-        for (i, item) in items.iter().enumerate() {
-            out.push_str(if i == 0 { ": " } else { ", " });
-            if file_error || errname == sym::END_OF_FILE || errname == sym::USER_ERROR {
-                out.push_str(&self.princ_to_string(*item));
+            sep = None;
+        }
+        let princ_items = !file_error.is_nil()
+            || self.eq(errname, sym::END_OF_FILE)
+            || self.eq(errname, sym::USER_ERROR);
+        let mut li = self.for_each_tail(tail);
+        while li.tail.is_cons() {
+            if let Some(sep) = sep {
+                self.write_string(sep, stream)?;
+            }
+            sep = Some(", ");
+            let obj = self.xcar(li.tail);
+            if princ_items {
+                f_princ(self, &[obj, stream])?;
             } else {
-                out.push_str(&self.prin1_to_string(*item));
+                f_prin1(self, &[obj, stream, Value::NIL])?;
             }
+            self.tail_step(&mut li)?;
         }
-        Ok(out)
+        Ok(())
     }
+}
+
+fn erase_prin1_to_string_buffer(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
+    let buffer = lisp.prin1_to_string_buffer;
+    lisp.set_buffer_internal(buffer);
+    crate::buffer::f_erase_buffer(lisp, &[])?;
+    Ok(())
 }
 
 pub fn chars_to_display_string(chars: &[u32]) -> String {
@@ -1124,7 +1188,7 @@ fn f_write_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(args[0])
 }
 
-fn f_terpri(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_terpri(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (printcharfun, ensure) = (args[0], args[1]);
     if !ensure.is_nil() {
         let dest = if printcharfun.is_nil() {
@@ -1239,14 +1303,23 @@ fn f_prin1_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_error_message_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let obj = args[0];
-    if !obj.is_cons() && !obj.is_nil() {
-        return Err(lisp.wrong_type(sym::CONSP, obj));
+    if obj.is_cons() && lisp.eq(lisp.xcar(obj), sym::ERROR) {
+        let rest = lisp.xcdr(obj);
+        if rest.is_cons() && lisp.xcar(rest).is_string() && lisp.xcdr(rest).is_nil() {
+            return Ok(lisp.xcar(rest));
+        }
     }
-    let s = with_overrides(lisp, Value::NIL, |l| {
-        l.bind_print_escapes(true)?;
-        l.error_message_string(obj)
-    })?;
-    Ok(lisp.string(&s))
+    let count = lisp.specpdl.len();
+    lisp.record_unwind_current_buffer();
+    lisp.record_unwind(erase_prin1_to_string_buffer, Value::NIL);
+    let buffer = lisp.prin1_to_string_buffer;
+    let r = lisp
+        .print_error_message(obj, buffer, None, Value::NIL)
+        .and_then(|()| {
+            lisp.set_buffer_internal(buffer);
+            crate::editfns::f_buffer_string(lisp, &[])
+        });
+    lisp.unbind_to_value(count, r)
 }
 
 fn f_princ(lisp: &mut Lisp, args: &[Value]) -> LispResult {

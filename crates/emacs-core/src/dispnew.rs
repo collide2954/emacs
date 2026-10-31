@@ -147,7 +147,7 @@ fn f_internal_show_cursor_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-fn f_ding(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_ding(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if !args[0].is_nil() {
         if lisp.noninteractive() {
             putchar_bell();

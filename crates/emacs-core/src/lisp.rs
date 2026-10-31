@@ -113,6 +113,7 @@ pub struct Lisp {
     pub xdisp: crate::xdisp::Xdisp,
     pub keyboard: crate::keyboard::Keyboard,
     pub atimer: crate::atimer::Atimers,
+    pub signaling_function: Value,
     pub fileio: crate::fileio::FileIo,
     pub bc: crate::bytecode::Bytecode,
     pub subr_docs: std::collections::HashMap<usize, i64>,
@@ -322,6 +323,7 @@ impl Lisp {
             xdisp: crate::xdisp::Xdisp::default(),
             keyboard: crate::keyboard::Keyboard::default(),
             atimer: crate::atimer::Atimers::default(),
+            signaling_function: Value::NIL,
             fileio: crate::fileio::FileIo::default(),
             bc: crate::bytecode::Bytecode::default(),
             subr_docs: std::collections::HashMap::new(),
@@ -1086,6 +1088,7 @@ impl Lisp {
         roots.extend_from_slice(&self.stack);
         roots.extend_from_slice(&self.flow_roots);
         self.atimer.trace(&mut roots);
+        roots.push(self.signaling_function);
         for binding in &self.specpdl {
             match *binding {
                 SpecBinding::Let { symbol, old } => {

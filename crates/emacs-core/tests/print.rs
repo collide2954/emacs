@@ -3,6 +3,39 @@ mod common;
 use common::check;
 
 #[test]
+fn error_messages() {
+    check(&[
+        (
+            "(let ((s \"x\")) (eq (error-message-string (list 'error s)) s))",
+            "t",
+        ),
+        ("(error-message-string '(error \"x\" 1))", "\"x: 1\""),
+        ("(error-message-string '(error . 3))", "\"peculiar error\""),
+        ("(error-message-string nil)", "\"peculiar error\""),
+        (
+            "(error-message-string 'foo)",
+            "error: (wrong-type-argument listp foo)",
+        ),
+        (
+            "(error-message-string '(user-error \"a\" \"b\"))",
+            "\"a, b\"",
+        ),
+        (
+            "(error-message-string '(wrong-type-argument stringp 1))",
+            "\"Wrong type argument: stringp, 1\"",
+        ),
+        (
+            "(error-message-string '(file-missing \"Opening input file\" \"No such file or directory\" \"/x\"))",
+            "\"Opening input file: No such file or directory, /x\"",
+        ),
+        (
+            "(error-message-string '(end-of-file \"a\"))",
+            "\"End of file during parsing: a\"",
+        ),
+    ]);
+}
+
+#[test]
 fn raw_bytes_by_destination() {
     check(&[
         (

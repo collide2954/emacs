@@ -30,6 +30,42 @@ fn buffer_processes() {
     ]);
 }
 
+#[cfg(windows)]
+#[test]
+fn call_process_status() {
+    check(&[
+        ("(call-process \"cmd\" nil nil nil \"/c\" \"exit 3\")", "3"),
+        (
+            "(call-process \"cmd\" nil nil nil \"/c\" \"exit -1\")",
+            "255",
+        ),
+        (
+            "(call-process \"cmd\" nil nil nil \"/c\" \"exit 256\")",
+            "0",
+        ),
+        (
+            "(call-process \"cmd\" nil nil nil \"/c\" \"exit -1073741510\")",
+            "\"Interrupt\"",
+        ),
+    ]);
+}
+
+#[cfg(unix)]
+#[test]
+fn call_process_status() {
+    check(&[
+        ("(call-process \"sh\" nil nil nil \"-c\" \"exit 3\")", "3"),
+        (
+            "(call-process \"sh\" nil nil nil \"-c\" \"exit 255\")",
+            "255",
+        ),
+        (
+            "(stringp (call-process \"sh\" nil nil nil \"-c\" \"kill -9 $$\"))",
+            "t",
+        ),
+    ]);
+}
+
 #[test]
 fn omp_threads() {
     let parse = |s: Option<&str>| parse_omp_threads(s.map(Into::into));

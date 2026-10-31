@@ -134,7 +134,6 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::AUTOLOAD_QUEUE, Value::NIL);
     lisp.defvar(sym::MACROEXP__DYNVARS, Value::NIL);
     lisp.defvar(sym::LEXICAL_BINDING, Value::NIL);
-    lisp.defvar(sym::SIGNALING_FUNCTION, Value::NIL);
     lisp.defvar_bool(sym::DEBUG_ON_NEXT_CALL, false);
     lisp.defvar_int(sym::LISP_EVAL_DEPTH_RESERVE, 200);
 }
@@ -849,7 +848,10 @@ impl Lisp {
             return Err(self.signal_error("Invalid error symbol", real_error_symbol));
         }
         self.stack.push(conditions);
-        self.set_signaling_function();
+        self.signaling_function = Value::NIL;
+        if !oom {
+            self.set_signaling_function();
+        }
         let mut clause = Value::NIL;
         let mut found = UNCAUGHT;
         let mut i = self.handlers.len() as isize - 1;
@@ -926,22 +928,16 @@ impl Lisp {
     }
 
     fn set_signaling_function(&mut self) {
-        let mut function = Value::NIL;
-        let mut seen_top = false;
-        for binding in self.specpdl.iter().rev() {
-            if let SpecBinding::Backtrace { function: f, .. } = binding {
-                if !seen_top {
-                    seen_top = true;
-                    continue;
-                }
-                if *f == sym::ERROR {
-                    continue;
-                }
-                function = *f;
-                break;
-            }
+        let mut frames = self.specpdl.iter().rev().filter_map(|b| match b {
+            SpecBinding::Backtrace { function, .. } => Some(*function),
+            _ => None,
+        });
+        frames.next();
+        let mut pdl = frames.next();
+        if pdl.is_some_and(|f| self.eq(f, sym::ERROR)) {
+            pdl = frames.next();
         }
-        self.set_plain_value(sym::SIGNALING_FUNCTION, function);
+        self.signaling_function = pdl.unwrap_or(Value::NIL);
     }
 
     fn find_handler_clause(&self, handlers: Value, conditions: Value) -> Value {

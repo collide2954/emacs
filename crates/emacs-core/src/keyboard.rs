@@ -1,10 +1,11 @@
 use crate::character::{
     CHAR_ALT, CHAR_CTL, CHAR_HYPER, CHAR_META, CHAR_MODIFIER_MASK, CHAR_SHIFT, CHAR_SUPER,
 };
-use crate::error::LispResult;
+use crate::error::{HandlerKind, LispResult};
 use crate::lisp::Lisp;
 use crate::subr::Subr;
 use crate::symbols as sym;
+use crate::terminal::OutputMethod;
 use crate::timefns::{Timespec, current_timespec, timespec_sub};
 use crate::value::Value;
 
@@ -67,7 +68,130 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("set-quit-char", 1, 1, f_set_quit_char),
     Subr::fixed("set-input-mode", 3, 4, f_set_input_mode),
     Subr::fixed("current-input-mode", 0, 0, f_current_input_mode),
+    Subr::fixed(
+        "command-error-default-function",
+        3,
+        3,
+        f_command_error_default_function,
+    ),
 ];
+
+impl Lisp {
+    pub fn command_loop(&mut self) -> LispResult<()> {
+        self.internal_catch(sym::TOP_LEVEL, |l| l.top_level_1())?;
+        if self.noninteractive {
+            crate::emacs::f_kill_emacs(self, &[sym::T, Value::NIL])?;
+        }
+        Ok(())
+    }
+
+    fn top_level_1(&mut self) -> LispResult {
+        if !self.plain_value(sym::TOP_LEVEL).is_nil() {
+            self.condition_case_internal(
+                sym::ERROR,
+                |l| l.top_level_2(),
+                |l, data| l.cmd_error(data),
+            )?;
+        } else if !self.plain_value(sym::PURIFY_FLAG).is_nil() {
+            self.message1("Bare impure Emacs (standard Lisp code not loaded)")?;
+        } else {
+            self.message1("Bare Emacs (standard Lisp code not loaded)")?;
+        }
+        Ok(Value::NIL)
+    }
+
+    fn top_level_2(&mut self) -> LispResult {
+        let setup_handler = self.noninteractive;
+        let first = self.handlers.len();
+        if setup_handler {
+            let conditions = self.list(&[sym::ERROR]);
+            self.push_handler(HandlerKind::HandlerBind {
+                conditions,
+                handler: sym::DEBUG_EARLY__HANDLER,
+                skip: 0,
+            });
+        }
+        let top_level = self.plain_value(sym::TOP_LEVEL);
+        let res = self.eval_with_lexical(top_level, sym::T);
+        if setup_handler && res.is_ok() {
+            self.pop_handler(first);
+        }
+        res
+    }
+
+    fn cmd_error(&mut self, data: Value) -> LispResult {
+        let count = self.specpdl.len();
+        let base = self.stack.len();
+        let error_symbol = self.car_safe(data);
+        let conditions = crate::fns::f_get(self, &[error_symbol, sym::ERROR_CONDITIONS])?;
+        if self.memq(sym::MINIBUFFER_QUIT, conditions).is_nil() {
+            self.set_plain_value(sym::EXECUTING_KBD_MACRO, Value::NIL);
+        }
+        self.specbind(sym::STANDARD_OUTPUT, sym::T)?;
+        self.specbind(sym::STANDARD_INPUT, sym::T)?;
+        self.set_kvar(Kvar::PrefixArg, Value::NIL);
+        self.set_kvar(Kvar::LastPrefixArg, Value::NIL);
+        self.cancel_echoing();
+        let old_level = self.plain_value(sym::PRINT_LEVEL);
+        let old_length = self.plain_value(sym::PRINT_LENGTH);
+        self.stack.extend_from_slice(&[old_level, old_length]);
+        self.set_plain_value(sym::PRINT_LEVEL, Value::fixnum(10));
+        self.set_plain_value(sym::PRINT_LENGTH, Value::fixnum(10));
+        self.cmd_error_internal(data, Some(""))?;
+        self.set_plain_value(sym::PRINT_LEVEL, old_level);
+        self.set_plain_value(sym::PRINT_LENGTH, old_length);
+        self.stack.truncate(base);
+        self.set_plain_value(sym::QUIT_FLAG, Value::NIL);
+        self.set_plain_value(sym::INHIBIT_QUIT, Value::NIL);
+        self.unbind_to(count)?;
+        Ok(Value::fixnum(0))
+    }
+
+    pub fn cmd_error_internal(&mut self, data: Value, context: Option<&str>) -> LispResult<()> {
+        if self.signal_quit_p(data) {
+            self.signaling_function = Value::NIL;
+        }
+        self.set_plain_value(sym::QUIT_FLAG, Value::NIL);
+        self.set_plain_value(sym::INHIBIT_QUIT, sym::T);
+        let function = self.plain_value(sym::COMMAND_ERROR_FUNCTION);
+        if !function.is_nil() {
+            let context = match context {
+                Some(context) => self.make_string(context.as_bytes()),
+                None => self.empty_unibyte,
+            };
+            let signal = self.signaling_function;
+            self.funcall(function, &[data, context, signal])?;
+        }
+        self.signaling_function = Value::NIL;
+        Ok(())
+    }
+}
+
+fn f_command_error_default_function(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (data, context, signal) = (args[0], args[1], args[2]);
+    let sf = lisp.frames.selected_frame;
+    let error_symbol = lisp.car_safe(data);
+    let conditions = crate::fns::f_get(lisp, &[error_symbol, sym::ERROR_CONDITIONS])?;
+    let is_minibuffer_quit = !lisp.memq(sym::MINIBUFFER_QUIT, conditions).is_nil();
+    lisp.check_string(context)?;
+    let context = lisp.string_to_rust(context);
+    let initial = lisp.frame(sf).output_method == OutputMethod::Initial;
+    if !is_minibuffer_quit && (initial || lisp.noninteractive) {
+        lisp.print_error_message(data, sym::EXTERNAL_DEBUGGING_OUTPUT, Some(&context), signal)?;
+        crate::print::f_terpri(lisp, &[sym::EXTERNAL_DEBUGGING_OUTPUT, Value::NIL])?;
+        crate::emacs::f_kill_emacs(lisp, &[Value::fixnum(-1), Value::NIL])?;
+    } else {
+        lisp.clear_message(true)?;
+        lisp.message_log_maybe_newline()?;
+        if is_minibuffer_quit {
+            crate::dispnew::f_ding(lisp, &[sym::T])?;
+        } else {
+            unreachable!("no window frames exist yet");
+        }
+        lisp.print_error_message(data, sym::T, Some(&context), signal)?;
+    }
+    Ok(Value::NIL)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kvar {

@@ -879,7 +879,7 @@ fn f_buffer_substring_no_properties(lisp: &mut Lisp, args: &[Value]) -> LispResu
     Ok(lisp.buffer_substring_value(s, e, false))
 }
 
-fn f_buffer_string(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_buffer_string(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let (s, e) = (lisp.cur().begv, lisp.cur().zv);
     Ok(lisp.buffer_substring_value(s, e, true))
 }

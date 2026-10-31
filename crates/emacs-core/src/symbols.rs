@@ -2210,7 +2210,6 @@ symbols! {
     AUTOLOAD_QUEUE "autoload-queue"
     LOADS_IN_PROGRESS "loads-in-progress"
     REQUIRE_NESTING_LIST "require-nesting-list"
-    SIGNALING_FUNCTION "signaling-function"
     RUN_HOOKS_ENABLED "run-hooks-enabled"
     CURRENT_MESSAGE_INTERNAL "current-message-internal"
     STANDARD_SYNTAX_TABLE_INTERNAL "standard-syntax-table-internal"

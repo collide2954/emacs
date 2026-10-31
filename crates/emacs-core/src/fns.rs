@@ -2117,7 +2117,7 @@ fn f_plist_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     plist_get_with(lisp, args[0], args[1], args[2])
 }
 
-fn f_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let symbol = lisp.maybe_remove_pos_from_symbol(args[0]);
     let symbol = lisp.check_symbol(symbol)?;
     let overriding = lisp.plain_value(sym::OVERRIDING_PLIST_ENVIRONMENT);

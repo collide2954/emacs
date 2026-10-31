@@ -1475,7 +1475,51 @@ fn run_process(
         lisp.insert_internal(&data, chars, &[], false, false)?;
         lisp.unbind_to(count)?;
     }
-    Ok(Value::fixnum(output.status.code().unwrap_or(-1) as i64))
+    let status = wait_status(output.status);
+    let termsig = status & 0x7f;
+    if termsig != 0 && (status & 0xff) != 0x7f {
+        let signame = strsignal(termsig).unwrap_or_else(|| "unknown".to_string());
+        return Ok(lisp.make_string(signame.as_bytes()));
+    }
+    Ok(Value::fixnum(i64::from((status & 0xff00) >> 8)))
+}
+
+#[cfg(windows)]
+const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
+
+#[cfg(windows)]
+fn wait_status(status: std::process::ExitStatus) -> i32 {
+    let retval = status.code().map_or(1, |c| c as u32);
+    if retval == STATUS_CONTROL_C_EXIT {
+        2
+    } else {
+        (retval << 8) as i32
+    }
+}
+
+#[cfg(unix)]
+fn wait_status(status: std::process::ExitStatus) -> i32 {
+    std::os::unix::process::ExitStatusExt::into_raw(status)
+}
+
+#[cfg(windows)]
+fn strsignal(sig: i32) -> Option<String> {
+    let description = match sig {
+        22 => "Aborted",
+        8 => "Arithmetic exception",
+        4 => "Illegal instruction",
+        2 => "Interrupt",
+        11 => "Segmentation fault",
+        15 => "Terminated",
+        21 => "Ctrl-Break",
+        _ => return None,
+    };
+    Some(description.to_string())
+}
+
+#[cfg(unix)]
+fn strsignal(sig: i32) -> Option<String> {
+    emacs_unix::strsignal(sig)
 }
 
 fn f_call_process(lisp: &mut Lisp, args: &[Value]) -> LispResult {

@@ -35,6 +35,19 @@ pub fn kill(pid: i64, sig: i32) -> io::Result<()> {
     result(unsafe { libc::kill(pid as libc::pid_t, sig) })
 }
 
+pub fn strsignal(sig: i32) -> Option<String> {
+    let name = unsafe { libc::strsignal(sig) };
+    if name.is_null() {
+        None
+    } else {
+        Some(
+            unsafe { std::ffi::CStr::from_ptr(name) }
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+}
+
 pub fn faccessat_eaccess(path: &Path, mode: i32) -> io::Result<()> {
     let path = c_path(path)?;
     result(unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) })
