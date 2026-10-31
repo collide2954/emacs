@@ -91,6 +91,7 @@ Ported but not yet complete (C kept):
 | `term.c` | `term.rs` | `tty-frame-list-z-order`, `tty-frame-at` (need frame z-order); there is no tty frontend, so `decode_tty_terminal` never finds a tty |
 | `w32.c` | `w32.rs` | everything but `init_environment`, which doesn't report a missing temporary directory (that needs `command-error-default-function`), and leaves out `init_user_info` and w32term.c's mouse-button count; it sets variables with `SetEnvironmentVariableA` where C uses `_putenv`, and `getenv-internal` falls back to the process environment as C's does on Windows |
 | `w32proc.c` | `w32proc.rs` | the DEFUNs other than `w32-long-file-name`, `w32-get-console-codepage`, `w32-set-console-codepage` and their output-codepage counterparts; it has the variables |
+| `sysdep.c` | `sysdep.rs` | everything but the random-number functions (`get_random`, `get_random_ulong`, `seed_random`, `init_random`); the generator under them follows `w32.c`'s AS183 `random` and the C runtime's `rand` on Windows, and reimplements glibc's `random` elsewhere so each Lisp instance keeps its own state |
 | `callproc.c` | `emacs.rs` (`run_process`) | a placeholder: `call-process` and `call-process-region` run the program through Rust's process API, decode its output as UTF-8 and append its standard error after its standard output; only the returned status follows C (`WEXITSTATUS` of the wait status, which `w32proc.c` builds on Windows, or `strsignal`'s description of the signal) |
 | `keyboard.c` | `keyboard.rs` | everything except event modifier parsing, `safe_run_hooks`, the timer runner (`timer_check`), `detect_input_pending`, the input-mode DEFUNs (`current-input-mode`, `set-input-mode` and friends, which only affect ttys, so they change nothing but the interrupt flag) and the outer level of the command loop: `top_level_1`, `top_level_2` (which binds `debug-early--handler` to errors in batch mode, so they print a backtrace), `cmd_error`, `cmd_error_internal` and `command-error-default-function`; `command_loop_1` is not ported, so after the top-level form a batch session exits through `kill-emacs` as C does at the end of standard input, and keyboard macros never run, so `cmd_error` has no macro context; there is no input event queue yet, so pending input means `quit-flag` or a kboard's `kbd_queue_has_data`, and idle timers never run because Emacs never becomes idle |
 | `syntax.c` | `syntax.rs` | the regex engine still ignores `syntax-table` text properties |
@@ -143,7 +144,11 @@ Lisp from Build and run, plus byte-compiled copies of the files ERT loads (`ert`
 `emacs --batch -Q -l ert -l test/src/data-tests.el -f ert-run-tests-batch-and-exit` passes
 all 64 tests in a few seconds. `test/src/eval-tests.el` passes 25 of 27; the other two run a
 child Emacs and compare its whole output, which starts with loadup's messages because the
-port boots like an undumped temacs. Printing a failing test's backtrace takes about four seconds,
+port boots like an undumped temacs. `test/src/fns-tests.el` passes 79 of 95 (6 skipped) in
+about two minutes; the failures need the base64 functions (the region variants are missing
+and the string variants accept multibyte text), `secure-hash` (gnulib's MD5 and SHA-2 are not
+ported), `object-intervals` on buffers, the error C signals when a hash function changes its
+own table, and `make-pipe-process`. Printing a failing test's backtrace takes about four seconds,
 mostly spent printing ERT's interpreted test closures. `cl-preloaded.el` checks which type
 predicates are defined while it is compiled, so `.elc` files from before 0.1.75, when
 `processp` was added, lack the `process` type; rebuild them.
