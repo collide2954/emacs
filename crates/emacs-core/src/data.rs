@@ -1510,16 +1510,8 @@ fn compare_chain(
     args: &[Value],
     test: fn((bool, bool, bool)) -> bool,
 ) -> LispResult {
-    if args.len() == 1 {
-        lisp.number(args[0])?;
-        return Ok(sym::T);
-    }
     for pair in args.windows(2) {
-        let r = lisp.arithcompare(pair[0], pair[1])?;
-        if !test(r) {
-            for &rest in args {
-                lisp.number(rest)?;
-            }
+        if !test(lisp.arithcompare(pair[0], pair[1])?) {
             return Ok(Value::NIL);
         }
     }
