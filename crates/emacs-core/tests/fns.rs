@@ -179,6 +179,34 @@ fn sorting() {
 }
 
 #[test]
+fn sxhash_values() {
+    check(&[
+        ("(sxhash-equal \"abc\")", "8059383"),
+        ("(sxhash-equal 5)", "4"),
+        ("(sxhash-eq 1)", "0"),
+        ("(sxhash-equal '(1 2))", "22"),
+        ("(sxhash-equal [1 2])", "662"),
+        (
+            "(progn (set-buffer (get-buffer-create \"sx\")) (insert \"abc\") (= (sxhash-equal (point-marker)) (sxhash-equal (point-marker))))",
+            "t",
+        ),
+        ("(= (sxhash-eql 1.5) (sxhash-equal 1.5))", "t"),
+        (
+            "(= (sxhash-eql (expt 2 70)) (sxhash-equal (expt 2 70)))",
+            "t",
+        ),
+        (
+            "(= (sxhash-equal-including-properties (propertize \"a\" 'x 1)) (sxhash-equal \"a\"))",
+            "nil",
+        ),
+        (
+            "(= (sxhash-equal-including-properties \"a\") (sxhash-equal \"a\"))",
+            "t",
+        ),
+    ]);
+}
+
+#[test]
 fn equal_including_properties() {
     check(&[
         (

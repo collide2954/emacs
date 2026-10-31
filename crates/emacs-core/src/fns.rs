@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::hash::{Hash, Hasher};
 
 use num_bigint::BigInt;
 use num_traits::{FromPrimitive, ToPrimitive};
@@ -98,7 +97,12 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("sxhash-eq", 1, 1, f_sxhash_eq),
     Subr::fixed("sxhash-eql", 1, 1, f_sxhash_eql),
     Subr::fixed("sxhash-equal", 1, 1, f_sxhash_equal),
-    Subr::fixed("sxhash-equal-including-properties", 1, 1, f_sxhash_equal),
+    Subr::fixed(
+        "sxhash-equal-including-properties",
+        1,
+        1,
+        f_sxhash_equal_including_properties,
+    ),
     Subr::many("make-hash-table", 0, f_make_hash_table),
     Subr::fixed("copy-hash-table", 1, 1, f_copy_hash_table),
     Subr::fixed("hash-table-count", 1, 1, f_hash_table_count),
@@ -875,7 +879,7 @@ impl Lisp {
 
     pub fn hash_key(&mut self, test: Value, key: Value) -> LispResult<u64> {
         if test == sym::EQ {
-            return Ok(hash_u64(self.maybe_remove_pos_from_symbol(key).bits()));
+            return Ok(self.sxhash_eq(key));
         }
         if test == sym::EQL {
             return Ok(self.sxhash_eql(key));
@@ -973,69 +977,128 @@ impl Lisp {
             ))))
     }
 
-    pub fn sxhash_eql(&self, key: Value) -> u64 {
-        if key.is_float() {
-            return hash_u64(self.heap.float_value(key).to_bits());
-        }
-        if let Some(b) = self.bignum_ref(key) {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            b.hash(&mut h);
-            return h.finish();
-        }
-        hash_u64(self.maybe_remove_pos_from_symbol(key).bits())
+    pub fn sxhash_eq(&self, key: Value) -> u64 {
+        let k = self.maybe_remove_pos_from_symbol(key);
+        xhash(k) ^ xtype(k)
     }
 
-    pub fn sxhash_equal(&self, key: Value, depth: usize) -> u64 {
-        const MAX_DEPTH: usize = 3;
-        const MAX_LEN: usize = 7;
-        if depth > MAX_DEPTH {
+    pub fn sxhash_eql(&self, key: Value) -> u64 {
+        if key.is_float() || self.is_bignum(key) {
+            self.sxhash_equal(key, 0)
+        } else {
+            self.sxhash_eq(key)
+        }
+    }
+
+    pub fn sxhash_equal(&self, obj: Value, depth: usize) -> u64 {
+        if depth > SXHASH_MAX_DEPTH {
             return 0;
         }
-        if key.is_string() {
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            self.string_bytes(key).hash(&mut h);
-            return h.finish();
-        }
-        if key.is_float() {
-            return hash_u64(self.heap.float_value(key).to_bits());
-        }
-        if key.is_cons() {
-            let mut hash = 0u64;
-            let mut tail = key;
-            let mut i = 0;
-            while tail.is_cons() && i < MAX_LEN {
-                let h = self.sxhash_equal(self.xcar(tail), depth + 1);
-                hash = combine(hash, h);
-                tail = self.xcdr(tail);
-                i += 1;
-            }
-            if !tail.is_nil() && i < MAX_LEN {
-                hash = combine(hash, self.sxhash_equal(tail, depth + 1));
-            }
-            return hash;
-        }
-        if key.is_vectorlike() {
-            match self.heap.vectorlike_ref(key) {
-                Vectorlike::Bignum(_) => return self.sxhash_eql(key),
-                Vectorlike::Vector(v) | Vectorlike::Record(v) | Vectorlike::Closure(v) => {
-                    let mut hash = v.len() as u64;
-                    for item in v.iter().take(MAX_LEN) {
-                        hash = combine(hash, self.sxhash_equal(*item, depth + 1));
+        match obj.tag() {
+            Tag::Fixnum => obj.as_fixnum().unwrap_or(0) as u64 & INTMASK as u64,
+            Tag::Symbol => xhash(obj),
+            Tag::String => hash_char_array(self.string_bytes(obj)),
+            Tag::Cons => self.sxhash_list(obj, depth),
+            Tag::Float => sxhash_combine(0, self.heap.float_value(obj).to_bits()),
+            Tag::Vectorlike => match self.heap.vectorlike_ref(obj) {
+                Vectorlike::Vector(v) => self.sxhash_vector(v.len() as u64, v, depth),
+                Vectorlike::Closure(v) => {
+                    self.sxhash_vector(pseudovector_header(31, v.len()), v, depth)
+                }
+                Vectorlike::Record(v) => {
+                    self.sxhash_vector(pseudovector_header(34, v.len()), v, depth)
+                }
+                Vectorlike::CharTable(t) => {
+                    let mut slots = vec![t.default, t.parent, t.purpose, t.ascii];
+                    slots.extend_from_slice(&t.contents);
+                    slots.extend_from_slice(&t.extras);
+                    self.sxhash_vector(pseudovector_header(32, slots.len()), &slots, depth)
+                }
+                Vectorlike::SubCharTable(_) => 42,
+                Vectorlike::Font(f) => {
+                    self.sxhash_vector(pseudovector_header(35, f.props.len()), &f.props, depth)
+                }
+                Vectorlike::Bignum(b) => {
+                    let mut hash = u64::from(b.sign() == num_bigint::Sign::Minus);
+                    for limb in b.magnitude().iter_u64_digits() {
+                        hash = sxhash_combine(hash, limb);
                     }
-                    return hash;
+                    hash
+                }
+                Vectorlike::Marker(m) => {
+                    let bytepos = if m.buffer.is_nil() {
+                        0
+                    } else {
+                        m.bytepos as u64
+                    };
+                    let buffer = if m.buffer.is_nil() {
+                        0
+                    } else {
+                        xhash(m.buffer)
+                    };
+                    sxhash_combine(buffer, bytepos)
                 }
                 Vectorlike::BoolVector(b) => {
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    b.bits.hash(&mut h);
-                    return h.finish();
+                    let mut hash = b.bits.len() as u64;
+                    for word in b.bits.chunks(64).take(SXHASH_MAX_LEN) {
+                        let w = word
+                            .iter()
+                            .enumerate()
+                            .fold(0u64, |w, (i, &bit)| w | (u64::from(bit) << i));
+                        hash = sxhash_combine(hash, w);
+                    }
+                    hash
                 }
-                Vectorlike::SymbolWithPos { symbol, .. } => {
-                    return hash_u64(symbol.bits());
+                Vectorlike::Overlay(o) => {
+                    let mut hash = o.start as u64;
+                    hash = sxhash_combine(hash, o.end as u64);
+                    sxhash_combine(hash, self.sxhash_equal(o.plist, depth))
                 }
-                _ => {}
+                Vectorlike::SymbolWithPos { symbol, .. }
+                    if self.var_true(sym::SYMBOLS_WITH_POS_ENABLED) =>
+                {
+                    xhash(*symbol)
+                }
+                _ => xhash(obj),
+            },
+        }
+    }
+
+    fn sxhash_list(&self, mut list: Value, depth: usize) -> u64 {
+        let mut hash = 0;
+        if depth < SXHASH_MAX_DEPTH {
+            let mut i = 0;
+            while list.is_cons() && i < SXHASH_MAX_LEN {
+                hash = sxhash_combine(hash, self.sxhash_equal(self.xcar(list), depth + 1));
+                list = self.xcdr(list);
+                i += 1;
             }
         }
-        hash_u64(key.bits())
+        if !list.is_nil() {
+            hash = sxhash_combine(hash, self.sxhash_equal(list, depth + 1));
+        }
+        hash
+    }
+
+    fn sxhash_vector(&self, header: u64, items: &[Value], depth: usize) -> u64 {
+        let mut hash = header;
+        for &item in items.iter().take(SXHASH_MAX_LEN) {
+            hash = sxhash_combine(hash, self.sxhash_equal(item, depth + 1));
+        }
+        hash
+    }
+
+    pub fn sxhash_equal_including_properties(&self, obj: Value) -> u64 {
+        let mut hash = self.sxhash_equal(obj, 0);
+        if obj.is_string() {
+            let s = self.heap.string_ref(obj);
+            for (start, end, plist) in string_intervals(&s.props, s.chars) {
+                hash = sxhash_combine(hash, start as u64);
+                hash = sxhash_combine(hash, (end - start) as u64);
+                hash = sxhash_combine(hash, self.sxhash_equal(plist, 0));
+            }
+        }
+        hash
     }
 
     pub fn string_cmp(&self, string1: Value, string2: Value) -> Ordering {
@@ -1294,6 +1357,69 @@ impl Lisp {
     }
 }
 
+const SXHASH_MAX_DEPTH: usize = 3;
+const SXHASH_MAX_LEN: usize = 7;
+
+fn sxhash_combine(x: u64, y: u64) -> u64 {
+    (x << 4).wrapping_add(x >> 60).wrapping_add(y)
+}
+
+fn hash_char_array(bytes: &[u8]) -> u64 {
+    let len = bytes.len();
+    let mut hash = len as u64;
+    if len >= 8 {
+        let step = 8usize.max(len >> 3);
+        let mut p = 0;
+        while p + 8 <= len {
+            let c = u64::from_le_bytes(bytes[p..p + 8].try_into().unwrap_or([0; 8]));
+            p += step;
+            hash = sxhash_combine(hash, c);
+        }
+        let c = u64::from_le_bytes(bytes[len - 8..].try_into().unwrap_or([0; 8]));
+        hash = sxhash_combine(hash, c);
+    } else {
+        let mut p = 0;
+        let mut tail: u64 = 0;
+        if len - p >= 4 {
+            let c = u32::from_le_bytes(bytes[p..p + 4].try_into().unwrap_or([0; 4]));
+            tail = (tail << 32) + u64::from(c);
+            p += 4;
+        }
+        if len - p >= 2 {
+            let c = u16::from_le_bytes(bytes[p..p + 2].try_into().unwrap_or([0; 2]));
+            tail = (tail << 16) + u64::from(c);
+            p += 2;
+        }
+        if p < len {
+            tail = (tail << 8) + u64::from(bytes[p]);
+        }
+        hash = sxhash_combine(hash, tail);
+    }
+    hash
+}
+
+fn xtype(v: Value) -> u64 {
+    match v.tag() {
+        Tag::Symbol => 0,
+        Tag::Fixnum => 2 | ((v.as_fixnum().unwrap_or(0) as u64 & 1) << 2),
+        Tag::Cons => 3,
+        Tag::String => 4,
+        Tag::Vectorlike => 5,
+        Tag::Float => 7,
+    }
+}
+
+fn xhash(v: Value) -> u64 {
+    match v.as_fixnum() {
+        Some(n) => ((n as u64) << 2) | 2,
+        None => v.bits(),
+    }
+}
+
+fn pseudovector_header(pvec_type: u64, size: usize) -> u64 {
+    (1 << 62) | (pvec_type << 24) | size as u64
+}
+
 fn string_intervals(runs: &[crate::object::PropRun], end: usize) -> Vec<(usize, usize, Value)> {
     let mut runs: Vec<_> = runs.iter().filter(|r| r.start < r.end).copied().collect();
     runs.sort_by_key(|r| r.start);
@@ -1354,21 +1480,6 @@ fn mpz_cmp_d(b: &BigInt, d: f64) -> Ordering {
             Ordering::Equal
         }
     })
-}
-
-fn hash_u64(x: u64) -> u64 {
-    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^ (z >> 31)
-}
-
-fn combine(a: u64, b: u64) -> u64 {
-    a.rotate_left(4).wrapping_add(b)
-}
-
-fn sxhash_value(h: u64) -> Value {
-    Value::fixnum((h >> 3) as i64 & crate::value::MOST_POSITIVE_FIXNUM)
 }
 
 fn f_identity(_lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -3059,18 +3170,26 @@ fn f_base64_decode_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.unibyte_string(&out))
 }
 
+fn reduce_emacs_uint_to_fixnum(x: u64) -> Value {
+    make_ufixnum(((x ^ (x >> 2)) & INTMASK as u64) as i64)
+}
+
 fn f_sxhash_eq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    Ok(sxhash_value(hash_u64(
-        lisp.maybe_remove_pos_from_symbol(args[0]).bits(),
-    )))
+    Ok(reduce_emacs_uint_to_fixnum(lisp.sxhash_eq(args[0])))
 }
 
 fn f_sxhash_eql(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    Ok(sxhash_value(lisp.sxhash_eql(args[0])))
+    Ok(reduce_emacs_uint_to_fixnum(lisp.sxhash_eql(args[0])))
 }
 
 fn f_sxhash_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    Ok(sxhash_value(lisp.sxhash_equal(args[0], 0)))
+    Ok(reduce_emacs_uint_to_fixnum(lisp.sxhash_equal(args[0], 0)))
+}
+
+fn f_sxhash_equal_including_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    Ok(reduce_emacs_uint_to_fixnum(
+        lisp.sxhash_equal_including_properties(args[0]),
+    ))
 }
 
 fn f_make_hash_table(lisp: &mut Lisp, args: &[Value]) -> LispResult {
