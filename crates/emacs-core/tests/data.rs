@@ -253,11 +253,11 @@ fn built_in_variables() {
         ),
         (
             "(defvaralias 'case-fold-search 'biv-base)",
-            "error: (error \"Don't know how to make a buffer-local variable an alias: case-fold-search\")",
+            "error: (error \"Don\u{2019}t know how to make a buffer-local variable an alias: case-fold-search\")",
         ),
         (
             "(progn (defvar biv-local 1) (make-local-variable 'biv-local) (defvaralias 'biv-local 'biv-base))",
-            "error: (error \"Don't know how to make a buffer-local variable an alias: biv-local\")",
+            "error: (error \"Don\u{2019}t know how to make a buffer-local variable an alias: biv-local\")",
         ),
         (
             "(progn (defvar biv-plain 1) (makunbound 'biv-plain) (boundp 'biv-plain))",

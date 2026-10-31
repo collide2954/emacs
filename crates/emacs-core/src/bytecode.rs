@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::OnceLock;
 
+use crate::doprnt::Arg;
 use crate::error::{Flow, HandlerKind, LispResult};
 use crate::lisp::{ALL_SUBRS, BacktraceArgs, Lisp, SpecBinding};
 use crate::subr::Subr;
@@ -858,9 +859,10 @@ impl Lisp {
                 self.bc_finish(start, v);
             }
             B_TEMP_OUTPUT_BUFFER_SETUP | B_TEMP_OUTPUT_BUFFER_SHOW => {
-                return Err(self.error(&format!(
-                    "Byte opcode {op} (temp-output-buffer, obsolete since Emacs 24.1) is not supported"
-                )));
+                return Err(self.verror(
+                    "Byte opcode %d (temp-output-buffer, obsolete since Emacs 24.1) is not supported",
+                    &[Arg::Int(op.into())],
+                ));
             }
             B_SET_MARKER => self.bc_call_top("set-marker", 3)?,
             B_MATCH_BEGINNING => self.bc_call_top("match-beginning", 1)?,
@@ -982,10 +984,10 @@ impl Lisp {
                 self.stack.push(v);
             }
             _ => {
-                return Err(self.error(&format!(
-                    "Invalid byte opcode: op={op}, ptr={}",
-                    frame.pc - 1
-                )));
+                return Err(self.verror(
+                    "Invalid byte opcode: op=%d, ptr=%td",
+                    &[Arg::Int(op.into()), Arg::Int(frame.pc as i64 - 1)],
+                ));
             }
         }
         Ok(None)

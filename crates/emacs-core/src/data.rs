@@ -3,6 +3,7 @@ use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::character;
+use crate::doprnt::Arg;
 use crate::error::{Flow, LispResult};
 use crate::eval::SetMode;
 use crate::lisp::{Lisp, SpecBinding};
@@ -394,8 +395,11 @@ impl Lisp {
     }
 
     fn builtin_unbound_error(&mut self, symbol: Value) -> Flow {
-        let name = self.symbol_name_string(symbol);
-        self.error(&format!("Built-in variable may not be unbound : {name}"))
+        let name = self.string_bytes(self.symbol_name(symbol)).to_vec();
+        self.verror(
+            "Built-in variable may not be unbound : %s",
+            &[Arg::Str(&name)],
+        )
     }
 
     fn check_fwd_predicate(&mut self, predicate: Value, val: Value) -> LispResult<()> {
@@ -460,8 +464,8 @@ impl Lisp {
 
     fn check_localizable(&mut self, variable: Value, target: Value) -> LispResult<()> {
         if let SymbolValue::Forwarded(Forward::Kboard(_)) = self.heap.symbol_ref(target).value {
-            let name = self.symbol_name_string(variable);
-            return Err(self.error(&format!("Symbol {name} may not be buffer-local")));
+            let name = self.string_bytes(self.symbol_name(variable)).to_vec();
+            return Err(self.verror("Symbol %s may not be buffer-local", &[Arg::Str(&name)]));
         }
         if self.heap.symbol_ref(target).trapped_write == TrappedWrite::NoWrite {
             return Err(self.signal_list(sym::SETTING_CONSTANT, &[variable]));

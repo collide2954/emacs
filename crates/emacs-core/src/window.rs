@@ -1,3 +1,4 @@
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::frame::VerticalScrollBarType;
 use crate::lisp::Lisp;
@@ -409,8 +410,8 @@ fn f_set_window_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if tem != buffer {
         if lisp.window(window).dedicated == sym::T {
             let name = lisp.buffer(tem).name;
-            let name = lisp.string_to_rust(name);
-            return Err(lisp.error(&format!("Window is dedicated to `{name}'")));
+            let name = lisp.string_bytes(name).to_vec();
+            return Err(lisp.verror("Window is dedicated to `%s'", &[Arg::Str(&name)]));
         }
         lisp.window_mut(window).dedicated = Value::NIL;
         lisp.funcall(sym::RECORD_WINDOW_BUFFER, &[window])?;

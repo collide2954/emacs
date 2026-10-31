@@ -1,3 +1,4 @@
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::Vectorlike;
@@ -1746,16 +1747,15 @@ fn font_spec_1(lisp: &mut Lisp, spec: Value, args: &[Value]) -> LispResult<()> {
     while i < args.len() {
         let key = lisp.check_symbol(args[i])?;
         if i + 1 >= args.len() {
-            let name = lisp.symbol_name_string(key);
-            return Err(lisp.error(&format!("No value for key `{name}'")));
+            let name = lisp.string_bytes(lisp.symbol_name(key)).to_vec();
+            return Err(lisp.verror("No value for key `%s'", &[Arg::Str(&name)]));
         }
         let val = args[i + 1];
         if key == sym::K_NAME {
             lisp.check_string(val)?;
             let bytes = lisp.string_bytes(val).to_vec();
             if !lisp.font_parse_name(&bytes, spec)? {
-                let text = lisp.string_to_rust(val);
-                return Err(lisp.error(&format!("Invalid font name: {text}")));
+                return Err(lisp.verror("Invalid font name: %s", &[Arg::Str(&bytes)]));
             }
             lisp.font_put_extra(spec, key, val)?;
         } else {

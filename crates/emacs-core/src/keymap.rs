@@ -1,4 +1,5 @@
 use crate::character::{CHAR_META, CHAR_MODIFIER_MASK, MAX_5_BYTE_CHAR, MAX_CHAR};
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::keyboard::{
     ALT_MODIFIER, CTRL_MODIFIER, HYPER_MODIFIER, META_MODIFIER, SHIFT_MODIFIER, SUPER_MODIFIER,
@@ -904,16 +905,21 @@ impl Lisp {
                     ""
                 };
                 let whole = self.key_description(key, Value::NIL)?;
-                let whole = self.string_to_rust(whole);
+                let whole = self.string_bytes(whole).to_vec();
                 let prefix = crate::fns::f_substring(
                     self,
                     &[key, Value::fixnum(0), Value::fixnum(idx as i64)],
                 )?;
                 let prefix = self.key_description(prefix, Value::NIL)?;
-                let prefix = self.string_to_rust(prefix);
-                return Err(self.error(&format!(
-                    "Key sequence {whole} starts with non-prefix key {prefix}{trailing_esc}"
-                )));
+                let prefix = self.string_bytes(prefix).to_vec();
+                return Err(self.verror(
+                    "Key sequence %s starts with non-prefix key %s%s",
+                    &[
+                        Arg::Str(&whole),
+                        Arg::Str(&prefix),
+                        Arg::Str(trailing_esc.as_bytes()),
+                    ],
+                ));
             }
             self.protect(keymap);
         }
@@ -952,10 +958,16 @@ impl Lisp {
             }
         }
         let c = self.reorder_modifiers(c)?;
-        let cname = self.symbol_name_string(c);
-        Err(self.error(&format!(
-            "To bind the key {cname}, use [?{new_mods}{replacement}], not [{cname}]"
-        )))
+        let cname = self.string_bytes(self.symbol_name(c)).to_vec();
+        let keystring = format!("{new_mods}{replacement}");
+        Err(self.verror(
+            "To bind the key %s, use [?%s], not [%s]",
+            &[
+                Arg::Str(&cname),
+                Arg::Str(keystring.as_bytes()),
+                Arg::Str(&cname),
+            ],
+        ))
     }
 
     fn lookup_key_1(&mut self, keymap: Value, key: Value, accept_default: Value) -> LispResult {

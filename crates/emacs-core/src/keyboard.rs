@@ -1,6 +1,7 @@
 use crate::character::{
     CHAR_ALT, CHAR_CTL, CHAR_HYPER, CHAR_META, CHAR_MODIFIER_MASK, CHAR_SHIFT, CHAR_SUPER,
 };
+use crate::doprnt::Arg;
 use crate::error::{HandlerKind, LispResult};
 use crate::lisp::Lisp;
 use crate::subr::Subr;
@@ -306,7 +307,10 @@ impl Lisp {
                 && self.frame_kboard(f) != Some(self.current_kboard)
             {
                 let id = self.terminal(self.frame(f).terminal).id;
-                return Err(self.error(&format!("Terminal {id} is locked, cannot read from it")));
+                return Err(self.verror(
+                    "Terminal %d is locked, cannot read from it",
+                    &[Arg::Int(id)],
+                ));
             }
             self.push_kboard(self.current_kboard);
         } else if let Some(f) = f {

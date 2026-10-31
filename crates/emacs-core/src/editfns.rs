@@ -2,6 +2,7 @@ use num_bigint::BigInt;
 use num_traits::Signed;
 
 use crate::character;
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::{LispString, PropRun};
@@ -1284,7 +1285,7 @@ fn f_self_insert_command(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         args[1]
     };
     if n < 0 {
-        return Err(lisp.error(&format!("Negative repetition argument {n}")));
+        return Err(lisp.verror("Negative repetition argument %d", &[Arg::Int(n)]));
     }
     if n < 2 {
         lisp.call0(sym::UNDO_AUTO_AMALGAMATE)?;
@@ -1674,8 +1675,24 @@ fn styled_format_inner(lisp: &mut Lisp, args: &[Value], message: bool) -> LispRe
                 continue;
             }
             'c' | 'd' | 'i' | 'o' | 'x' | 'X' | 'b' | 'B' | 'e' | 'f' | 'g' => {}
-            other => {
-                return Err(lisp.error(&format!("Invalid format operation %{other}")));
+            _ => {
+                let p = fchars[i - 1];
+                if lisp.string_multibyte(fmt) {
+                    return Err(lisp.verror("Invalid format operation %%%c", &[Arg::Int(p.into())]));
+                }
+                let p = if character::char_byte8_p(p) {
+                    character::char_to_byte8(p)
+                } else {
+                    p as u8
+                };
+                return Err(if p <= 127 {
+                    lisp.verror("Invalid format operation %%%c", &[Arg::Int(p.into())])
+                } else {
+                    lisp.verror(
+                        "Invalid format operation char #o%03o",
+                        &[Arg::Uint(p.into())],
+                    )
+                });
             }
         }
         let is_float = matches!(conversion, 'e' | 'f' | 'g');

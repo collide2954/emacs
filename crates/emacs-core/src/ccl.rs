@@ -1,6 +1,7 @@
 use std::rc::Rc;
 
 use crate::character::MAX_CHAR;
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::subr::Subr;
@@ -1579,7 +1580,10 @@ fn f_ccl_execute(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     }
     lisp.ccl_driver(&mut ccl, None, None, Value::NIL)?;
     if ccl.status != STAT_SUCCESS {
-        return Err(lisp.error(&format!("Error in CCL program at {}th code", ccl.ic)));
+        return Err(lisp.verror(
+            "Error in CCL program at %dth code",
+            &[Arg::Int(ccl.ic.into())],
+        ));
     }
     for i in 0..8 {
         let v = lisp.integer(ccl.reg[i] as i64);
@@ -1651,10 +1655,16 @@ fn f_ccl_execute_on_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         }
     }
     if ccl.status == STAT_INVALID_CMD {
-        return Err(lisp.error(&format!("Error in CCL program at {}th code", ccl.ic)));
+        return Err(lisp.verror(
+            "Error in CCL program at %dth code",
+            &[Arg::Int(ccl.ic.into())],
+        ));
     }
     if ccl.status == STAT_QUIT {
-        return Err(lisp.error(&format!("CCL program interrupted at {}th code", ccl.ic)));
+        return Err(lisp.verror(
+            "CCL program interrupted at %dth code",
+            &[Arg::Int(ccl.ic.into())],
+        ));
     }
     for i in 0..8 {
         let v = lisp.integer(ccl.reg[i] as i64);

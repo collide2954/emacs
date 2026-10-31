@@ -318,7 +318,7 @@ fn visited_file_modtime() {
                     s(
                         "(let ((file-name-handler-alist (list (cons \"\\\\.bad\\\\'\" (function (lambda (op &rest args) 'notastring)))))) (expand-file-name \"/x/a.bad\"))",
                     ),
-                    "error: (error \"Invalid handler in `file-name-handler-alist'\")",
+                    "error: (error \"Invalid handler in \u{2018}file-name-handler-alist\u{2019}\")",
                 ),
                 (
                     s("(setq file-name-handler-alist (list (cons \"\\\\.gpg\\\\'\" 'mt-handler)))"),

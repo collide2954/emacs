@@ -1,6 +1,7 @@
 use crate::character::{
     self, CHAR_ALT, CHAR_CTL, CHAR_HYPER, CHAR_META, CHAR_SHIFT, CHAR_SUPER, MAX_CHAR,
 };
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::subr::Subr;
@@ -96,7 +97,7 @@ fn f_max_char(_lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_unibyte_char_to_multibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let c = lisp.check_character(args[0])?;
     if c >= 0x100 {
-        return Err(lisp.error("Not a unibyte character: %d"));
+        return Err(lisp.verror("Not a unibyte character: %d", &[Arg::Int(c.into())]));
     }
     if c < 0x80 {
         return Ok(args[0]);
@@ -154,11 +155,36 @@ impl Lisp {
         }
         1
     }
+
+    pub fn char_width(&self, c: u32, dp: Option<Value>) -> usize {
+        let mut width = self.char_width_of(c);
+        if let Some(dp) = dp {
+            let disp = self.disp_char_vector(dp, c);
+            if self.is_vector(disp) {
+                width = 0;
+                for &ch in self.vector_items(disp) {
+                    let c = if self.glyph_code_p(ch) {
+                        self.glyph_code_char(ch)
+                    } else {
+                        match ch.as_fixnum() {
+                            Some(n) if (0..=MAX_CHAR as i64).contains(&n) => n,
+                            _ => -1,
+                        }
+                    };
+                    if c >= 0 {
+                        width += self.char_width_of(c as u32);
+                    }
+                }
+            }
+        }
+        width
+    }
 }
 
 fn f_char_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let c = lisp.check_character(args[0])?;
-    Ok(Value::fixnum(lisp.char_width_of(c) as i64))
+    let dp = lisp.buffer_display_table();
+    Ok(Value::fixnum(lisp.char_width(c, dp) as i64))
 }
 
 pub(crate) fn f_string_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {

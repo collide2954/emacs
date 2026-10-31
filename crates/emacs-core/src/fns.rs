@@ -5,6 +5,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::character;
 use crate::data::Num;
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::{ForEachTail, Lisp};
 use crate::object::{HashTable, LispString, Vectorlike, Weakness};
@@ -1713,9 +1714,9 @@ impl Lisp {
             end_byte = self.string_bytes(object).len();
         } else if object == sym::IV_AUTO {
             let Some(start_hold) = start.as_fixnum().filter(|&n| n >= 0) else {
-                let message =
-                    self.doprnt("Without a length, `iv-auto' can't be used; see Elisp manual");
-                return Err(self.error(&message));
+                return Err(
+                    self.error("Without a length, `iv-auto' can't be used; see Elisp manual")
+                );
             };
             let lim = start_hold as usize;
             let mut data = vec![0u8; lim];
@@ -1874,8 +1875,8 @@ fn secure_hash(
     } else if algorithm == sym::SHA3_512 {
         crate::sha3::sha3_512_buffer
     } else {
-        let name = lisp.symbol_name_string(algorithm);
-        return Err(lisp.error(&format!("Invalid algorithm arg: {name}")));
+        let name = lisp.string_bytes(lisp.symbol_name(algorithm)).to_vec();
+        return Err(lisp.verror("Invalid algorithm arg: %s", &[Arg::Str(&name)]));
     };
     let digest = hash_func(&input);
     if binary.is_nil() {
@@ -2430,7 +2431,10 @@ fn f_string_to_unibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         } else if character::char_byte8_p(c) {
             bytes.push(character::char_to_byte8(c));
         } else {
-            return Err(lisp.error(&format!("Cannot convert character at index {i} to unibyte")));
+            return Err(lisp.verror(
+                "Cannot convert character at index %d to unibyte",
+                &[Arg::Int(i as i64)],
+            ));
         }
     }
     Ok(lisp.unibyte_string(&bytes))
@@ -3300,8 +3304,8 @@ fn f_require(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         tem = lisp.xcdr(tem);
     }
     if nesting > 3 {
-        let name = lisp.symbol_name_string(feature);
-        return Err(lisp.error(&format!("Recursive `require' for feature `{name}'")));
+        let name = lisp.string_bytes(lisp.symbol_name(feature)).to_vec();
+        return Err(lisp.verror("Recursive `require' for feature `%s'", &[Arg::Str(&name)]));
     }
     let list = lisp.cons(feature, nesting_list);
     lisp.specbind(sym::REQUIRE_NESTING_LIST, list)?;
@@ -3325,11 +3329,22 @@ fn f_require(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         if !noerror.is_nil() {
             return Ok(Value::NIL);
         }
-        let file = lisp.string_to_rust(file);
-        let name = lisp.symbol_name_string(feature);
-        return Err(lisp.error(&format!(
-            "Loading file {file} failed to provide feature `{name}'"
-        )));
+        let tem2 = lisp.string_bytes(lisp.symbol_name(feature)).to_vec();
+        let history = lisp.plain_value(sym::LOAD_HISTORY);
+        let first = lisp.car(history)?;
+        let tem3 = lisp.car(first)?;
+        if tem3.is_nil() {
+            return Err(lisp.verror("Required feature `%s' was not provided", &[Arg::Str(&tem2)]));
+        }
+        let file = if lisp.is_string(tem3) {
+            lisp.string_bytes(tem3).to_vec()
+        } else {
+            Vec::new()
+        };
+        return Err(lisp.verror(
+            "Loading file %s failed to provide feature `%s'",
+            &[Arg::Str(&file), Arg::Str(&tem2)],
+        ));
     }
     Ok(feature)
 }

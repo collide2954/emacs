@@ -67,7 +67,7 @@ fn frame_parameters_round_trip() {
         ("(frame-parameter nil 'name)", "\"F2\""),
         (
             "(modify-frame-parameters nil '((minibuffer . nil)))",
-            "error: (error \"Can't change the `minibuffer' parameter of this frame\")",
+            "error: (error \"Can\u{2019}t change the \u{2018}minibuffer\u{2019} parameter of this frame\")",
         ),
         ("(frame-parameter nil 'minibuffer)", "t"),
     ]);

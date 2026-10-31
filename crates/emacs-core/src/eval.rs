@@ -1,4 +1,5 @@
 use crate::atimer::{Atimer, AtimerId, AtimerType};
+use crate::doprnt::Arg;
 use crate::error::{Flow, HandlerKind, LispResult, UNCAUGHT};
 use crate::lisp::{BacktraceArgs, Lisp, SpecBinding, UnwindFn};
 use crate::object::{Forward, SymbolValue, TrappedWrite, Vectorlike};
@@ -1139,15 +1140,16 @@ impl Lisp {
         if self.equal(fun, fundef)? {
             let history = self.plain_value(sym::LOAD_HISTORY);
             let first = self.car_safe(self.car_safe(history));
-            let file = if first.is_string() {
-                self.string_to_rust(first)
+            let file = if self.is_string(first) {
+                self.string_bytes(first).to_vec()
             } else {
-                String::new()
+                Vec::new()
             };
-            let name = self.symbol_name_string(funname);
-            return Err(self.error(&format!(
-                "Autoloading file {file} failed to define function {name}"
-            )));
+            let name = self.string_bytes(self.symbol_name(funname)).to_vec();
+            return Err(self.verror(
+                "Autoloading file %s failed to define function %s",
+                &[Arg::Str(&file), Arg::Str(&name)],
+            ));
         }
         Ok(fun)
     }
@@ -1585,8 +1587,8 @@ fn f_defvaralias(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let new_alias = lisp.check_symbol(new_alias)?;
     let base_variable = lisp.check_symbol(base_variable)?;
     if lisp.heap.symbol_ref(new_alias).trapped_write == TrappedWrite::NoWrite {
-        let name = lisp.symbol_name_string(new_alias);
-        return Err(lisp.error(&format!("Cannot make a constant an alias: {name}")));
+        let name = lisp.string_bytes(lisp.symbol_name(new_alias)).to_vec();
+        return Err(lisp.verror("Cannot make a constant an alias: %s", &[Arg::Str(&name)]));
     }
     let mut s = base_variable;
     loop {
@@ -1599,15 +1601,15 @@ fn f_defvaralias(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         }
     }
     let refusal = match lisp.heap.symbol_ref(new_alias).value {
-        SymbolValue::Forwarded(_) => Some("Cannot make a built-in variable an alias"),
+        SymbolValue::Forwarded(_) => Some("Cannot make a built-in variable an alias: %s"),
         SymbolValue::Localized(_) => {
-            Some("Don't know how to make a buffer-local variable an alias")
+            Some("Don't know how to make a buffer-local variable an alias: %s")
         }
         SymbolValue::Plain(_) | SymbolValue::Alias(_) => None,
     };
     if let Some(refusal) = refusal {
-        let name = lisp.symbol_name_string(new_alias);
-        return Err(lisp.error(&format!("{refusal}: {name}")));
+        let name = lisp.string_bytes(lisp.symbol_name(new_alias)).to_vec();
+        return Err(lisp.verror(refusal, &[Arg::Str(&name)]));
     }
     if lisp.find_symbol_value(base_variable) == sym::UNBOUND {
         let value = lisp.find_symbol_value(new_alias);
@@ -1635,10 +1637,11 @@ fn f_defvaralias(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         )
     });
     if let_bound {
-        let name = lisp.symbol_name_string(new_alias);
-        return Err(lisp.error(&format!(
-            "Don't know how to make a let-bound variable an alias: {name}"
-        )));
+        let name = lisp.string_bytes(lisp.symbol_name(new_alias)).to_vec();
+        return Err(lisp.verror(
+            "Don't know how to make a let-bound variable an alias: %s",
+            &[Arg::Str(&name)],
+        ));
     }
     if lisp.heap.symbol_ref(new_alias).trapped_write == TrappedWrite::Trapped {
         lisp.notify_variable_watchers(new_alias, base_variable, sym::DEFVARALIAS, Value::NIL)?;
@@ -2138,8 +2141,9 @@ impl Lisp {
                     head.is_symbol() || head.is_cons()
                 });
             if !valid {
-                let printed = self.prin1_to_string(tem);
-                return Err(self.error(&format!("Invalid condition handler: {printed}")));
+                let printed = crate::print::f_prin1_to_string(self, &[tem, sym::T, Value::NIL])?;
+                let printed = self.string_bytes(printed).to_vec();
+                return Err(self.verror("Invalid condition handler: %s", &[Arg::Str(&printed)]));
             }
             if tem.is_cons() && self.xcar(tem) == sym::K_SUCCESS {
                 success_handler = tem;

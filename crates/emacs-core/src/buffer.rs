@@ -1,6 +1,7 @@
 use std::cell::Cell;
 
 use crate::character;
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::lread::{Source, SourceKind};
@@ -708,8 +709,8 @@ impl Lisp {
 
     pub(crate) fn nsberror(&mut self, spec: Value) -> crate::error::Flow {
         if spec.is_string() {
-            let name = self.string_to_rust(spec);
-            return self.error(&format!("No buffer named {name}"));
+            let name = self.string_bytes(spec).to_vec();
+            return self.verror("No buffer named %s", &[Arg::Str(&name)]);
         }
         self.error("Invalid buffer argument")
     }
@@ -1662,8 +1663,8 @@ fn f_rename_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let existing = lisp.get_buffer(newname);
     let newname = if !existing.is_nil() && existing != current {
         if unique.is_nil() {
-            let name = lisp.string_to_rust(newname);
-            return Err(lisp.error(&format!("Buffer name `{name}' is in use")));
+            let name = lisp.string_bytes(newname).to_vec();
+            return Err(lisp.verror("Buffer name `%s' is in use", &[Arg::Str(&name)]));
         }
         let own = lisp.cur().name;
         lisp.generate_new_buffer_name(newname, own)?

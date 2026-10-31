@@ -1,6 +1,7 @@
 use std::io::{Read, Seek, SeekFrom};
 
 use crate::character;
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::Vectorlike;
@@ -91,9 +92,10 @@ impl Lisp {
         };
         let offset = position.min(1024.max(position % (8 * 1024))) as usize;
         if fd.seek(SeekFrom::Start(position - offset as u64)).is_err() {
-            return Err(self.error(&format!(
-                "Position {position} out of range in doc string file \"{name}\""
-            )));
+            return Err(self.verror(
+                "Position %d out of range in doc string file \"%s\"",
+                &[Arg::Int(position as i64), Arg::Str(name.as_bytes())],
+            ));
         }
         let mut buffer: Vec<u8> = Vec::new();
         let mut end;
@@ -161,9 +163,10 @@ impl Lisp {
                     b'0' => out.push(0),
                     b'_' => out.push(0o37),
                     _ => {
-                        return Err(self.error(&format!(
-                            "Invalid data in documentation file -- \u{1} followed by code {c:03o}"
-                        )));
+                        return Err(self.verror(
+                            "Invalid data in documentation file -- %c followed by code %03o",
+                            &[Arg::Int(1), Arg::Uint(c.into())],
+                        ));
                     }
                 }
             } else {
@@ -418,7 +421,7 @@ fn snarf_documentation(
                 .position(|&c| c == b'\n' || c == 0)
                 .filter(|&i| buf[p + i] == b'\n');
             let Some(nl) = nl else {
-                return Err(lisp.error(&format!("DOC file invalid at position {pos}")));
+                return Err(lisp.verror("DOC file invalid at position %d", &[Arg::Int(pos)]));
             };
             end = p + nl;
             let name_bytes = buf.get(p + 2..end).unwrap_or(&[]).to_vec();
@@ -440,7 +443,9 @@ fn snarf_documentation(
                     }
                     b'S' => {}
                     _ => {
-                        return Err(lisp.error(&format!("DOC file invalid at position {pos}")));
+                        return Err(
+                            lisp.verror("DOC file invalid at position %d", &[Arg::Int(pos)])
+                        );
                     }
                 }
             }

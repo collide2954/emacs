@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::fileio::{
     f_expand_file_name, f_file_name_as_directory, f_file_name_directory, f_file_name_nondirectory,
@@ -1339,8 +1340,11 @@ pub(crate) fn f_kill_emacs(lisp: &mut Lisp, args: &[Value]) -> LispResult {
             return Err(lisp.error("Unknown Emacs executable"));
         };
         if !PathBuf::from(bytes_os(&executable)).exists() {
-            let argv0 = String::from_utf8_lossy(&lisp.startup.initial_argv[0]).into_owned();
-            return Err(lisp.error(&format!("Emacs executable \"{argv0}\" can't be found")));
+            let argv0 = lisp.startup.initial_argv[0].clone();
+            return Err(lisp.verror(
+                "Emacs executable \"%s\" can't be found",
+                &[Arg::Str(&argv0)],
+            ));
         }
     }
     let hook = lisp.find_symbol_value(sym::KILL_EMACS_HOOK);

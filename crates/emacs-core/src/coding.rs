@@ -9,6 +9,7 @@ mod utf;
 pub(crate) use api::f_find_operation_coding_system;
 pub use engine::{DetectionInfo, EOL_SEEN_CR, EOL_SEEN_CRLF, EOL_SEEN_LF, EOL_SEEN_NONE};
 
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::Weakness;
@@ -1324,8 +1325,8 @@ fn define_coding_system_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value
             };
             if bad {
                 let cname = lisp.charset_name(id);
-                let n = lisp.symbol_name_string(cname);
-                return Err(lisp.error(&format!("Can't handle charset `{n}'")));
+                let n = lisp.string_bytes(lisp.symbol_name(cname)).to_vec();
+                return Err(lisp.verror("Can't handle charset `%s'", &[Arg::Str(&n)]));
             }
             lisp.heap.set_car(tail, Value::fixnum(id as i64));
             max_charset_id = max_charset_id.max(id as i64);
@@ -1491,8 +1492,8 @@ fn define_coding_system_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value
         if endian.is_nil() {
             endian = sym::BIG;
         } else if endian != sym::BIG && endian != sym::LITTLE {
-            let n = lisp.symbol_name_string(endian);
-            return Err(lisp.error(&format!("Invalid endian: {n}")));
+            let n = lisp.string_bytes(lisp.symbol_name(endian)).to_vec();
+            return Err(lisp.verror("Invalid endian: %s", &[Arg::Str(&n)]));
         }
         lisp.set_attr(attrs, ATTR_UTF_16_ENDIAN, endian);
         category = if bom.is_cons() {
@@ -1597,9 +1598,13 @@ fn define_coding_system_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value
             let cs = lisp.charset(id);
             if cs.dimension != expect[k] {
                 let cname = lisp.charset_name(id);
-                let n = lisp.symbol_name_string(cname);
-                let word = if expect[k] == 1 { "one" } else { "two" };
-                return Err(lisp.error(&format!("Dimension of charset {n} is not {word}")));
+                let n = lisp.string_bytes(lisp.symbol_name(cname)).to_vec();
+                let format = if expect[k] == 1 {
+                    "Dimension of charset %s is not one"
+                } else {
+                    "Dimension of charset %s is not two"
+                };
+                return Err(lisp.verror(format, &[Arg::Str(&n)]));
             }
             if k == 0 && cs.ascii_compatible_p {
                 lisp.set_attr(attrs, ATTR_ASCII_COMPAT, sym::T);
@@ -1618,9 +1623,13 @@ fn define_coding_system_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value
             let want = k as i32 + 1;
             if cs.dimension != want {
                 let cname = lisp.charset_name(id);
-                let n = lisp.symbol_name_string(cname);
-                let word = if want == 1 { "one" } else { "two" };
-                return Err(lisp.error(&format!("Dimension of charset {n} is not {word}")));
+                let n = lisp.string_bytes(lisp.symbol_name(cname)).to_vec();
+                let format = if want == 1 {
+                    "Dimension of charset %s is not one"
+                } else {
+                    "Dimension of charset %s is not two"
+                };
+                return Err(lisp.verror(format, &[Arg::Str(&n)]));
             }
             if k == 0 && cs.ascii_compatible_p {
                 lisp.set_attr(attrs, ATTR_ASCII_COMPAT, sym::T);
@@ -1673,8 +1682,8 @@ fn define_coding_system_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value
         );
         category = CAT_UNDECIDED;
     } else {
-        let n = lisp.symbol_name_string(coding_type);
-        return Err(lisp.error(&format!("Invalid coding system type: {n}")));
+        let n = lisp.string_bytes(lisp.symbol_name(coding_type)).to_vec();
+        return Err(lisp.verror("Invalid coding system type: %s", &[Arg::Str(&n)]));
     }
     lisp.set_attr(attrs, ATTR_CATEGORY, Value::fixnum(category as i64));
     let cat_sym = lisp.vector_items(lisp.codings.category_table)[category];

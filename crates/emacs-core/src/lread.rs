@@ -5,6 +5,7 @@ use num_bigint::BigInt;
 use num_traits::Num as _;
 
 use crate::character::{self, CHAR_CTL, CHAR_META, CHAR_MODIFIER_MASK, CHAR_SHIFT, NO_BREAK_SPACE};
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::{BoolVector, Interned, LispString, Obarray, Vectorlike};
@@ -381,11 +382,10 @@ impl<'a> Reader<'a> {
                             chr = 32;
                             break;
                         }
-                        let msg = format!(
-                            "Invalid escape char syntax: \\{} not followed by -",
-                            c as u8 as char
-                        );
-                        return Err(self.lisp.error(&msg));
+                        return Err(self.lisp.verror(
+                            "Invalid escape char syntax: \\%c not followed by -",
+                            &[Arg::Int(c)],
+                        ));
                     }
                     modifiers |= m;
                     let c1 = self.readchar()?;
@@ -399,9 +399,10 @@ impl<'a> Reader<'a> {
                     if c == 0x43 {
                         let c1 = self.readchar()?;
                         if c1 != b'-' as i64 {
-                            return Err(self
-                                .lisp
-                                .error("Invalid escape char syntax: \\C not followed by -"));
+                            return Err(self.lisp.verror(
+                                "Invalid escape char syntax: \\%c not followed by -",
+                                &[Arg::Int(c)],
+                            ));
                         }
                     }
                     ncontrol += 1;
@@ -441,8 +442,10 @@ impl<'a> Reader<'a> {
                         }
                         i = (i << 4) + digit;
                         if i > (CHAR_META | (CHAR_META - 1)) {
-                            let msg = format!("Hex character out of range: \\x{i:x}...");
-                            return Err(self.lisp.error(&msg));
+                            return Err(self.lisp.verror(
+                                "Hex character out of range: \\x%x...",
+                                &[Arg::Uint(i as u32 as u64)],
+                            ));
                         }
                         if count < 3 {
                             count += 1;
@@ -465,25 +468,25 @@ impl<'a> Reader<'a> {
                     for _ in 0..n {
                         let d = self.readchar()?;
                         if d < 0 {
-                            let msg = format!(
-                                "Malformed Unicode escape: \\{}{i:x}",
-                                if n == 4 { 'u' } else { 'U' }
-                            );
-                            return Err(self.lisp.error(&msg));
+                            let u = if n == 4 { b'u' } else { b'U' };
+                            return Err(self.lisp.verror(
+                                "Malformed Unicode escape: \\%c%x",
+                                &[Arg::Int(u.into()), Arg::Uint(i as u32 as u64)],
+                            ));
                         }
                         let digit = character::char_hexdigit(d);
                         if digit < 0 {
-                            let msg = format!(
-                                "Non-hex character used for Unicode escape: {} ({d})",
-                                char::from_u32(d as u32).unwrap_or('?')
-                            );
-                            return Err(self.lisp.error(&msg));
+                            return Err(self.lisp.verror(
+                                "Non-hex character used for Unicode escape: %c (%d)",
+                                &[Arg::Int(d), Arg::Int(d)],
+                            ));
                         }
                         i = (i << 4) + digit;
                     }
                     if i > 0x10FFFF {
-                        let msg = format!("Non-Unicode character: 0x{i:x}");
-                        return Err(self.lisp.error(&msg));
+                        return Err(self
+                            .lisp
+                            .verror("Non-Unicode character: 0x%x", &[Arg::Uint(i as u32 as u64)]));
                     }
                     chr = i;
                 }
@@ -2562,11 +2565,8 @@ fn load(
                 version = safe_to_load_version(lisp, file, f)?;
             }
             if version == 0 {
-                let message = format!(
-                    "File `{}' was not compiled in Emacs",
-                    lisp.string_to_rust(found)
-                );
-                return Err(lisp.error(&message));
+                let found = lisp.string_bytes(found).to_vec();
+                return Err(lisp.verror("File `%s' was not compiled in Emacs", &[Arg::Str(&found)]));
             }
             compiled = true;
             if !lisp.var_true(sym::LOAD_PREFER_NEWER) && is_elc {

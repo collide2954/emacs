@@ -1,3 +1,4 @@
+use crate::doprnt::Arg;
 use crate::lisp::Lisp;
 use crate::symbols as sym;
 use crate::value::Value;
@@ -304,9 +305,20 @@ impl Lisp {
         self.signal_list(sym::ARGS_OUT_OF_RANGE, &[a, b, c])
     }
 
-    pub fn error(&mut self, message: &str) -> Flow {
-        let string = self.string(message);
-        self.signal_list(sym::ERROR, &[string])
+    pub fn vformat_string(&mut self, format: &str, args: &[Arg]) -> LispResult {
+        let buffer = self.doprnt(format, args)?;
+        Ok(self.make_string(&buffer))
+    }
+
+    pub fn verror(&mut self, format: &str, args: &[Arg]) -> Flow {
+        match self.vformat_string(format, args) {
+            Ok(string) => self.signal_list(sym::ERROR, &[string]),
+            Err(flow) => flow,
+        }
+    }
+
+    pub fn error(&mut self, format: &str) -> Flow {
+        self.verror(format, &[])
     }
 
     pub fn signal_error(&mut self, message: &str, arg: Value) -> Flow {

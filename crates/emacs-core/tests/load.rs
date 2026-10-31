@@ -120,6 +120,20 @@ fn locate_file_internal() {
 }
 
 #[test]
+fn require_failure_message() {
+    let dir = temp_dir("require");
+    std::fs::write(dir.join("nofeat.el"), "(setq nofeat-loaded t)\n").expect("write");
+    let ll = dir_name(&dir);
+    run(vec![
+        (format!("(setq ll {ll:?})"), format!("{ll:?}")),
+        (
+            "(condition-case e (require 'nofeat (concat ll \"nofeat\")) (error (let ((f (car (car load-history)))) (list (numberp (string-match \"nofeat\\\\.el\\\\'\" f)) (equal (car (cdr e)) (concat \"Loading file \" f \" failed to provide feature \u{2018}nofeat\u{2019}\"))))))".into(),
+            "(t t)".into(),
+        ),
+    ]);
+}
+
+#[test]
 fn load_search() {
     let dir = temp_dir("search");
     std::fs::write(
@@ -209,7 +223,7 @@ fn load_compiled() {
         let cases = [
             (format!("(setq lc {lc:?})"), format!("{lc:?}")),
             (
-                "(condition-case e (progn (load (concat lc \"bad.elc\") nil t) 'loaded) (error (equal e (list 'error (format \"File `%s' was not compiled in Emacs\" (expand-file-name \"bad.elc\" lc))))))".into(),
+                "(condition-case e (progn (load (concat lc \"bad.elc\") nil t) 'loaded) (error (equal e (list 'error (format-message \"File `%s' was not compiled in Emacs\" (expand-file-name \"bad.elc\" lc))))))".into(),
                 "t".into(),
             ),
             ("(boundp 'bad-loaded)".into(), "nil".into()),

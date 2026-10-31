@@ -1,4 +1,5 @@
 use crate::chartab::CHARTAB_SIZE;
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::Weakness;
@@ -166,8 +167,10 @@ fn f_define_category(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let docstring = lisp.check_string(args[1])?;
     let table = lisp.check_category_table(args.get(2).copied().unwrap_or(Value::NIL))?;
     if !lisp.category_docstring(table, category).is_nil() {
-        let ch = char::from_u32(category).unwrap_or('?');
-        return Err(lisp.error(&format!("Category `{ch}' is already defined")));
+        return Err(lisp.verror(
+            "Category `%c' is already defined",
+            &[Arg::Int(category.into())],
+        ));
     }
     let docs = lisp.category_docs(table);
     lisp.aset_value(
@@ -271,8 +274,7 @@ fn f_modify_category_entry(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let table = lisp.check_category_table(args.get(2).copied().unwrap_or(Value::NIL))?;
     let reset = args.get(3).copied().unwrap_or(Value::NIL);
     if lisp.category_docstring(table, category).is_nil() {
-        let ch = char::from_u32(category).unwrap_or('?');
-        return Err(lisp.error(&format!("Undefined category: {ch}")));
+        return Err(lisp.verror("Undefined category: %c", &[Arg::Int(category.into())]));
     }
     let set_value = reset.is_nil();
     while start <= end {

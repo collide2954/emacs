@@ -89,7 +89,7 @@ impl Lisp {
         self.is_vector(v).then_some(v)
     }
 
-    fn glyph_code_p(&self, gc: Value) -> bool {
+    pub(crate) fn glyph_code_p(&self, gc: Value) -> bool {
         if gc.is_cons() {
             matches!(self.xcar(gc).as_fixnum(), Some(c) if (0..=crate::character::MAX_CHAR as i64).contains(&c))
                 && matches!(self.xcdr(gc).as_fixnum(), Some(f) if (0..=MAX_FACE_ID).contains(&f))
@@ -99,7 +99,7 @@ impl Lisp {
         }
     }
 
-    fn glyph_code_char(&self, gc: Value) -> i64 {
+    pub(crate) fn glyph_code_char(&self, gc: Value) -> i64 {
         if gc.is_cons() {
             self.xcar(gc).as_fixnum().unwrap_or(0)
         } else {

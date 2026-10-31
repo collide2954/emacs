@@ -11,6 +11,7 @@ use super::{
 };
 use crate::ccl::{jis_to_sjis, sjis_to_jis};
 use crate::character;
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::symbols as sym;
@@ -716,7 +717,7 @@ pub(super) fn f_encode_coding_string(lisp: &mut Lisp, args: &[Value]) -> LispRes
 }
 
 fn invalid_code(lisp: &mut Lisp, ch: i64) -> crate::error::Flow {
-    lisp.error(&format!("Invalid code: {ch}"))
+    lisp.verror("Invalid code: %d", &[Arg::Int(ch)])
 }
 
 pub(super) fn f_decode_sjis_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -765,10 +766,10 @@ pub(super) fn f_encode_sjis_char(lisp: &mut Lisp, args: &[Value]) -> LispResult 
     let list = lisp.attr(attrs, ATTR_CHARSET_LIST);
     match lisp.char_charset(c, list)? {
         Some((_, code)) => Ok(Value::fixnum(jis_to_sjis(code as i32) as i64)),
-        None => Err(lisp.error(&format!(
-            "Can't encode by shift_jis encoding: {}",
-            char::from_u32(c as u32).unwrap_or('?')
-        ))),
+        None => Err(lisp.verror(
+            "Can't encode by shift_jis encoding: %c",
+            &[Arg::Int(c.into())],
+        )),
     }
 }
 
@@ -810,10 +811,7 @@ pub(super) fn f_encode_big5_char(lisp: &mut Lisp, args: &[Value]) -> LispResult 
     let list = lisp.attr(attrs, ATTR_CHARSET_LIST);
     match lisp.char_charset(c, list)? {
         Some((_, code)) => Ok(Value::fixnum(code as i64)),
-        None => Err(lisp.error(&format!(
-            "Can't encode by Big5 encoding: {}",
-            char::from_u32(c as u32).unwrap_or('?')
-        ))),
+        None => Err(lisp.verror("Can't encode by Big5 encoding: %c", &[Arg::Int(c.into())])),
     }
 }
 
@@ -832,9 +830,9 @@ pub(crate) fn f_find_operation_coding_system(lisp: &mut Lisp, args: &[Value]) ->
     let Some(target_idx) = target_idx else {
         return Err(lisp.error("Invalid first argument"));
     };
-    let name = lisp.symbol_name_string(operation);
+    let name = lisp.string_bytes(lisp.symbol_name(operation)).to_vec();
     if args.len() as i64 <= 1 + target_idx {
-        return Err(lisp.error(&format!("Too few arguments for operation `{name}'")));
+        return Err(lisp.verror("Too few arguments for operation `%s'", &[Arg::Str(&name)]));
     }
     let mut target = args[target_idx as usize + 1];
     let valid = lisp.is_string(target)
@@ -844,10 +842,10 @@ pub(crate) fn f_find_operation_coding_system(lisp: &mut Lisp, args: &[Value]) ->
             && lisp.is_buffer(lisp.xcdr(target)))
         || (operation == sym::OPEN_NETWORK_STREAM && (target.is_fixnum() || target == sym::T));
     if !valid {
-        return Err(lisp.error(&format!(
-            "Invalid argument {} of operation `{name}'",
-            target_idx + 1
-        )));
+        return Err(lisp.verror(
+            "Invalid argument %d of operation `%s'",
+            &[Arg::Int(target_idx + 1), Arg::Str(&name)],
+        ));
     }
     if target.is_cons() {
         target = lisp.xcar(target);

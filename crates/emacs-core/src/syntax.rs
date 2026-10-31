@@ -1,4 +1,5 @@
 use crate::character::{self, MAX_CHAR};
+use crate::doprnt::Arg;
 use crate::editfns::f_constrain_to_field;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
@@ -364,11 +365,10 @@ impl Lisp {
         let first = bytes.first().copied().unwrap_or(0);
         let mut val = syntax_spec_code(first) as i64;
         if val == 0xFF {
-            let text = format!(
-                "Invalid syntax description letter: {}",
-                char::from_u32(first as u32).unwrap_or('?')
-            );
-            return Err(self.error(&text));
+            return Err(self.verror(
+                "Invalid syntax description letter: %c",
+                &[Arg::Int(first.into())],
+            ));
         }
         if val == S_INHERIT as i64 {
             return Ok(Value::NIL);

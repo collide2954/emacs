@@ -403,7 +403,7 @@ fn format() {
         ),
         (
             "(format \"%d\" \"x\")",
-            "error: (error \"Format specifier doesn't match argument type\")",
+            "error: (error \"Format specifier doesn\u{2019}t match argument type\")",
         ),
         (
             "(format \"%q\" 1)",

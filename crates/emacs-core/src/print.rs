@@ -1285,7 +1285,7 @@ fn f_prin1(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(object)
 }
 
-fn f_prin1_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_prin1_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (object, noescape, overrides) = (args[0], args[1], args[2]);
     let chars = with_overrides(lisp, overrides, |l| {
         l.bind_print_escapes(true)?;

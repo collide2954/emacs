@@ -1,4 +1,5 @@
 use crate::character::{MAX_5_BYTE_CHAR, MAX_CHAR, MAX_UNICODE_CHAR};
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::Weakness;
@@ -1093,15 +1094,20 @@ impl Lisp {
         let ch = self.check_fixnum(chars)?;
         let f = self.check_character(final_char)?;
         if !(1..=3).contains(&d) {
-            return Err(self.error(&format!("Invalid DIMENSION {d}, it should be 1, 2, or 3")));
+            return Err(self.verror(
+                "Invalid DIMENSION %d, it should be 1, 2, or 3",
+                &[Arg::Int(d)],
+            ));
         }
         let chars_flag = ch == 96;
         if !(chars_flag || ch == 94) {
-            return Err(self.error(&format!("Invalid CHARS {ch}, it should be 94 or 96")));
+            return Err(self.verror("Invalid CHARS %d, it should be 94 or 96", &[Arg::Int(ch)]));
         }
         if !(b'0' as u32..=b'~' as u32).contains(&f) {
-            let c = char::from_u32(f).unwrap_or('?');
-            return Err(self.error(&format!("Invalid FINAL-CHAR `{c}', it should be `0'..`~'")));
+            return Err(self.verror(
+                "Invalid FINAL-CHAR `%c', it should be `0'..`~'",
+                &[Arg::Int(f.into())],
+            ));
         }
         Ok(chars_flag)
     }
@@ -1477,7 +1483,7 @@ fn define_charset_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value) -> L
     } else {
         let n = lisp.check_fixnum(val)?;
         if n < b'0' as i64 || n > 127 {
-            return Err(lisp.error(&format!("Invalid iso-final-char: {n}")));
+            return Err(lisp.verror("Invalid iso-final-char: %d", &[Arg::Int(n)]));
         }
         cs.iso_final = n as i32;
     }
@@ -1493,7 +1499,7 @@ fn define_charset_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value) -> L
     } else {
         let n = lisp.check_fixnat(val)?;
         if (n > 0 && n <= 128) || n >= 256 {
-            return Err(lisp.error(&format!("Invalid emacs-mule-id: {n}")));
+            return Err(lisp.verror("Invalid emacs-mule-id: %d", &[Arg::Int(n)]));
         }
         cs.emacs_mule_id = n as i32;
     }
@@ -1506,10 +1512,14 @@ fn define_charset_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value) -> L
         cs.code_offset = offset;
         let i = cs.code_point_to_index(cs.max_code);
         if MAX_CHAR as i64 - (offset as i64) < i {
-            return Err(lisp.error(&format!(
-                "Unsupported max char: {i} + {} > MAX_CHAR ({MAX_CHAR})",
-                cs.max_code
-            )));
+            return Err(lisp.verror(
+                "Unsupported max char: %d + %ud > MAX_CHAR (%d)",
+                &[
+                    Arg::Int(i),
+                    Arg::Uint(cs.max_code.into()),
+                    Arg::Int(MAX_CHAR.into()),
+                ],
+            ));
         }
         cs.max_char = i as i32 + offset;
         cs.min_char = cs.code_point_to_index(cs.min_code) as i32 + offset;
@@ -1721,8 +1731,8 @@ fn f_unify_charset(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.charsets.table[id as usize].unified_p = false;
     if deunify.is_nil() {
         if cs.method != Method::Offset || cs.code_offset < 0x110000 {
-            let name = lisp.symbol_name_string(charset);
-            return Err(lisp.error(&format!("Can't unify charset: {name}")));
+            let name = lisp.string_bytes(lisp.symbol_name(charset)).to_vec();
+            return Err(lisp.verror("Can't unify charset: %s", &[Arg::Str(&name)]));
         }
         if unify_map.is_nil() {
             unify_map = lisp.charset_attr(id, ATTR_UNIFY_MAP);

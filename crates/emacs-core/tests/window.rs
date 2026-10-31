@@ -110,7 +110,7 @@ fn set_window_buffer() {
         ("(set-window-dedicated-p nil t)", "t"),
         (
             "(set-window-buffer nil \"*scratch*\")",
-            "error: (error \"Window is dedicated to `sw'\")",
+            "error: (error \"Window is dedicated to \u{2018}sw\u{2019}\")",
         ),
         ("(set-window-dedicated-p nil 'weak)", "weak"),
         ("(set-window-buffer nil \"*scratch*\")", "nil"),

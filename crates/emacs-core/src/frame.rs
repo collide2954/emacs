@@ -1,3 +1,4 @@
+use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::object::{Vectorlike, Weakness};
@@ -1244,10 +1245,11 @@ impl Lisp {
                 return Ok(());
             }
             if Self::frame_name_fnn_p(self.string_bytes(name)) && !self.frame_get(name)?.is_nil() {
-                let text = self.string_to_rust(name);
-                return Err(self.error(&format!(
-                    "Frame of the form F<num> named `{text}' already exists"
-                )));
+                let text = self.string_bytes(name).to_vec();
+                return Err(self.verror(
+                    "Frame of the form F<num> named `%s' already exists",
+                    &[Arg::Str(&text)],
+                ));
             }
             name
         };
@@ -1385,18 +1387,19 @@ impl Lisp {
         } else if prop == sym::PARENT_FRAME || prop == sym::DELETE_BEFORE {
             let oldval = self.get_frame_param(f, prop);
             if oldval != val && !val.is_nil() {
-                let name = self.symbol_name_string(prop);
+                let name = self.string_bytes(self.symbol_name(prop)).to_vec();
                 if !self.frame_live_p(val)
                     || (self.frame_live_p(f) && self.frame(f).terminal != self.frame(val).terminal)
                 {
-                    return Err(self.error(&format!("Invalid `{name}' frame parameter")));
+                    return Err(self.verror("Invalid `%s' frame parameter", &[Arg::Str(&name)]));
                 }
                 let mut frame1 = val;
                 while self.frame_live_p(frame1) {
                     if frame1 == f {
-                        return Err(self.error(&format!(
-                            "Circular specification of `{name}' frame parameter"
-                        )));
+                        return Err(self.verror(
+                            "Circular specification of `%s' frame parameter",
+                            &[Arg::Str(&name)],
+                        ));
                     }
                     frame1 = self.get_frame_param(frame1, prop);
                 }
