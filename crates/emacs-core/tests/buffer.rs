@@ -16,7 +16,7 @@ fn buffers_exist_at_startup() {
         ("(get-buffer \"foo\")", "nil"),
         (
             "(set-buffer \"nonexistent\")",
-            "error: (error \"No such buffer\" \"nonexistent\")",
+            "error: (error \"No buffer named nonexistent\")",
         ),
     ]);
 }

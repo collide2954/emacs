@@ -102,10 +102,7 @@ fn sequences() {
         ("(length \"héllo\")", "5"),
         ("(string-bytes \"héllo\")", "6"),
         ("(length [1 2])", "2"),
-        (
-            "(length '(1 . 2))",
-            "error: (wrong-type-argument listp (1 . 2))",
-        ),
+        ("(length '(1 . 2))", "error: (wrong-type-argument listp 2)"),
         ("(safe-length '(1 2 . 3))", "2"),
         ("(proper-list-p '(1 2))", "2"),
         ("(proper-list-p '(1 . 2))", "nil"),
@@ -178,6 +175,108 @@ fn sorting() {
         ("(value< 'a 'b)", "t"),
         ("(value< '(1 2) '(1 3))", "t"),
         ("(value< 1 \"a\")", "error: (type-mismatch 1 \"a\")"),
+    ]);
+}
+
+#[test]
+fn equal_including_properties() {
+    check(&[
+        (
+            "(equal-including-properties (concat (propertize \"abc\" 'a 1) (propertize \"de\" 'a 1)) (propertize \"abcde\" 'a 1))",
+            "t",
+        ),
+        (
+            "(equal-including-properties (propertize \"ab\" 'a 1 'b 2) (propertize \"ab\" 'b 2 'a 1))",
+            "t",
+        ),
+        (
+            "(equal-including-properties (propertize \"ab\" 'a \"x\") (propertize \"ab\" 'a \"x\"))",
+            "t",
+        ),
+        (
+            "(equal-including-properties (propertize \"ab\" 'a 1) \"ab\")",
+            "nil",
+        ),
+        (
+            "(equal-including-properties (concat \"a\" (propertize \"b\" 'a 1)) (propertize \"ab\" 'a 1))",
+            "nil",
+        ),
+    ]);
+}
+
+#[test]
+fn buffer_line_statistics() {
+    check(&[
+        (
+            "(progn (set-buffer (get-buffer-create \"bls\")) (insert \"123\\n12345\\n123\") (buffer-line-statistics))",
+            "(3 5 3.6666666666666665)",
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"bls2\")) (buffer-line-statistics))",
+            "(0 0 0.0)",
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"bls3\")) (insert \"\\n\\n\\n\") (buffer-line-statistics (current-buffer)))",
+            "(3 0 0.0)",
+        ),
+        (
+            "(buffer-line-statistics \"no such\")",
+            "error: (error \"No buffer named no such\")",
+        ),
+    ]);
+}
+
+#[test]
+fn circular_and_dotted_lists() {
+    check(&[
+        (
+            "(progn (fset 'cyc (function (lambda (x) (let ((l (list x x x))) (setcdr (cdr (cdr l)) l) l)))) (fset 'err (function (lambda (f) (condition-case e (funcall f) (error (car e)))))) 'cyc)",
+            "cyc",
+        ),
+        (
+            "(mapcar 'err (list (function (lambda () (memq 2 (cyc 1)))) (function (lambda () (member \"a\" (cyc \"b\")))) (function (lambda () (memql 2.0 (cyc 1.0)))) (function (lambda () (assq 2 (cyc '(1 . 2))))) (function (lambda () (assoc \"a\" (cyc '(\"b\" . 2))))) (function (lambda () (rassq 3 (cyc '(1 . 2))))) (function (lambda () (rassoc \"a\" (cyc '(1 . \"b\"))))) (function (lambda () (delq 2 (cyc 1)))) (function (lambda () (delete \"a\" (cyc \"b\")))) (function (lambda () (reverse (cyc 1)))) (function (lambda () (nconc (cyc 1) 'tail))) (function (lambda () (plist-put (cyc 1) 2 3))) (function (lambda () (plist-member (cyc 1) 2))) (function (lambda () (length (cyc 1))))))",
+            "(circular-list circular-list circular-list circular-list circular-list circular-list circular-list circular-list circular-list circular-list circular-list circular-list circular-list circular-list)",
+        ),
+        (
+            "(list (consp (memql 1.0 (cyc 1.0))) (plist-get (cyc 1) 2) (proper-list-p (cyc 1)) (>= (safe-length (cyc 1)) 3) (length< (cyc 1) 5))",
+            "(t nil nil t nil)",
+        ),
+        (
+            "(progn (setplist 'cyc-plist (cyc 'a)) (get 'cyc-plist 'b))",
+            "nil",
+        ),
+        ("(delq 1 '(1 . 2))", "error: (wrong-type-argument listp 2)"),
+        ("(reverse '(1 . 2))", "error: (wrong-type-argument listp 2)"),
+        (
+            "(rassq 2 '((0 . 1) . x))",
+            "error: (wrong-type-argument listp ((0 . 1) . x))",
+        ),
+        (
+            "(assoc 2 '((1) . x) (function equal))",
+            "error: (wrong-type-argument listp ((1) . x))",
+        ),
+        ("(nconc 1 '(2))", "error: (wrong-type-argument consp 1)"),
+        (
+            "(plist-member '(a 1 . b) 'c)",
+            "error: (wrong-type-argument plistp (a 1 . b))",
+        ),
+        (
+            "(plist-put '(a 1 b) 'c 2)",
+            "error: (wrong-type-argument plistp (a 1 b))",
+        ),
+        (
+            "(memql (expt 2 70) (list 1 (expt 2 70)))",
+            "(1180591620717411303424)",
+        ),
+        (
+            "(memq 3 '(1 . 2))",
+            "error: (wrong-type-argument listp (1 . 2))",
+        ),
+        ("(length= '(1 2) 2)", "t"),
+        ("(length> '(1 2 3) 2)", "t"),
+        ("(proper-list-p '(1 2))", "2"),
+        ("(proper-list-p '(1 . 2))", "nil"),
+        ("(safe-length 'a)", "0"),
     ]);
 }
 

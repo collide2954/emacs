@@ -28,12 +28,42 @@ pub struct ForEachTail {
     pub tail: Value,
     tortoise: Value,
     l: usize,
-    slot: usize,
+    slot: Option<usize>,
 }
 
 impl ForEachTail {
+    pub fn unrooted(list: Value) -> ForEachTail {
+        ForEachTail {
+            tail: list,
+            tortoise: list,
+            l: 0,
+            slot: None,
+        }
+    }
+
     pub fn tortoise(&self) -> Value {
         self.tortoise
+    }
+
+    fn advance(&mut self, lisp: &Lisp) -> (bool, bool) {
+        self.tail = lisp.xcdr(self.tail);
+        if self.tail == self.tortoise {
+            return (true, false);
+        }
+        self.l += 1;
+        if self.l & (FOR_EACH_TAIL_THRESHOLD - 1) == 0 {
+            if self.l.is_power_of_two() {
+                self.tortoise = self.tail;
+            }
+            return (false, true);
+        }
+        (false, false)
+    }
+
+    pub fn step_safe(&mut self, lisp: &Lisp) {
+        if self.advance(lisp).0 {
+            self.tail = Value::NIL;
+        }
     }
 }
 
@@ -667,7 +697,7 @@ impl Lisp {
             tail: list,
             tortoise: list,
             l: 0,
-            slot,
+            slot: Some(slot),
         }
     }
 
@@ -685,22 +715,15 @@ impl Lisp {
     }
 
     fn tail_step_cyclep(&mut self, li: &mut ForEachTail, check_quit: bool) -> LispResult<bool> {
-        li.tail = self.xcdr(li.tail);
-        self.stack[li.slot] = li.tail;
-        if li.tail == li.tortoise {
-            return Ok(true);
+        let (cyclep, quit_point) = li.advance(self);
+        if let Some(slot) = li.slot {
+            self.stack[slot] = li.tail;
+            self.stack[slot + 1] = li.tortoise;
         }
-        li.l += 1;
-        if li.l & (FOR_EACH_TAIL_THRESHOLD - 1) == 0 {
-            if check_quit {
-                self.maybe_quit()?;
-            }
-            if li.l.is_power_of_two() {
-                li.tortoise = li.tail;
-                self.stack[li.slot + 1] = li.tail;
-            }
+        if quit_point && check_quit {
+            self.maybe_quit()?;
         }
-        Ok(false)
+        Ok(cyclep)
     }
 
     pub fn circular_list(&mut self, list: Value) -> Flow {
@@ -915,16 +938,22 @@ impl Lisp {
     }
 
     pub fn get(&self, symbol: Value, property: Value) -> Value {
-        let mut tail = self.heap.symbol_ref(symbol).plist;
-        while tail.is_cons() {
-            let next = self.heap.cdr(tail);
+        let plist = self.heap.symbol_ref(symbol).plist;
+        self.plist_get(plist, property)
+    }
+
+    pub fn plist_get(&self, plist: Value, prop: Value) -> Value {
+        let mut li = ForEachTail::unrooted(plist);
+        while li.tail.is_cons() {
+            let next = self.xcdr(li.tail);
             if !next.is_cons() {
                 break;
             }
-            if self.heap.car(tail) == property {
-                return self.heap.car(next);
+            if self.eq(self.xcar(li.tail), prop) {
+                return self.xcar(next);
             }
-            tail = self.heap.cdr(next);
+            li.tail = next;
+            li.step_safe(self);
         }
         Value::NIL
     }

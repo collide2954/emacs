@@ -1715,8 +1715,7 @@ fn f_kill_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     } else {
         let b = f_get_buffer(lisp, &[args[0]])?;
         if b.is_nil() {
-            let name = lisp.princ_to_string(args[0]);
-            return Err(lisp.error(&format!("No such buffer {name}")));
+            return Err(lisp.nsberror(args[0]));
         }
         b
     };
@@ -1756,7 +1755,7 @@ fn f_current_buffer(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
 pub(crate) fn f_set_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = f_get_buffer(lisp, &[args[0]])?;
     if buffer.is_nil() {
-        return Err(lisp.signal_error("No such buffer", args[0]));
+        return Err(lisp.nsberror(args[0]));
     }
     if !lisp.buffer_live_p(buffer) {
         return Err(lisp.error("Selecting deleted buffer"));

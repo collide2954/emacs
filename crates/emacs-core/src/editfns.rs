@@ -929,8 +929,7 @@ fn f_get_buffer_arg(lisp: &mut Lisp, v: Value) -> LispResult<Value> {
     lisp.check_string(v)?;
     let b = lisp.get_buffer(v);
     if b.is_nil() {
-        let name = lisp.string_to_rust(v);
-        return Err(lisp.error(&format!("No such buffer {name}")));
+        return Err(lisp.nsberror(v));
     }
     Ok(b)
 }

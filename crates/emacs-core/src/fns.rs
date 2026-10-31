@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use crate::character;
 use crate::data::Num;
 use crate::error::LispResult;
-use crate::lisp::Lisp;
+use crate::lisp::{ForEachTail, Lisp};
 use crate::object::{HashTable, LispString, Vectorlike, Weakness};
 use crate::subr::Subr;
 use crate::symbols as sym;
@@ -122,6 +122,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("secure-hash-algorithms", 0, 0, f_secure_hash_algorithms),
     Subr::fixed("string-search", 2, 3, f_string_search),
     Subr::fixed("object-intervals", 1, 1, f_object_intervals),
+    Subr::fixed("buffer-line-statistics", 0, 1, f_buffer_line_statistics),
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
@@ -162,17 +163,26 @@ impl Lisp {
         Value::NIL
     }
 
-    pub fn member(&mut self, elt: Value, mut list: Value) -> LispResult {
-        while list.is_cons() {
-            let item = self.xcar(list);
+    pub fn eq_comparable_value(&self, x: Value) -> bool {
+        self.symbolp(x) || x.is_fixnum()
+    }
+
+    pub fn member(&mut self, elt: Value, list: Value) -> LispResult {
+        if self.eq_comparable_value(elt) {
+            return f_memq(self, &[elt, list]);
+        }
+        let base = self.stack.len();
+        let mut li = self.for_each_tail(list);
+        while li.tail.is_cons() {
+            let item = self.xcar(li.tail);
             if self.equal(elt, item)? {
-                return Ok(list);
+                self.stack.truncate(base);
+                return Ok(li.tail);
             }
-            list = self.xcdr(list);
+            self.tail_step(&mut li)?;
         }
-        if !list.is_nil() {
-            return Err(self.wrong_type(sym::LISTP, list));
-        }
+        self.stack.truncate(base);
+        self.check_list_end(li.tail, list)?;
         Ok(Value::NIL)
     }
 
@@ -193,19 +203,7 @@ impl Lisp {
 
     pub fn length_of(&mut self, seq: Value) -> LispResult<usize> {
         if seq.is_cons() {
-            let mut n = 0usize;
-            let mut tail = seq;
-            while tail.is_cons() {
-                n += 1;
-                tail = self.xcdr(tail);
-                if n.is_multiple_of(1_000_000) && self.list_is_circular(seq) {
-                    return Err(self.signal_list(sym::CIRCULAR_LIST, &[seq]));
-                }
-            }
-            if !tail.is_nil() {
-                return Err(self.wrong_type(sym::LISTP, seq));
-            }
-            return Ok(n);
+            return self.list_length(seq);
         }
         if seq.is_nil() {
             return Ok(0);
@@ -367,7 +365,8 @@ impl Lisp {
                 if props {
                     let pa = sa.props.clone();
                     let pb = sb.props.clone();
-                    return self.props_equal(&pa, &pb);
+                    let end = sa.chars;
+                    return self.compare_string_intervals(&pa, &pb, end);
                 }
                 return Ok(true);
             }
@@ -435,45 +434,82 @@ impl Lisp {
         }
     }
 
-    fn props_equal(
+    fn compare_string_intervals(
         &mut self,
         a: &[crate::object::PropRun],
         b: &[crate::object::PropRun],
+        end: usize,
     ) -> LispResult<bool> {
-        let a: Vec<_> = a.iter().filter(|r| !r.plist.is_nil()).copied().collect();
-        let b: Vec<_> = b.iter().filter(|r| !r.plist.is_nil()).copied().collect();
-        if a.len() != b.len() {
-            return Ok(false);
-        }
-        for (x, y) in a.iter().zip(&b) {
-            if x.start != y.start || x.end != y.end {
+        let (sa, sb) = (string_intervals(a, end), string_intervals(b, end));
+        let (mut i1, mut i2, mut pos) = (0, 0, 0);
+        while pos < end {
+            let len1 = sa.get(i1).map_or(end, |i| i.1) - pos;
+            let len2 = sb.get(i2).map_or(end, |i| i.1) - pos;
+            let distance = len1.min(len2);
+            let p1 = sa.get(i1).map_or(Value::NIL, |i| i.2);
+            let p2 = sb.get(i2).map_or(Value::NIL, |i| i.2);
+            if !self.intervals_equal_1(p1, p2, true)? {
                 return Ok(false);
             }
-            if !self.plists_equal(x.plist, y.plist)? {
-                return Ok(false);
+            pos += distance;
+            if len1 == distance {
+                i1 += 1;
+            }
+            if len2 == distance {
+                i2 += 1;
             }
         }
         Ok(true)
     }
 
-    fn plists_equal(&mut self, a: Value, b: Value) -> LispResult<bool> {
-        let la = self.list_length_unchecked(a);
-        let lb = self.list_length_unchecked(b);
-        if la != lb {
+    fn intervals_equal_1(&mut self, p0: Value, p1: Value, use_equal: bool) -> LispResult<bool> {
+        if p0.is_nil() && p1.is_nil() {
+            return Ok(true);
+        }
+        if p0.is_nil() || p1.is_nil() {
             return Ok(false);
         }
-        let mut tail = a;
-        while tail.is_cons() {
-            let key = self.xcar(tail);
-            let rest = self.xcdr(tail);
-            let value = self.car_safe(rest);
-            let other = self.plist_get_eq(b, key);
-            if !self.equal(value, other)? {
+        let (mut i0_cdr, mut i1_cdr) = (p0, p1);
+        while i0_cdr.is_cons() && i1_cdr.is_cons() {
+            let i0_sym = self.xcar(i0_cdr);
+            i0_cdr = self.xcdr(i0_cdr);
+            if !i0_cdr.is_cons() {
                 return Ok(false);
             }
-            tail = self.cdr_safe(rest);
+            let mut i1_val = p1;
+            while i1_val.is_cons() && !self.eq(self.xcar(i1_val), i0_sym) {
+                i1_val = self.xcdr(i1_val);
+                if !i1_val.is_cons() {
+                    return Ok(false);
+                }
+                i1_val = self.xcdr(i1_val);
+            }
+            if i1_val.is_nil() {
+                return Ok(false);
+            }
+            let by_equal = !i1_val.is_cons()
+                || {
+                    i1_val = self.xcdr(i1_val);
+                    !i1_val.is_cons()
+                }
+                || use_equal;
+            let (v1, v0) = (self.car_safe(i1_val), self.xcar(i0_cdr));
+            let differ = if by_equal {
+                !self.equal(v1, v0)?
+            } else {
+                !self.eq(v1, v0)
+            };
+            if differ {
+                return Ok(false);
+            }
+            i0_cdr = self.xcdr(i0_cdr);
+            i1_cdr = self.xcdr(i1_cdr);
+            if !i1_cdr.is_cons() {
+                return Ok(false);
+            }
+            i1_cdr = self.xcdr(i1_cdr);
         }
-        Ok(true)
+        Ok(i0_cdr.is_nil() && i1_cdr.is_nil())
     }
 
     pub fn plist_get_eq(&self, plist: Value, prop: Value) -> Value {
@@ -496,28 +532,31 @@ impl Lisp {
     }
 
     pub fn delete(&mut self, elt: Value, seq: Value) -> LispResult {
-        if seq.is_nil() || seq.is_cons() {
+        if seq.is_nil() {
+            return Ok(seq);
+        }
+        if seq.is_cons() {
+            let mut seq = seq;
             let mut prev = Value::NIL;
-            let mut head = seq;
-            let mut tail = seq;
-            while tail.is_cons() {
-                let item = self.xcar(tail);
+            let base = self.stack.len();
+            let mut li = self.for_each_tail(seq);
+            while li.tail.is_cons() {
+                let item = self.xcar(li.tail);
                 if self.equal(elt, item)? {
+                    let next = self.xcdr(li.tail);
                     if prev.is_nil() {
-                        head = self.xcdr(tail);
+                        seq = next;
                     } else {
-                        let next = self.xcdr(tail);
                         self.heap.set_cdr(prev, next);
                     }
                 } else {
-                    prev = tail;
+                    prev = li.tail;
                 }
-                tail = self.xcdr(tail);
+                self.tail_step(&mut li)?;
             }
-            if !tail.is_nil() {
-                return Err(self.wrong_type(sym::LISTP, seq));
-            }
-            return Ok(head);
+            self.stack.truncate(base);
+            self.check_list_end(li.tail, seq)?;
+            return Ok(seq);
         }
         if self.is_vector(seq) {
             let items = self.vector_items(seq).to_vec();
@@ -598,29 +637,58 @@ impl Lisp {
     }
 
     pub fn plist_put_eq(&mut self, plist: Value, prop: Value, val: Value) -> LispResult {
+        self.plist_put_with(plist, prop, val, Value::NIL)
+    }
+
+    fn plist_put_with(
+        &mut self,
+        plist: Value,
+        prop: Value,
+        val: Value,
+        predicate: Value,
+    ) -> LispResult {
+        let base = self.stack.len();
         let mut prev = Value::NIL;
-        let mut tail = plist;
-        while tail.is_cons() {
-            let rest = self.xcdr(tail);
-            if !rest.is_cons() {
-                return Err(self.wrong_type(sym::PLISTP, plist));
+        self.stack.push(prev);
+        let mut li = self.for_each_tail(plist);
+        while li.tail.is_cons() {
+            let next = self.xcdr(li.tail);
+            if !next.is_cons() {
+                break;
             }
-            if self.xcar(tail) == prop {
-                self.heap.set_car(rest, val);
+            let key = self.xcar(li.tail);
+            let matched = if predicate.is_nil() {
+                self.eq(key, prop)
+            } else {
+                !self.funcall(predicate, &[key, prop])?.is_nil()
+            };
+            if matched {
+                self.heap.set_car(next, val);
+                self.stack.truncate(base);
                 return Ok(plist);
             }
-            prev = tail;
-            tail = self.xcdr(rest);
+            prev = li.tail;
+            self.stack[base] = prev;
+            li.tail = next;
+            self.tail_step(&mut li)?;
         }
-        if !tail.is_nil() {
+        self.stack.truncate(base);
+        if !li.tail.is_nil() {
             return Err(self.wrong_type(sym::PLISTP, plist));
         }
-        let new = self.list(&[prop, val]);
+        let rest = if prev.is_nil() {
+            plist
+        } else {
+            let value_cell = self.xcdr(prev);
+            self.xcdr(value_cell)
+        };
+        let value_cell = self.cons(val, rest);
+        let newcell = self.cons(prop, value_cell);
         if prev.is_nil() {
-            return Ok(new);
+            return Ok(newcell);
         }
-        let last = self.xcdr(prev);
-        self.heap.set_cdr(last, new);
+        let value_cell = self.xcdr(prev);
+        self.heap.set_cdr(value_cell, newcell);
         Ok(plist)
     }
 
@@ -637,17 +705,17 @@ impl Lisp {
     }
 
     pub fn reverse_list(&mut self, list: Value) -> LispResult {
-        let mut result = Value::NIL;
-        let mut tail = list;
-        while tail.is_cons() {
-            let item = self.xcar(tail);
-            result = self.cons(item, result);
-            tail = self.xcdr(tail);
+        let mut new = Value::NIL;
+        let base = self.stack.len();
+        let mut li = self.for_each_tail(list);
+        while li.tail.is_cons() {
+            let item = self.xcar(li.tail);
+            new = self.cons(item, new);
+            self.tail_step(&mut li)?;
         }
-        if !tail.is_nil() {
-            return Err(self.wrong_type(sym::LISTP, list));
-        }
-        Ok(result)
+        self.stack.truncate(base);
+        self.check_list_end(li.tail, li.tail)?;
+        Ok(new)
     }
 
     pub fn mapcar_vec(&mut self, function: Value, seq: Value) -> LispResult<Vec<Value>> {
@@ -1226,6 +1294,24 @@ impl Lisp {
     }
 }
 
+fn string_intervals(runs: &[crate::object::PropRun], end: usize) -> Vec<(usize, usize, Value)> {
+    let mut runs: Vec<_> = runs.iter().filter(|r| r.start < r.end).copied().collect();
+    runs.sort_by_key(|r| r.start);
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for r in runs {
+        if r.start > pos {
+            out.push((pos, r.start, Value::NIL));
+        }
+        out.push((r.start, r.end, r.plist));
+        pos = r.end;
+    }
+    if !out.is_empty() && pos < end {
+        out.push((pos, end, Value::NIL));
+    }
+    out
+}
+
 enum SameType {
     Done(Ordering),
     Recurse(Value, Value),
@@ -1479,63 +1565,158 @@ pub(crate) fn f_length(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.length(args[0])
 }
 
-fn f_safe_length(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let list = args[0];
-    let mut n = 0u64;
-    let mut slow = list;
-    let mut fast = list;
-    while fast.is_cons() {
-        fast = lisp.xcdr(fast);
-        n += 1;
-        if n.is_multiple_of(2) {
-            slow = lisp.xcdr(slow);
-            if slow == fast && fast.is_cons() {
-                break;
+fn f_buffer_line_statistics(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let buffer_or_name = args[0];
+    let buffer = if buffer_or_name.is_nil() {
+        lisp.current_buffer_value()
+    } else {
+        crate::buffer::f_get_buffer(lisp, &[buffer_or_name])?
+    };
+    if buffer.is_nil() {
+        return Err(lisp.nsberror(buffer_or_name));
+    }
+    let (pre, post) = lisp.buffer(buffer).text.parts();
+    let mut lines: i64 = 0;
+    let mut longest: i64 = 0;
+    let mut mean: f64 = 0.0;
+    let mut pre_gap: i64 = 0;
+    let mut start = 0usize;
+    let mut area = pre.len() as i64;
+    while area > 0 {
+        match pre[start..start + area as usize]
+            .iter()
+            .position(|&b| b == b'\n')
+        {
+            Some(this_line) => {
+                let this_line = this_line as i64;
+                longest = longest.max(this_line);
+                lines += 1;
+                mean += (this_line as f64 - mean) / lines as f64;
+                area -= this_line + 1;
+                start += this_line as usize + 1;
+            }
+            None => {
+                pre_gap = area;
+                area = 0;
             }
         }
     }
-    Ok(Value::fixnum(n as i64))
+    if !post.is_empty() {
+        let mut start = 0i64;
+        let mut area = post.len() as i64;
+        while area > 0 {
+            let from = start as usize;
+            let n = post[from..from + area as usize]
+                .iter()
+                .position(|&b| b == b'\n');
+            let this_line = match n {
+                Some(n) => n as i64 + pre_gap,
+                None => area + pre_gap,
+            };
+            longest = longest.max(this_line);
+            lines += 1;
+            mean += (this_line as f64 - mean) / lines as f64;
+            area -= this_line + 1;
+            start += this_line + 1;
+            pre_gap = 0;
+        }
+    } else if pre_gap > 0 {
+        longest = longest.max(pre_gap);
+        lines += 1;
+        mean += (pre_gap as f64 - mean) / lines as f64;
+    }
+    let mean = lisp.float(mean);
+    Ok(lisp.list(&[Value::fixnum(lines), Value::fixnum(longest), mean]))
 }
 
-fn length_compare(lisp: &mut Lisp, seq: Value, n: Value) -> LispResult<Ordering> {
-    let n = lisp.check_fixnum(n)?;
-    if seq.is_cons() {
-        let mut len = 0i64;
-        let mut tail = seq;
-        while tail.is_cons() && len <= n {
-            len += 1;
-            tail = lisp.xcdr(tail);
-        }
-        return Ok(len.cmp(&n));
+fn f_safe_length(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let mut len = 0;
+    let mut li = ForEachTail::unrooted(args[0]);
+    while li.tail.is_cons() {
+        len += 1;
+        li.step_safe(lisp);
     }
-    let len = lisp.length_of(seq)? as i64;
-    Ok(len.cmp(&n))
+    Ok(Value::fixnum(len))
+}
+
+fn length_internal(lisp: &mut Lisp, mut sequence: Value, mut len: i32) -> LispResult<i64> {
+    if len < 0xffff {
+        while sequence.is_cons() {
+            len = len.wrapping_sub(1);
+            if len <= 0 {
+                return Ok(-1);
+            }
+            sequence = lisp.xcdr(sequence);
+        }
+    } else {
+        let base = lisp.stack.len();
+        let mut li = lisp.for_each_tail(sequence);
+        while li.tail.is_cons() {
+            len = len.wrapping_sub(1);
+            if len <= 0 {
+                lisp.stack.truncate(base);
+                return Ok(-1);
+            }
+            lisp.tail_step(&mut li)?;
+        }
+        lisp.stack.truncate(base);
+    }
+    Ok(i64::from(len))
 }
 
 fn f_length_less(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    Ok(bool_value(
-        length_compare(lisp, args[0], args[1])? == Ordering::Less,
-    ))
+    let (sequence, length) = (args[0], args[1]);
+    let len = lisp.check_fixnum(length)?;
+    if sequence.is_cons() {
+        return Ok(bool_value(
+            length_internal(lisp, sequence, len as i32)? != -1,
+        ));
+    }
+    Ok(bool_value((lisp.length_of(sequence)? as i64) < len))
 }
 
 fn f_length_greater(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    Ok(bool_value(
-        length_compare(lisp, args[0], args[1])? == Ordering::Greater,
-    ))
+    let (sequence, length) = (args[0], args[1]);
+    let len = lisp.check_fixnum(length)?;
+    if sequence.is_cons() {
+        return Ok(bool_value(
+            length_internal(lisp, sequence, len.wrapping_add(1) as i32)? == -1,
+        ));
+    }
+    Ok(bool_value((lisp.length_of(sequence)? as i64) > len))
 }
 
 fn f_length_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    Ok(bool_value(
-        length_compare(lisp, args[0], args[1])? == Ordering::Equal,
-    ))
+    let (sequence, length) = (args[0], args[1]);
+    let len = lisp.check_fixnum(length)?;
+    if len < 0 {
+        return Ok(Value::NIL);
+    }
+    if sequence.is_cons() {
+        return Ok(bool_value(
+            length_internal(lisp, sequence, len.wrapping_add(1) as i32)? == 1,
+        ));
+    }
+    Ok(bool_value(lisp.length_of(sequence)? as i64 == len))
 }
 
 fn f_proper_list_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let list = args[0];
-    if !lisp.proper_list_p(list) {
+    let object = args[0];
+    let mut len: i64 = 0;
+    let mut last_tail = object;
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(object);
+    while li.tail.is_cons() {
+        len += 1;
+        rarely_quit(lisp, len)?;
+        last_tail = lisp.xcdr(li.tail);
+        lisp.tail_step_safe(&mut li);
+    }
+    lisp.stack.truncate(base);
+    if !last_tail.is_nil() {
         return Ok(Value::NIL);
     }
-    Ok(Value::fixnum(lisp.list_length_unchecked(list) as i64))
+    Ok(Value::fixnum(len))
 }
 
 fn f_string_bytes(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -2054,136 +2235,158 @@ fn f_member(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_memq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (elt, list) = (args[0], args[1]);
-    let mut tail = list;
-    while tail.is_cons() {
-        let item = lisp.xcar(tail);
-        if lisp.eq(item, elt) {
-            return Ok(tail);
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(list);
+    while li.tail.is_cons() {
+        if lisp.eq(lisp.xcar(li.tail), elt) {
+            lisp.stack.truncate(base);
+            return Ok(li.tail);
         }
-        tail = lisp.xcdr(tail);
+        lisp.tail_step(&mut li)?;
     }
-    if !tail.is_nil() {
-        return Err(lisp.wrong_type(sym::LISTP, list));
-    }
+    lisp.stack.truncate(base);
+    lisp.check_list_end(li.tail, list)?;
     Ok(Value::NIL)
+}
+
+fn same_float(lisp: &Lisp, x: Value, y: Value) -> bool {
+    lisp.heap.float_value(x).to_bits() == lisp.heap.float_value(y).to_bits()
 }
 
 fn f_memql(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (elt, list) = (args[0], args[1]);
-    let mut tail = list;
-    while tail.is_cons() {
-        if lisp.eql(lisp.xcar(tail), elt) {
-            return Ok(tail);
+    let float = elt.is_float();
+    if !float && !lisp.is_bignum(elt) {
+        return f_memq(lisp, args);
+    }
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(list);
+    while li.tail.is_cons() {
+        let tem = lisp.xcar(li.tail);
+        let matched = if float {
+            tem.is_float() && same_float(lisp, elt, tem)
+        } else {
+            lisp.bignum_ref(tem)
+                .is_some_and(|b| Some(b) == lisp.bignum_ref(elt))
+        };
+        if matched {
+            lisp.stack.truncate(base);
+            return Ok(li.tail);
         }
-        tail = lisp.xcdr(tail);
+        lisp.tail_step(&mut li)?;
     }
-    if !tail.is_nil() {
-        return Err(lisp.wrong_type(sym::LISTP, list));
-    }
+    lisp.stack.truncate(base);
+    lisp.check_list_end(li.tail, list)?;
     Ok(Value::NIL)
 }
 
 pub(crate) fn f_assq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist) = (args[0], args[1]);
-    let mut tail = alist;
-    while tail.is_cons() {
-        let elt = lisp.xcar(tail);
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(alist);
+    while li.tail.is_cons() {
+        let elt = lisp.xcar(li.tail);
         if elt.is_cons() && lisp.eq(lisp.xcar(elt), key) {
+            lisp.stack.truncate(base);
             return Ok(elt);
         }
-        tail = lisp.xcdr(tail);
+        lisp.tail_step(&mut li)?;
     }
-    if !tail.is_nil() {
-        return Err(lisp.wrong_type(sym::LISTP, alist));
-    }
+    lisp.stack.truncate(base);
+    lisp.check_list_end(li.tail, alist)?;
     Ok(Value::NIL)
 }
 
 pub(crate) fn f_assoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist, testfn) = (args[0], args[1], args[2]);
-    if testfn.is_nil() && (key.is_symbol() || key.is_fixnum()) {
+    if lisp.eq_comparable_value(key) && testfn.is_nil() {
         return f_assq(lisp, &[key, alist]);
     }
     let base = lisp.stack.len();
-    lisp.stack.push(alist);
-    let mut tail = alist;
-    let result = (|| {
-        while tail.is_cons() {
-            let elt = lisp.xcar(tail);
-            if elt.is_cons() {
-                let k = lisp.xcar(elt);
-                let matched = if testfn.is_nil() {
-                    lisp.equal(k, key)?
-                } else {
-                    !lisp.funcall(testfn, &[k, key])?.is_nil()
-                };
-                if matched {
-                    return Ok(elt);
-                }
+    let mut li = lisp.for_each_tail(alist);
+    while li.tail.is_cons() {
+        let car = lisp.xcar(li.tail);
+        if car.is_cons() {
+            let k = lisp.xcar(car);
+            let matched = if testfn.is_nil() {
+                lisp.eq(k, key) || lisp.equal(k, key)?
+            } else {
+                !lisp.funcall(testfn, &[k, key])?.is_nil()
+            };
+            if matched {
+                lisp.stack.truncate(base);
+                return Ok(car);
             }
-            tail = lisp.xcdr(tail);
         }
-        if !tail.is_nil() {
-            return Err(lisp.wrong_type(sym::LISTP, alist));
-        }
-        Ok(Value::NIL)
-    })();
+        lisp.tail_step(&mut li)?;
+    }
     lisp.stack.truncate(base);
-    result
+    lisp.check_list_end(li.tail, alist)?;
+    Ok(Value::NIL)
 }
 
 fn f_rassq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist) = (args[0], args[1]);
-    let mut tail = alist;
-    while tail.is_cons() {
-        let elt = lisp.xcar(tail);
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(alist);
+    while li.tail.is_cons() {
+        let elt = lisp.xcar(li.tail);
         if elt.is_cons() && lisp.eq(lisp.xcdr(elt), key) {
+            lisp.stack.truncate(base);
             return Ok(elt);
         }
-        tail = lisp.xcdr(tail);
+        lisp.tail_step(&mut li)?;
     }
+    lisp.stack.truncate(base);
+    lisp.check_list_end(li.tail, alist)?;
     Ok(Value::NIL)
 }
 
 pub(crate) fn f_rassoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist) = (args[0], args[1]);
-    let mut tail = alist;
-    while tail.is_cons() {
-        let elt = lisp.xcar(tail);
-        if elt.is_cons() {
-            let v = lisp.xcdr(elt);
-            if lisp.equal(v, key)? {
-                return Ok(elt);
+    if lisp.eq_comparable_value(key) {
+        return f_rassq(lisp, args);
+    }
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(alist);
+    while li.tail.is_cons() {
+        let car = lisp.xcar(li.tail);
+        if car.is_cons() {
+            let v = lisp.xcdr(car);
+            if lisp.eq(v, key) || lisp.equal(v, key)? {
+                lisp.stack.truncate(base);
+                return Ok(car);
             }
         }
-        tail = lisp.xcdr(tail);
+        lisp.tail_step(&mut li)?;
     }
+    lisp.stack.truncate(base);
+    lisp.check_list_end(li.tail, alist)?;
     Ok(Value::NIL)
 }
 
 pub fn f_delq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let (elt, list) = (args[0], args[1]);
+    let (elt, mut list) = (args[0], args[1]);
     let mut prev = Value::NIL;
-    let mut head = list;
-    let mut tail = list;
-    while tail.is_cons() {
-        let item = lisp.xcar(tail);
-        if lisp.eq(item, elt) {
-            let next = lisp.xcdr(tail);
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(list);
+    while li.tail.is_cons() {
+        let tem = lisp.xcar(li.tail);
+        if lisp.eq(elt, tem) {
+            let next = lisp.xcdr(li.tail);
             if prev.is_nil() {
-                head = next;
+                list = next;
             } else {
                 lisp.heap.set_cdr(prev, next);
             }
         } else {
-            prev = tail;
+            prev = li.tail;
         }
-        tail = lisp.xcdr(tail);
+        lisp.tail_step(&mut li)?;
     }
-    if !tail.is_nil() {
-        return Err(lisp.wrong_type(sym::LISTP, list));
-    }
-    Ok(head)
+    lisp.stack.truncate(base);
+    lisp.check_list_end(li.tail, list)?;
+    Ok(list)
 }
 
 fn f_delete(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -2402,91 +2605,46 @@ pub(crate) fn f_sort(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Err(lisp.wrong_type(sym::LIST_OR_VECTOR_P, seq))
 }
 
-fn plist_get_with(lisp: &mut Lisp, plist: Value, prop: Value, predicate: Value) -> LispResult {
-    if predicate.is_nil() || predicate == sym::EQ {
-        let mut tail = plist;
-        while tail.is_cons() {
-            let rest = lisp.xcdr(tail);
-            if !rest.is_cons() {
-                break;
-            }
-            if lisp.eq(lisp.xcar(tail), prop) {
-                return Ok(lisp.xcar(rest));
-            }
-            tail = lisp.xcdr(rest);
-        }
-        return Ok(Value::NIL);
+fn f_plist_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (plist, prop, predicate) = (args[0], args[1], args[2]);
+    if predicate.is_nil() {
+        return Ok(lisp.plist_get(plist, prop));
     }
-    let mut tail = plist;
-    while tail.is_cons() {
-        let rest = lisp.xcdr(tail);
-        if !rest.is_cons() {
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(plist);
+    while li.tail.is_cons() {
+        let next = lisp.xcdr(li.tail);
+        if !next.is_cons() {
             break;
         }
-        let k = lisp.xcar(tail);
-        if !lisp.funcall(predicate, &[k, prop])?.is_nil() {
-            return Ok(lisp.xcar(rest));
+        let key = lisp.xcar(li.tail);
+        if !lisp.funcall(predicate, &[key, prop])?.is_nil() {
+            lisp.stack.truncate(base);
+            return Ok(lisp.xcar(next));
         }
-        tail = lisp.xcdr(rest);
+        li.tail = next;
+        lisp.tail_step_safe(&mut li);
     }
+    lisp.stack.truncate(base);
     Ok(Value::NIL)
 }
 
-fn f_plist_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    plist_get_with(lisp, args[0], args[1], args[2])
-}
-
 pub(crate) fn f_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    let symbol = lisp.maybe_remove_pos_from_symbol(args[0]);
+    let (symbol, propname) = (args[0], args[1]);
     let symbol = lisp.check_symbol(symbol)?;
-    let overriding = lisp.plain_value(sym::OVERRIDING_PLIST_ENVIRONMENT);
-    if !overriding.is_nil() {
-        let entry = lisp.assq(symbol, overriding);
-        if !entry.is_nil() {
-            let plist = lisp.xcdr(entry);
-            let mut tail = plist;
-            while tail.is_cons() {
-                let rest = lisp.xcdr(tail);
-                if !rest.is_cons() {
-                    break;
-                }
-                if lisp.xcar(tail) == args[1] {
-                    return Ok(lisp.xcar(rest));
-                }
-                tail = lisp.xcdr(rest);
-            }
-        }
+    let env = lisp.plain_value(sym::OVERRIDING_PLIST_ENVIRONMENT);
+    let entry = f_assq(lisp, &[symbol, env])?;
+    let plist = lisp.cdr(entry)?;
+    let propval = lisp.plist_get(plist, propname);
+    if !propval.is_nil() {
+        return Ok(propval);
     }
-    Ok(lisp.get(symbol, args[1]))
+    Ok(lisp.get(symbol, propname))
 }
 
 fn f_plist_put(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (plist, prop, val, predicate) = (args[0], args[1], args[2], args[3]);
-    if predicate.is_nil() || predicate == sym::EQ {
-        return lisp.plist_put_eq(plist, prop, val);
-    }
-    let mut prev = Value::NIL;
-    let mut tail = plist;
-    while tail.is_cons() {
-        let rest = lisp.xcdr(tail);
-        if !rest.is_cons() {
-            return Err(lisp.wrong_type(sym::PLISTP, plist));
-        }
-        let k = lisp.xcar(tail);
-        if !lisp.funcall(predicate, &[k, prop])?.is_nil() {
-            lisp.heap.set_car(rest, val);
-            return Ok(plist);
-        }
-        prev = tail;
-        tail = lisp.xcdr(rest);
-    }
-    let new = lisp.list(&[prop, val]);
-    if prev.is_nil() {
-        return Ok(new);
-    }
-    let last = lisp.xcdr(prev);
-    lisp.heap.set_cdr(last, new);
-    Ok(plist)
+    lisp.plist_put_with(plist, prop, val, predicate)
 }
 
 fn f_put(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -2500,22 +2658,28 @@ fn f_put(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_plist_member(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (plist, prop, predicate) = (args[0], args[1], args[2]);
-    let mut tail = plist;
-    while tail.is_cons() {
-        let k = lisp.xcar(tail);
-        let matched = if predicate.is_nil() || predicate == sym::EQ {
-            lisp.eq(k, prop)
+    let base = lisp.stack.len();
+    let mut li = lisp.for_each_tail(plist);
+    while li.tail.is_cons() {
+        let key = lisp.xcar(li.tail);
+        let matched = if predicate.is_nil() {
+            lisp.eq(key, prop)
         } else {
-            !lisp.funcall(predicate, &[k, prop])?.is_nil()
+            !lisp.funcall(predicate, &[key, prop])?.is_nil()
         };
         if matched {
-            return Ok(tail);
+            lisp.stack.truncate(base);
+            return Ok(li.tail);
         }
-        tail = lisp.xcdr(tail);
-        if !tail.is_cons() {
+        li.tail = lisp.xcdr(li.tail);
+        if !li.tail.is_cons() {
             break;
         }
-        tail = lisp.xcdr(tail);
+        lisp.tail_step(&mut li)?;
+    }
+    lisp.stack.truncate(base);
+    if !li.tail.is_nil() {
+        return Err(lisp.wrong_type(sym::PLISTP, plist));
     }
     Ok(Value::NIL)
 }
@@ -2583,28 +2747,36 @@ fn f_clear_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 fn f_nconc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let mut args = args.to_vec();
+    let nargs = args.len();
     let mut val = Value::NIL;
-    let mut last_cons = Value::NIL;
-    for (i, &arg) in args.iter().enumerate() {
-        if arg.is_nil() {
+    for argnum in 0..nargs {
+        let tem = args[argnum];
+        if tem.is_nil() {
             continue;
         }
         if val.is_nil() {
-            val = arg;
-        } else {
-            lisp.heap.set_cdr(last_cons, arg);
+            val = tem;
         }
-        if i == args.len() - 1 {
+        if argnum + 1 == nargs {
             break;
         }
-        if !arg.is_cons() {
-            return Err(lisp.wrong_type(sym::CONSP, arg));
+        if !tem.is_cons() {
+            return Err(lisp.wrong_type(sym::CONSP, tem));
         }
-        let mut tail = arg;
-        while lisp.xcdr(tail).is_cons() {
-            tail = lisp.xcdr(tail);
+        let base = lisp.stack.len();
+        let mut tail = tem;
+        let mut li = lisp.for_each_tail(tem);
+        while li.tail.is_cons() {
+            tail = li.tail;
+            lisp.tail_step(&mut li)?;
         }
-        last_cons = tail;
+        lisp.stack.truncate(base);
+        let next = args[argnum + 1];
+        lisp.heap.set_cdr(tail, next);
+        if next.is_nil() {
+            args[argnum + 1] = tail;
+        }
     }
     Ok(val)
 }
