@@ -1431,7 +1431,7 @@ fn f_make_variable_buffer_local(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(variable)
 }
 
-fn f_make_local_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_make_local_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let variable = lisp.check_symbol(args[0])?;
     let target = lisp.indirect_variable(variable);
     if lisp.heap.symbol_ref(target).trapped_write == TrappedWrite::NoWrite {
@@ -1463,7 +1463,7 @@ fn f_kill_local_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(variable)
 }
 
-fn f_local_variable_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_local_variable_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let variable = lisp.check_symbol(args[0])?;
     let target = lisp.indirect_variable(variable);
     let buffer = if args[1].is_nil() {

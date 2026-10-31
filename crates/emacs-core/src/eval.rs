@@ -25,6 +25,18 @@ pub const SUBRS: &[Subr] = &[
         f_set_default_toplevel_value,
     ),
     Subr::fixed(
+        "buffer-local-toplevel-value",
+        1,
+        2,
+        f_buffer_local_toplevel_value,
+    ),
+    Subr::fixed(
+        "set-buffer-local-toplevel-value",
+        2,
+        3,
+        f_set_buffer_local_toplevel_value,
+    ),
+    Subr::fixed(
         "internal--define-uninitialized-variable",
         1,
         2,
@@ -1633,7 +1645,55 @@ fn f_set_default_toplevel_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
+fn f_buffer_local_toplevel_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (symbol, mut buffer) = (args[0], args[1]);
+    if buffer.is_nil() {
+        buffer = lisp.current_buffer_value();
+    }
+    if crate::data::f_local_variable_p(lisp, &[symbol, buffer])?.is_nil() {
+        return Err(lisp.signal_list(sym::VOID_VARIABLE, &[symbol]));
+    }
+    match lisp.local_toplevel_binding(symbol, buffer) {
+        Some(old) => Ok(*old),
+        None => crate::buffer::f_buffer_local_value(lisp, &[symbol, buffer]),
+    }
+}
+
+fn f_set_buffer_local_toplevel_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (symbol, value, buffer) = (args[0], args[1], args[2]);
+    let buf = if buffer.is_nil() {
+        lisp.current_buffer_value()
+    } else {
+        buffer
+    };
+    if let Some(old) = lisp.local_toplevel_binding(symbol, buf) {
+        *old = value;
+    } else if buffer.is_nil() {
+        let symbol = crate::data::f_make_local_variable(lisp, &[symbol])?;
+        lisp.set(symbol, value)?;
+    } else {
+        let count = lisp.specpdl.len();
+        lisp.record_unwind_current_buffer();
+        let r = crate::buffer::f_set_buffer(lisp, &[buffer])
+            .and_then(|_| crate::data::f_make_local_variable(lisp, &[symbol]))
+            .and_then(|symbol| lisp.set(symbol, value).map(|_| Value::NIL));
+        lisp.unbind_to_value(count, r)?;
+    }
+    Ok(Value::NIL)
+}
+
 impl Lisp {
+    fn local_toplevel_binding(&mut self, symbol: Value, buffer: Value) -> Option<&mut Value> {
+        self.specpdl.iter_mut().find_map(|b| match b {
+            SpecBinding::LetLocal {
+                symbol: s,
+                old,
+                buffer: w,
+            } if *w == buffer && *s == symbol => Some(old),
+            _ => None,
+        })
+    }
+
     fn default_toplevel_binding(&self, symbol: Value) -> Option<usize> {
         let mut binding = None;
         for (index, b) in self.specpdl.iter().enumerate().rev() {

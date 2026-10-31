@@ -190,6 +190,33 @@ fn variables() {
 }
 
 #[test]
+fn toplevel_values() {
+    check(&[
+        (
+            "(progn (defvar tl-v 'foo) (make-variable-buffer-local 'tl-v) (set-buffer (get-buffer-create \"tl\")) (set (make-local-variable 'tl-v) 'bar) (buffer-local-toplevel-value 'tl-v))",
+            "bar",
+        ),
+        (
+            "(let ((tl-v 'baz)) (let ((tl-v 'quux)) (set (make-local-variable 'tl-v) 'baz) (list tl-v (buffer-local-toplevel-value 'tl-v) (set-buffer-local-toplevel-value 'tl-v 'foo) tl-v (buffer-local-toplevel-value 'tl-v (current-buffer)))))",
+            "(baz bar nil baz foo)",
+        ),
+        ("tl-v", "foo"),
+        (
+            "(save-current-buffer (set-buffer (get-buffer-create \"tl3\")) (buffer-local-toplevel-value 'tl-v))",
+            "error: (void-variable tl-v)",
+        ),
+        (
+            "(let ((other (get-buffer-create \"tl2\"))) (set-buffer-local-toplevel-value 'tl-v 'x other) (list (buffer-local-value 'tl-v other) (local-variable-p 'tl-v other) (current-buffer)))",
+            "(x t #<buffer tl>)",
+        ),
+        (
+            "(progn (set-buffer-local-toplevel-value 'tl-plain 'y) (list (local-variable-p 'tl-plain) tl-plain (default-boundp 'tl-plain)))",
+            "(t y nil)",
+        ),
+    ]);
+}
+
+#[test]
 fn hooks() {
     check(&[
         (

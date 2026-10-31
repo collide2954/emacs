@@ -1500,7 +1500,7 @@ fn f_buffer_base_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.buffer(b).base_buffer)
 }
 
-fn f_buffer_local_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_buffer_local_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (variable, buffer) = (args[0], args[1]);
     let variable = lisp.check_symbol(variable)?;
     let buffer = lisp.check_buffer(buffer)?;
