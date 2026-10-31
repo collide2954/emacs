@@ -221,6 +221,68 @@ fn symbols() {
 }
 
 #[test]
+fn built_in_variables() {
+    check(&[
+        (
+            "(makunbound 'initial-window-system)",
+            "error: (error \"Built-in variable may not be unbound : initial-window-system\")",
+        ),
+        (
+            "(let ((initial-window-system 'x)) (makunbound 'initial-window-system))",
+            "error: (error \"Built-in variable may not be unbound : initial-window-system\")",
+        ),
+        ("initial-window-system", "nil"),
+        (
+            "(makunbound 'gc-cons-threshold)",
+            "error: (error \"Built-in variable may not be unbound : gc-cons-threshold\")",
+        ),
+        (
+            "(makunbound 'fill-column)",
+            "error: (error \"Built-in variable may not be unbound : fill-column\")",
+        ),
+        (
+            "(makunbound (make-local-variable 'initial-window-system))",
+            "error: (error \"Built-in variable may not be unbound : initial-window-system\")",
+        ),
+        ("(boundp 'initial-window-system)", "t"),
+        (
+            "(defvaralias 'load-path 'biv-base)",
+            "error: (error \"Cannot make a built-in variable an alias: load-path\")",
+        ),
+        (
+            "(defvaralias 'case-fold-search 'biv-base)",
+            "error: (error \"Don't know how to make a buffer-local variable an alias: case-fold-search\")",
+        ),
+        (
+            "(progn (defvar biv-local 1) (make-local-variable 'biv-local) (defvaralias 'biv-local 'biv-base))",
+            "error: (error \"Don't know how to make a buffer-local variable an alias: biv-local\")",
+        ),
+        (
+            "(progn (defvar biv-plain 1) (makunbound 'biv-plain) (boundp 'biv-plain))",
+            "nil",
+        ),
+    ]);
+}
+
+#[test]
+fn variable_watchers() {
+    check(&[
+        (
+            "(progn (defvar vw 0) (setq vw-log nil) (add-variable-watcher 'vw (function (lambda (&rest args) (setq vw-log (cons args vw-log))))) (setq vw 1) (let ((vw 2)) (setq vw 3)) (set-default 'vw 4) (makunbound 'vw) (setq vw 5) (nreverse vw-log))",
+            "((vw 1 set nil) (vw 2 let nil) (vw 3 set nil) (vw 1 unlet nil) (vw 4 set nil) (vw nil makunbound nil) (vw 5 set nil))",
+        ),
+        (
+            "(progn (setq va-log nil) (fset 'va-watch (function (lambda (&rest args) (setq va-log (cons args va-log))))) (defvar va0 0) (add-variable-watcher 'va0 'va-watch) (defvaralias 'va0-alias 'va0) (setq va0-alias 2) (defvar va1 0) (defvaralias 'va1-alias 'va1) (add-variable-watcher 'va1-alias 'va-watch) (setq va1 3) (defvar va3-alias 0) (add-variable-watcher 'va3-alias 'va-watch) (defvaralias 'va3-alias 'va3) (setq va3-alias 4) (list (nreverse va-log) va3 (get-variable-watchers 'va1-alias)))",
+            "(((va0 2 set nil) (va1 3 set nil) (va3-alias va3 defvaralias nil)) 4 (va-watch))",
+        ),
+        (
+            "(progn (defvar lw 0) (make-variable-buffer-local 'lw) (set-buffer (get-buffer-create \"lw1\")) (setq lw-log nil) (fset 'lw-watch (function (lambda (s n o w) (setq lw-log (cons (list s n o (and w (buffer-name w))) lw-log))))) (add-variable-watcher 'lw 'lw-watch) (add-variable-watcher 'fill-column 'lw-watch) (setq lw 1) (let ((lw 2)) nil) (set-default 'lw 4) (kill-local-variable 'lw) (makunbound 'lw) (setq fill-column 10) (kill-local-variable 'fill-column) (list (nreverse lw-log) fill-column))",
+            "(((lw 1 set \"lw1\") (lw 2 let \"lw1\") (lw 1 unlet \"lw1\") (lw 4 set nil) (lw nil makunbound \"lw1\") (lw nil makunbound nil) (fill-column 10 set \"lw1\")) 70)",
+        ),
+    ]);
+}
+
+#[test]
 fn arrays() {
     check(&[
         ("(aref [1 2 3] 1)", "2"),

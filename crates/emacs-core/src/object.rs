@@ -73,12 +73,14 @@ pub struct Localized {
     pub local_if_set: bool,
     pub default: Value,
     pub per_buffer: Option<PerBuffer>,
+    pub fwd: Option<Forward>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Forward {
     Int(i64),
     Bool(bool),
+    Obj(Value),
     Kboard(usize),
 }
 
@@ -282,7 +284,11 @@ impl Trace for Symbol {
                 if let Some(p) = l.per_buffer {
                     out.push(p.predicate);
                 }
+                if let Some(Forward::Obj(v)) = l.fwd {
+                    out.push(v);
+                }
             }
+            SymbolValue::Forwarded(Forward::Obj(v)) => out.push(*v),
             SymbolValue::Forwarded(_) => {}
         }
     }

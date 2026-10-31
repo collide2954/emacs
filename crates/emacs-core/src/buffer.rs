@@ -600,6 +600,7 @@ pub fn init_vars(lisp: &mut Lisp) {
                 permanent,
                 predicate,
             }),
+            fwd: None,
         }));
     }
     for symbol in [
@@ -634,10 +635,15 @@ pub fn init_vars(lisp: &mut Lisp) {
 impl Lisp {
     pub fn make_variable_buffer_local_builtin(&mut self, symbol: Value) {
         let value = self.plain_value(symbol);
+        let fwd = match self.heap.symbol_ref(symbol).value {
+            SymbolValue::Forwarded(fwd) => Some(fwd),
+            _ => None,
+        };
         self.heap.symbol_mut(symbol).value = SymbolValue::Localized(Box::new(Localized {
             local_if_set: true,
             default: value,
             per_buffer: None,
+            fwd,
         }));
     }
 
@@ -732,14 +738,6 @@ impl Lisp {
 
     pub fn buffer_local_remove(&mut self, buffer: Value, symbol: Value) {
         if buffer.is_nil() || !self.is_buffer(buffer) {
-            return;
-        }
-        if let Some(PerBuffer {
-            always_local: true, ..
-        }) = self.per_buffer_info(symbol)
-        {
-            let default = self.default_value_unchecked(symbol);
-            self.buffer_local_set(buffer, symbol, default);
             return;
         }
         self.buffer_mut(buffer)

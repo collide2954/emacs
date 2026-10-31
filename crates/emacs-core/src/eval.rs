@@ -1584,30 +1584,60 @@ fn f_defvaralias(lisp: &mut Lisp, args: &[Value]) -> LispResult {
             _ => break,
         }
     }
-    if matches!(
-        lisp.heap.symbol_ref(new_alias).value,
-        SymbolValue::Localized(_)
-    ) {
-        return Err(lisp.error("Don't know how to make a buffer-local variable an alias"));
+    let refusal = match lisp.heap.symbol_ref(new_alias).value {
+        SymbolValue::Forwarded(_) => Some("Cannot make a built-in variable an alias"),
+        SymbolValue::Localized(_) => {
+            Some("Don't know how to make a buffer-local variable an alias")
+        }
+        SymbolValue::Plain(_) | SymbolValue::Alias(_) => None,
+    };
+    if let Some(refusal) = refusal {
+        let name = lisp.symbol_name_string(new_alias);
+        return Err(lisp.error(&format!("{refusal}: {name}")));
     }
     if lisp.find_symbol_value(base_variable) == sym::UNBOUND {
         let value = lisp.find_symbol_value(new_alias);
-        if value != sym::UNBOUND {
-            lisp.set(base_variable, value)?;
+        lisp.set_internal(base_variable, value, Value::NIL, SetMode::Bind)?;
+    } else {
+        let value = lisp.find_symbol_value(new_alias);
+        if value != sym::UNBOUND && value != lisp.find_symbol_value(base_variable) {
+            let message = lisp.string("Overwriting value of `%s' by aliasing to `%s'");
+            lisp.stack.push(message);
+            let formatted =
+                crate::editfns::f_format_message(lisp, &[message, new_alias, base_variable]);
+            lisp.stack.pop();
+            let formatted = formatted?;
+            let kind = lisp.list(&[sym::DEFVARALIAS, sym::LOSING_VALUE, new_alias]);
+            lisp.funcall(sym::DISPLAY_WARNING, &[kind, formatted])?;
         }
     }
+    let let_bound = lisp.specpdl.iter().any(|b| {
+        matches!(
+            *b,
+            SpecBinding::Let { symbol, .. }
+                | SpecBinding::LetLocal { symbol, .. }
+                | SpecBinding::LetDefault { symbol, .. }
+                if symbol == new_alias
+        )
+    });
+    if let_bound {
+        let name = lisp.symbol_name_string(new_alias);
+        return Err(lisp.error(&format!(
+            "Don't know how to make a let-bound variable an alias: {name}"
+        )));
+    }
+    if lisp.heap.symbol_ref(new_alias).trapped_write == TrappedWrite::Trapped {
+        lisp.notify_variable_watchers(new_alias, base_variable, sym::DEFVARALIAS, Value::NIL)?;
+    }
+    let trapped_write = lisp.heap.symbol_ref(base_variable).trapped_write;
     {
         let s = lisp.heap.symbol_mut(new_alias);
         s.special = true;
         s.value = SymbolValue::Alias(base_variable);
-        if s.trapped_write != TrappedWrite::NoWrite {
-            s.trapped_write = TrappedWrite::Untrapped;
-        }
+        s.trapped_write = trapped_write;
     }
     lisp.heap.symbol_mut(base_variable).special = true;
-    if lisp.heap.symbol_ref(base_variable).trapped_write == TrappedWrite::Trapped {
-        lisp.heap.symbol_mut(new_alias).trapped_write = TrappedWrite::Trapped;
-    }
+    lisp.loadhist_attach(new_alias);
     lisp.put(new_alias, sym::VARIABLE_DOCUMENTATION, docstring);
     Ok(base_variable)
 }

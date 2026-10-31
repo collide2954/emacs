@@ -407,7 +407,7 @@ impl Lisp {
 
     pub fn defvar(&mut self, symbol: Value, value: Value) {
         let s = self.heap.symbol_mut(symbol);
-        s.value = SymbolValue::Plain(value);
+        s.value = SymbolValue::Forwarded(Forward::Obj(value));
         s.special = true;
     }
 
@@ -865,7 +865,7 @@ impl Lisp {
 
     pub fn plain_value(&self, symbol: Value) -> Value {
         match &self.heap.symbol_ref(symbol).value {
-            SymbolValue::Plain(v) => *v,
+            SymbolValue::Plain(v) | SymbolValue::Forwarded(Forward::Obj(v)) => *v,
             SymbolValue::Forwarded(Forward::Int(n)) => Value::fixnum(*n),
             SymbolValue::Forwarded(Forward::Bool(b)) => {
                 if *b {
@@ -893,7 +893,7 @@ impl Lisp {
             return;
         }
         match &mut self.heap.symbol_mut(symbol).value {
-            SymbolValue::Plain(v) => *v = value,
+            SymbolValue::Plain(v) | SymbolValue::Forwarded(Forward::Obj(v)) => *v = value,
             SymbolValue::Localized(l) => l.default = value,
             _ => {}
         }

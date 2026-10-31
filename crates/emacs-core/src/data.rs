@@ -3,7 +3,7 @@ use num_integer::Integer;
 use num_traits::{Signed, ToPrimitive, Zero};
 
 use crate::character;
-use crate::error::LispResult;
+use crate::error::{Flow, LispResult};
 use crate::eval::SetMode;
 use crate::lisp::{Lisp, SpecBinding};
 use crate::object::{BoolVector, Forward, Localized, SymbolValue, TrappedWrite, Vectorlike};
@@ -265,7 +265,7 @@ impl Lisp {
         loop {
             match &self.heap.symbol_ref(symbol).value {
                 SymbolValue::Alias(target) => symbol = *target,
-                SymbolValue::Plain(v) => return *v,
+                SymbolValue::Plain(v) | SymbolValue::Forwarded(Forward::Obj(v)) => return *v,
                 SymbolValue::Forwarded(Forward::Int(n)) => return Value::fixnum(*n),
                 SymbolValue::Forwarded(Forward::Bool(b)) => return bool_value(*b),
                 SymbolValue::Forwarded(Forward::Kboard(slot)) => return self.kboard_slot(*slot),
@@ -335,6 +335,10 @@ impl Lisp {
                 Ok(())
             }
             SymbolValue::Alias(_) => unreachable!(),
+            SymbolValue::Localized(l) if voide && (l.fwd.is_some() || l.per_buffer.is_some()) => {
+                Err(self.builtin_unbound_error(symbol))
+            }
+            SymbolValue::Forwarded(_) if voide => Err(self.builtin_unbound_error(symbol)),
             SymbolValue::Localized(l) => {
                 if let Some(per_buffer) = l.per_buffer
                     && !voide
@@ -358,20 +362,21 @@ impl Lisp {
                 }
                 Ok(())
             }
-            SymbolValue::Forwarded(Forward::Int(_)) => {
-                if voide {
-                    let s = self.heap.symbol_mut(target);
-                    s.value = SymbolValue::Plain(sym::UNBOUND);
-                    return Ok(());
+            SymbolValue::Forwarded(Forward::Obj(_)) => {
+                if let SymbolValue::Forwarded(Forward::Obj(v)) =
+                    &mut self.heap.symbol_mut(target).value
+                {
+                    *v = newval;
                 }
-                match newval.as_fixnum() {
-                    Some(n) => {
-                        self.set_forwarded_int(target, n);
-                        Ok(())
-                    }
-                    None => Err(self.wrong_type(sym::INTEGERP, newval)),
-                }
+                Ok(())
             }
+            SymbolValue::Forwarded(Forward::Int(_)) => match newval.as_fixnum() {
+                Some(n) => {
+                    self.set_forwarded_int(target, n);
+                    Ok(())
+                }
+                None => Err(self.wrong_type(sym::INTEGERP, newval)),
+            },
             SymbolValue::Forwarded(Forward::Bool(_)) => {
                 if let SymbolValue::Forwarded(Forward::Bool(b)) =
                     &mut self.heap.symbol_mut(target).value
@@ -385,6 +390,11 @@ impl Lisp {
                 Ok(())
             }
         }
+    }
+
+    fn builtin_unbound_error(&mut self, symbol: Value) -> Flow {
+        let name = self.symbol_name_string(symbol);
+        self.error(&format!("Built-in variable may not be unbound : {name}"))
     }
 
     fn check_per_buffer_value(&mut self, predicate: Value, newval: Value) -> LispResult<()> {
@@ -448,37 +458,62 @@ impl Lisp {
         operation: Value,
         where_: Value,
     ) -> LispResult<()> {
-        let watchers = self.get(symbol, sym::WATCHERS);
-        if watchers.is_nil() {
-            return Ok(());
-        }
+        let symbol = self.indirect_variable(symbol);
         let count = self.specpdl.len();
-        self.stack.push(watchers);
-        let saved = self.heap.symbol_ref(symbol).trapped_write;
-        self.heap.symbol_mut(symbol).trapped_write = TrappedWrite::Untrapped;
         self.record_unwind(restore_trapped, symbol);
-        let mut tail = watchers;
-        let mut result = Ok(());
-        while tail.is_cons() {
-            let watcher = self.xcar(tail);
-            tail = self.xcdr(tail);
-            let where_value = if where_.is_nil() { Value::NIL } else { where_ };
-            if let Err(e) = self.funcall(watcher, &[symbol, newval, operation, where_value]) {
-                result = Err(e);
-                break;
+        self.set_symbol_trapped_write(symbol, TrappedWrite::Untrapped)?;
+        let mut where_ = where_;
+        if where_.is_nil() && operation != sym::SET_DEFAULT && operation != sym::MAKUNBOUND {
+            let buffer = self.current_buffer_value();
+            if !f_local_variable_if_set_p(self, &[symbol, buffer])?.is_nil() {
+                where_ = buffer;
             }
         }
-        let _ = saved;
-        self.stack.pop();
-        let r = self.unbind_to(count);
-        result?;
-        r
+        let operation = if operation == sym::SET_DEFAULT {
+            sym::SET
+        } else {
+            operation
+        };
+        let base = self.stack.len();
+        let mut watchers = self.get(symbol, sym::WATCHERS);
+        self.stack.push(watchers);
+        while watchers.is_cons() {
+            let watcher = self.xcar(watchers);
+            self.funcall(watcher, &[symbol, newval, operation, where_])?;
+            watchers = self.xcdr(watchers);
+            self.stack[base] = watchers;
+        }
+        self.stack.truncate(base);
+        self.unbind_to(count)
+    }
+
+    fn set_symbol_trapped_write(&mut self, symbol: Value, trap: TrappedWrite) -> LispResult<()> {
+        if self.heap.symbol_ref(symbol).trapped_write == TrappedWrite::NoWrite {
+            return Err(self.signal_list(sym::TRAPPING_CONSTANT, &[symbol]));
+        }
+        self.heap.symbol_mut(symbol).trapped_write = trap;
+        Ok(())
+    }
+
+    fn harmonize_variable_watchers(&mut self, base_variable: Value) -> LispResult<()> {
+        let obarray = self.plain_value(sym::OBARRAY);
+        let symbols: Vec<Value> = match self.heap.vectorlike_ref(obarray) {
+            Vectorlike::Obarray(o) => o.symbols.values().copied().collect(),
+            _ => Vec::new(),
+        };
+        let trap = self.heap.symbol_ref(base_variable).trapped_write;
+        for alias in symbols {
+            if alias != base_variable && self.indirect_variable(alias) == base_variable {
+                self.set_symbol_trapped_write(alias, trap)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn default_value_unchecked(&self, symbol: Value) -> Value {
         let symbol = self.indirect_variable(symbol);
         match &self.heap.symbol_ref(symbol).value {
-            SymbolValue::Plain(v) => *v,
+            SymbolValue::Plain(v) | SymbolValue::Forwarded(Forward::Obj(v)) => *v,
             SymbolValue::Localized(l) => l.default,
             SymbolValue::Forwarded(Forward::Int(n)) => Value::fixnum(*n),
             SymbolValue::Forwarded(Forward::Bool(b)) => bool_value(*b),
@@ -519,12 +554,9 @@ impl Lisp {
                 return Err(self.signal_list(sym::SETTING_CONSTANT, &[symbol]));
             }
             TrappedWrite::Trapped => {
-                let operation = match mode {
-                    SetMode::Bind => sym::LET,
-                    SetMode::Unbind => sym::UNLET,
-                    _ => sym::SET,
-                };
-                self.notify_variable_watchers(symbol, value, operation, Value::NIL)?;
+                if !matches!(self.heap.symbol_ref(symbol).value, SymbolValue::Plain(_)) {
+                    self.notify_variable_watchers(symbol, value, sym::SET_DEFAULT, Value::NIL)?;
+                }
             }
             TrappedWrite::Untrapped => {}
         }
@@ -538,8 +570,13 @@ impl Lisp {
                 l.default = value;
             }
             Ok(())
+        } else if let SymbolValue::Forwarded(Forward::Kboard(slot)) =
+            self.heap.symbol_ref(target).value
+        {
+            self.set_kboard_slot(slot, value);
+            Ok(())
         } else {
-            self.set_internal(target, value, Value::NIL, mode)
+            self.set_internal(symbol, value, Value::NIL, mode)
         }
     }
 
@@ -628,6 +665,7 @@ impl Lisp {
                     local_if_set,
                     default,
                     per_buffer: None,
+                    fwd: None,
                 }));
             }
             SymbolValue::Localized(_) => {
@@ -637,12 +675,13 @@ impl Lisp {
                     l.local_if_set = true;
                 }
             }
-            SymbolValue::Forwarded(_) => {
+            SymbolValue::Forwarded(fwd) => {
                 let v = self.find_symbol_value(target);
                 self.heap.symbol_mut(target).value = SymbolValue::Localized(Box::new(Localized {
                     local_if_set,
                     default: v,
                     per_buffer: None,
+                    fwd: Some(fwd),
                 }));
             }
             SymbolValue::Alias(_) => unreachable!(),
@@ -748,10 +787,7 @@ impl Lisp {
 }
 
 fn restore_trapped(lisp: &mut Lisp, symbol: Value) -> LispResult<()> {
-    if !lisp.get(symbol, sym::WATCHERS).is_nil() {
-        lisp.heap.symbol_mut(symbol).trapped_write = TrappedWrite::Trapped;
-    }
-    Ok(())
+    lisp.set_symbol_trapped_write(symbol, TrappedWrite::Trapped)
 }
 
 pub fn compare_nums(a: &Num, b: &Num) -> (bool, bool, bool) {
@@ -1367,10 +1403,8 @@ fn f_add_variable_watcher(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (symbol, watch_function) = (args[0], args[1]);
     let symbol = lisp.check_symbol(symbol)?;
     let symbol = lisp.indirect_variable(symbol);
-    if lisp.heap.symbol_ref(symbol).trapped_write == TrappedWrite::NoWrite {
-        return Err(lisp.signal_list(sym::TRAPPING_CONSTANT, &[symbol]));
-    }
-    lisp.heap.symbol_mut(symbol).trapped_write = TrappedWrite::Trapped;
+    lisp.set_symbol_trapped_write(symbol, TrappedWrite::Trapped)?;
+    lisp.harmonize_variable_watchers(symbol)?;
     let watchers = lisp.get(symbol, sym::WATCHERS);
     if lisp.member(watch_function, watchers)?.is_nil() {
         let watchers = lisp.cons(watch_function, watchers);
@@ -1386,10 +1420,8 @@ fn f_remove_variable_watcher(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let watchers = lisp.get(symbol, sym::WATCHERS);
     let watchers = lisp.delete(watch_function, watchers)?;
     if watchers.is_nil() {
-        let s = lisp.heap.symbol_mut(symbol);
-        if s.trapped_write == TrappedWrite::Trapped {
-            s.trapped_write = TrappedWrite::Untrapped;
-        }
+        lisp.set_symbol_trapped_write(symbol, TrappedWrite::Untrapped)?;
+        lisp.harmonize_variable_watchers(symbol)?;
     }
     lisp.put(symbol, sym::WATCHERS, watchers);
     Ok(Value::NIL)
@@ -1455,7 +1487,17 @@ pub(crate) fn f_make_local_variable(lisp: &mut Lisp, args: &[Value]) -> LispResu
 fn f_kill_local_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let variable = lisp.check_symbol(args[0])?;
     let target = lisp.indirect_variable(variable);
+    let per_buffer = match &lisp.heap.symbol_ref(target).value {
+        SymbolValue::Localized(l) => l.per_buffer,
+        _ => return Ok(variable),
+    };
     let buffer = lisp.current_buffer_value();
+    if let Some(per_buffer) = per_buffer {
+        if !per_buffer.always_local {
+            lisp.buffer_local_remove(buffer, target);
+        }
+        return Ok(variable);
+    }
     if lisp.heap.symbol_ref(target).trapped_write == TrappedWrite::Trapped {
         lisp.notify_variable_watchers(variable, Value::NIL, sym::MAKUNBOUND, buffer)?;
     }
