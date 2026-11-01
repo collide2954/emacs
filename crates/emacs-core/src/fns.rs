@@ -720,6 +720,51 @@ impl Lisp {
         a
     }
 
+    pub fn merge_c(
+        &mut self,
+        org_l1: Value,
+        org_l2: Value,
+        less: fn(&mut Lisp, Value, Value) -> LispResult<bool>,
+    ) -> LispResult {
+        let mut l1 = org_l1;
+        let mut l2 = org_l2;
+        let mut tail = Value::NIL;
+        let mut value = Value::NIL;
+        loop {
+            if l1.is_nil() {
+                if tail.is_nil() {
+                    return Ok(l2);
+                }
+                self.heap.set_cdr(tail, l2);
+                return Ok(value);
+            }
+            if l2.is_nil() {
+                if tail.is_nil() {
+                    return Ok(l1);
+                }
+                self.heap.set_cdr(tail, l1);
+                return Ok(value);
+            }
+            let a = self.car(l1)?;
+            let b = self.car(l2)?;
+            let tem = if less(self, a, b)? {
+                let tem = l1;
+                l1 = self.cdr(l1)?;
+                tem
+            } else {
+                let tem = l2;
+                l2 = self.cdr(l2)?;
+                tem
+            };
+            if tail.is_nil() {
+                value = tem;
+            } else {
+                self.heap.set_cdr(tail, tem);
+            }
+            tail = tem;
+        }
+    }
+
     pub fn reverse_list(&mut self, list: Value) -> LispResult {
         let mut new = Value::NIL;
         let base = self.stack.len();

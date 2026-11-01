@@ -140,6 +140,38 @@ pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) {
     free_output(lisp, f);
 }
 
+pub fn pgtk_destroy_window(lisp: &mut Lisp, f: Value) {
+    let terminal = lisp.frame(f).terminal;
+    pgtk_free_frame_resources(lisp, f);
+    lisp.display_info_mut(terminal).reference_count -= 1;
+}
+
+pub fn pgtk_delete_terminal(lisp: &mut Lisp, terminal: Value) -> LispResult<()> {
+    if lisp.terminal(terminal).name.is_none() {
+        return Ok(());
+    }
+    with_display_list(|displays| {
+        if let Some(dpyinfo) = displays.iter_mut().find(|d| d.terminal == terminal) {
+            dpyinfo.connection = -1;
+        }
+    });
+    pgtk_delete_display(lisp, terminal)
+}
+
+fn pgtk_delete_display(lisp: &mut Lisp, dpyinfo: Value) -> LispResult<()> {
+    let terminal = lisp
+        .terminals
+        .list
+        .iter()
+        .copied()
+        .find(|&t| lisp.terminal(t).kind == OutputMethod::Pgtk && t == dpyinfo);
+    if let Some(t) = terminal {
+        lisp.delete_terminal(t)?;
+    }
+    with_display_list(|displays| displays.retain(|d| d.terminal != dpyinfo));
+    Ok(())
+}
+
 pub fn with_display_list<T>(f: impl FnOnce(&mut Vec<PgtkDisplayInfo>) -> T) -> T {
     PGTK.with(|p| f(&mut p.borrow_mut().displays))
 }
@@ -264,6 +296,8 @@ pub fn pgtk_term_init(
     hooks.frame_visible_invisible = Some(pgtk_make_frame_visible_invisible);
     hooks.default_font_parameter = Some(crate::pgtkfns::pgtk_default_font_parameter);
     hooks.frame_parm_handlers = Some(crate::pgtkfns::PGTK_FRAME_PARM_HANDLERS);
+    hooks.delete_frame = Some(pgtk_destroy_window);
+    hooks.delete_terminal = Some(pgtk_delete_terminal);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =
         with_display_list(|displays| displays.iter().map(|d| d.terminal).collect::<Vec<_>>())

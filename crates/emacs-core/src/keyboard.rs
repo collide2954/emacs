@@ -225,6 +225,7 @@ pub struct Kboard {
     pub kbd_queue_has_data: bool,
     pub immediate_echo: bool,
     pub kbd_macro_buffer: Vec<Value>,
+    pub deleted: bool,
 }
 
 impl Lisp {
@@ -252,6 +253,7 @@ impl Lisp {
             kbd_queue_has_data: false,
             immediate_echo: false,
             kbd_macro_buffer: Vec::new(),
+            deleted: false,
         };
         kb.vars[Kvar::WindowSystem as usize] = window_system;
         let decode = self.make_sparse_keymap(Value::NIL);
@@ -270,6 +272,25 @@ impl Lisp {
         let kb = self.init_kboard(window_system);
         self.kboards.push(kb);
         self.kboards.len() - 1
+    }
+
+    pub fn delete_kboard(&mut self, kb: usize) {
+        if self.kboards[kb].deleted {
+            panic!("emacs_abort: deleting a kboard twice");
+        }
+        self.kboards[kb].deleted = true;
+        let selected = self.frames.selected_frame;
+        if kb == self.current_kboard && self.is_frame(selected) && self.frame_live_p(selected) {
+            self.current_kboard = self.frame_kboard(selected).expect("frame kboard");
+            self.single_kboard = false;
+            if self.current_kboard == kb {
+                panic!("emacs_abort: the selected frame's kboard is being deleted");
+            }
+        }
+        let k = &mut self.kboards[kb];
+        k.kbd_macro_buffer = Vec::new();
+        k.vars = [Value::NIL; KVAR_COUNT];
+        k.kbd_queue_has_data = false;
     }
 
     pub fn not_single_kboard_state(&mut self, kboard: usize) {

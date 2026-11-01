@@ -83,6 +83,7 @@ pub struct Xdisp {
     pub noninteractive_need_newline: bool,
     pub redisplaying_p: bool,
     pub message_stack: Value,
+    pub echo_area_window: Value,
 }
 
 pub fn pop_message_unwind(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {

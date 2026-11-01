@@ -23,6 +23,7 @@ static SUBRS: &[Subr] = &[
     Subr::fixed("xw-color-defined-p", 1, 2, f_xw_color_defined_p),
     Subr::fixed("xw-color-values", 1, 2, f_xw_color_values),
     Subr::fixed("x-open-connection", 1, 3, f_x_open_connection),
+    Subr::fixed("x-close-connection", 1, 1, f_x_close_connection),
     Subr::fixed("x-display-list", 0, 0, f_x_display_list),
     Subr::fixed("x-create-frame", 1, 1, f_x_create_frame),
 ];
@@ -173,6 +174,15 @@ fn f_x_open_connection(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         let name = lisp.string_bytes(display).to_vec();
         return Err(lisp.verror("Display on %s not responding.\n", &[Arg::Str(&name)]));
     }
+    Ok(Value::NIL)
+}
+
+fn f_x_close_connection(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let dpyinfo = check_pgtk_display_info(lisp, args[0])?;
+    if lisp.display_info(dpyinfo).reference_count > 0 {
+        return Err(lisp.error("Display still has frames on it"));
+    }
+    crate::pgtkterm::pgtk_delete_terminal(lisp, dpyinfo)?;
     Ok(Value::NIL)
 }
 

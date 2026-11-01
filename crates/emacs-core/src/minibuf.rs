@@ -11,6 +11,7 @@ pub struct Minibuf {
     pub minibuf_prompt: Value,
     pub minibuf_save_list: Value,
     pub command_loop_level: i64,
+    pub mb_frame: Value,
 }
 
 impl Default for Minibuf {
@@ -22,6 +23,7 @@ impl Default for Minibuf {
             minibuf_prompt: Value::NIL,
             minibuf_save_list: Value::NIL,
             command_loop_level: 0,
+            mb_frame: Value::NIL,
         }
     }
 }
@@ -33,6 +35,7 @@ impl Minibuf {
             self.command_loop_level_list,
             self.minibuf_prompt,
             self.minibuf_save_list,
+            self.mb_frame,
         ]);
     }
 }
@@ -123,6 +126,12 @@ fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).copied().unwrap_or(Value::NIL)
 }
 
+fn minibuffer_ent_greater(lisp: &mut Lisp, ent1: Value, ent2: Value) -> LispResult<bool> {
+    let buffer1 = lisp.car(ent1)?;
+    let buffer2 = lisp.car(ent2)?;
+    Ok(lisp.this_minibuffer_depth(buffer1) > lisp.this_minibuffer_depth(buffer2))
+}
+
 impl Lisp {
     pub fn get_minibuffer(&mut self, depth: i64) -> LispResult {
         let n = Value::fixnum(depth);
@@ -179,6 +188,103 @@ impl Lisp {
             self.funcall(sym::MINIBUFFER_INACTIVE_MODE, &[])?;
         } else {
             crate::buffer::f_kill_all_local_variables(self, &[Value::NIL])?;
+        }
+        Ok(())
+    }
+
+    fn minibuf_follows_frame(&mut self) -> LispResult<bool> {
+        let value =
+            crate::eval::f_default_toplevel_value(self, &[sym::MINIBUFFER_FOLLOWS_SELECTED_FRAME])?;
+        Ok(value == sym::T)
+    }
+
+    fn zip_minibuffer_stacks(
+        &mut self,
+        dest_window: Value,
+        source_window: Value,
+    ) -> LispResult<()> {
+        let base = self.stack.len();
+        let r = self.zip_minibuffer_stacks_1(dest_window, source_window);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn zip_minibuffer_stacks_1(
+        &mut self,
+        dest_window: Value,
+        source_window: Value,
+    ) -> LispResult<()> {
+        let (dw_contents, dw_prev) = {
+            let dw = self.window(dest_window);
+            (dw.contents, dw.prev_buffers)
+        };
+        if !self.live_minibuffer_p(dw_contents) && dw_prev.is_nil() {
+            let sw_contents = self.window(source_window).contents;
+            self.set_window_buffer(dest_window, sw_contents, false, false)?;
+            let start = crate::window::f_window_start(self, &[source_window])?;
+            crate::window::f_set_window_start(self, &[dest_window, start, Value::NIL])?;
+            let point = crate::window::f_window_point(self, &[source_window])?;
+            crate::window::f_set_window_point(self, &[dest_window, point])?;
+            let sw_prev = self.window(source_window).prev_buffers;
+            self.window_mut(dest_window).prev_buffers = sw_prev;
+            let minibuffer = self.nth_minibuffer(0)?;
+            self.set_window_buffer(source_window, minibuffer, false, false)?;
+            self.window_mut(source_window).prev_buffers = Value::NIL;
+            return Ok(());
+        }
+        self.funcall(sym::RECORD_WINDOW_BUFFER, &[dest_window])?;
+        self.funcall(sym::RECORD_WINDOW_BUFFER, &[source_window])?;
+        let (dw_prev, sw_prev) = (
+            self.window(dest_window).prev_buffers,
+            self.window(source_window).prev_buffers,
+        );
+        let mut acc = self.merge_c(dw_prev, sw_prev, minibuffer_ent_greater)?;
+        self.stack.push(acc);
+        if !acc.is_nil() {
+            let d_ent = self.car(acc)?;
+            acc = self.cdr(acc)?;
+            self.stack.push(acc);
+            let buffer = self.car(d_ent)?;
+            self.set_window_buffer(dest_window, buffer, false, false)?;
+            let rest = self.cdr(d_ent)?;
+            let start = self.car(rest)?;
+            crate::window::f_set_window_start(self, &[dest_window, start, Value::NIL])?;
+            let rest = self.cdr(d_ent)?;
+            let rest = self.cdr(rest)?;
+            let point = self.car(rest)?;
+            crate::window::f_set_window_point(self, &[dest_window, point])?;
+        }
+        self.window_mut(dest_window).prev_buffers = acc;
+        self.window_mut(source_window).prev_buffers = Value::NIL;
+        let minibuffer = self.nth_minibuffer(0)?;
+        self.set_window_buffer(source_window, minibuffer, false, false)
+    }
+
+    pub fn move_minibuffers_onto_frame(
+        &mut self,
+        of: Value,
+        frame: Value,
+        for_deletion: bool,
+    ) -> LispResult<()> {
+        let f = frame;
+        self.windows.minibuf_window = self.frame(f).minibuffer_window;
+        if !(self.minibuf.minibuf_level != 0
+            && (for_deletion
+                || self.minibuf_follows_frame()?
+                || self.frame(of).output_method == crate::terminal::OutputMethod::Initial))
+        {
+            return Ok(());
+        }
+        let (fmw, omw) = (
+            self.frame(f).minibuffer_window,
+            self.frame(of).minibuffer_window,
+        );
+        if self.frame_live_p(f) && fmw != omw && self.window_live_p(fmw) && self.window_live_p(omw)
+        {
+            self.zip_minibuffer_stacks(fmw, omw)?;
+            if for_deletion && self.minibuf.mb_frame != of {
+                self.minibuf.mb_frame = frame;
+            }
         }
         Ok(())
     }

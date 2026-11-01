@@ -40,6 +40,8 @@ pub struct TerminalHooks {
     pub default_font_parameter: Option<DefaultFontParameterHook>,
     pub set_window_size: Option<WindowSizeHook>,
     pub frame_visible_invisible: Option<fn(&mut Lisp, Value, bool)>,
+    pub delete_frame: Option<fn(&mut Lisp, Value)>,
+    pub delete_terminal: Option<fn(&mut Lisp, Value) -> LispResult<()>>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -136,6 +138,7 @@ impl Terminals {
 }
 
 pub const SUBRS: &[Subr] = &[
+    Subr::fixed("delete-terminal", 0, 2, f_delete_terminal),
     Subr::fixed("frame-terminal", 0, 1, f_frame_terminal),
     Subr::fixed("terminal-live-p", 1, 1, f_terminal_live_p),
     Subr::fixed("frame-initial-p", 0, 1, f_frame_initial_p),
@@ -241,8 +244,52 @@ impl Lisp {
         let t = self.terminal_mut(terminal);
         t.name = Some("initial_terminal".to_string());
         t.kboard = Some(kboard);
+        t.hooks.delete_terminal = Some(delete_initial_terminal);
+        t.hooks.delete_frame = Some(initial_free_frame_resources);
         self.terminals.initial = terminal;
         Ok(terminal)
+    }
+
+    pub fn delete_terminal(&mut self, terminal: Value) -> LispResult<()> {
+        if self.terminal(terminal).name.is_none() {
+            return Ok(());
+        }
+        self.terminal_mut(terminal).name = None;
+        let base = self.stack.len();
+        let frames = self.frames.list.clone();
+        self.stack.extend_from_slice(&frames);
+        for frame in frames {
+            if self.frame_live_p(frame)
+                && self.frame(frame).terminal == terminal
+                && let Err(e) = self.delete_frame(frame, sym::NOELISP)
+            {
+                self.stack.truncate(base);
+                return Err(e);
+            }
+        }
+        self.stack.truncate(base);
+        self.delete_terminal_internal(terminal);
+        Ok(())
+    }
+
+    pub fn delete_terminal_internal(&mut self, terminal: Value) {
+        let Some(i) = self.terminals.list.iter().position(|&t| t == terminal) else {
+            panic!("emacs_abort: terminal is not on the terminal list");
+        };
+        self.terminals.list.remove(i);
+        if let Some(kb) = self.terminal(terminal).kboard {
+            self.kboards[kb].reference_count -= 1;
+            if self.kboards[kb].reference_count == 0 {
+                self.delete_kboard(kb);
+                self.terminal_mut(terminal).kboard = None;
+            }
+        }
+    }
+
+    fn terminal_active_p(&self, terminal: Value) -> bool {
+        match self.terminal(terminal).kind {
+            OutputMethod::Initial | OutputMethod::Pgtk => true,
+        }
     }
 
     fn store_terminal_param(&mut self, terminal: Value, parameter: Value, value: Value) -> Value {
@@ -286,6 +333,55 @@ impl Lisp {
             OutputMethod::Pgtk => sym::PGTK,
         }
     }
+}
+
+fn initial_free_frame_resources(lisp: &mut Lisp, f: Value) {
+    lisp.free_frame_faces(f);
+}
+
+fn delete_initial_terminal(lisp: &mut Lisp, terminal: Value) -> LispResult<()> {
+    if terminal != lisp.terminals.initial {
+        panic!("emacs_abort: not the initial terminal");
+    }
+    lisp.delete_terminal(terminal)?;
+    lisp.terminals.initial = Value::NIL;
+    Ok(())
+}
+
+pub(crate) fn f_delete_terminal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (terminal, force) = (arg(args, 0), arg(args, 1));
+    let Some(t) = lisp.decode_terminal(terminal) else {
+        return Ok(Value::NIL);
+    };
+    if force.is_nil()
+        && !lisp
+            .terminals
+            .list
+            .iter()
+            .any(|&p| p != t && lisp.terminal_active_p(p))
+    {
+        return Err(lisp.error("Attempt to delete the sole active display terminal"));
+    }
+    if !lisp.plain_value(sym::RUN_HOOKS_ENABLED).is_nil() {
+        if force == sym::NOELISP {
+            let call = lisp.list(&[
+                sym::RUN_HOOK_WITH_ARGS,
+                sym::DELETE_TERMINAL_FUNCTIONS,
+                terminal,
+            ]);
+            lisp.pending_funcalls = lisp.cons(call, lisp.pending_funcalls);
+        } else {
+            lisp.safe_calln(
+                sym::RUN_HOOK_WITH_ARGS,
+                &[sym::DELETE_TERMINAL_FUNCTIONS, terminal],
+            )?;
+        }
+    }
+    match lisp.terminal(t).hooks.delete_terminal {
+        Some(hook) => hook(lisp, t)?,
+        None => lisp.delete_terminal(t)?,
+    }
+    Ok(Value::NIL)
 }
 
 fn f_frame_terminal(lisp: &mut Lisp, args: &[Value]) -> LispResult {

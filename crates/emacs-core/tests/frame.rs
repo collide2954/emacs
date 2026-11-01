@@ -33,6 +33,28 @@ fn initial_terminal_and_frame() {
 }
 
 #[test]
+fn deleting_the_sole_frame_and_terminal() {
+    check(&[
+        (
+            "(delete-frame)",
+            "error: (error \"Attempt to delete the sole visible or iconified frame\")",
+        ),
+        (
+            "(delete-frame nil t)",
+            "error: (error \"Attempt to delete the only frame\")",
+        ),
+        ("(delete-frame 'x)", "error: (wrong-type-argument framep x)"),
+        (
+            "(delete-terminal)",
+            "error: (error \"Attempt to delete the sole active display terminal\")",
+        ),
+        ("(delete-terminal 'x)", "nil"),
+        ("(frame-live-p (selected-frame))", "t"),
+        ("(length (terminal-list))", "1"),
+    ]);
+}
+
+#[test]
 fn frame_visibility() {
     check(&[
         ("(eq (make-frame-visible) (selected-frame))", "t"),

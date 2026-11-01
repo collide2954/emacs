@@ -411,6 +411,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("next-frame", 0, 2, f_next_frame),
     Subr::fixed("previous-frame", 0, 2, f_previous_frame),
     Subr::fixed("last-nonminibuffer-frame", 0, 0, f_last_nonminibuffer_frame),
+    Subr::fixed("delete-frame", 0, 2, f_delete_frame).interactive(""),
     Subr::fixed("frame-visible-p", 0, 1, f_frame_visible_p),
     Subr::fixed("visible-frame-list", 0, 0, f_visible_frame_list),
     Subr::fixed("redirect-frame-focus", 1, 2, f_redirect_frame_focus),
@@ -601,6 +602,272 @@ impl Lisp {
                     || (!invisible
                         && (force || (self.frame_window_p(f1) && !self.frame_window_p(f)))))
         })
+    }
+
+    pub fn delete_frame(&mut self, frame: Value, force: Value) -> LispResult {
+        let base = self.stack.len();
+        let r = self.delete_frame_1(frame, force);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn rooted_frame_list(&mut self) -> Vec<Value> {
+        let frames = self.frames.list.clone();
+        self.stack.extend_from_slice(&frames);
+        frames
+    }
+
+    fn delete_frame_hook_call(
+        &mut self,
+        hook: Value,
+        frame: Value,
+        force: Value,
+    ) -> LispResult<()> {
+        if force == sym::NOELISP {
+            let call = self.list(&[sym::RUN_HOOK_WITH_ARGS, hook, frame]);
+            self.pending_funcalls = self.cons(call, self.pending_funcalls);
+        } else {
+            self.safe_calln(sym::RUN_HOOK_WITH_ARGS, &[hook, frame])?;
+        }
+        Ok(())
+    }
+
+    fn delete_frame_1(&mut self, frame: Value, force: Value) -> LispResult {
+        let f = self.decode_any_frame(frame)?;
+        let nochild = self.frame_parent_frame(f).is_nil();
+        let mut minibuffer_child_frame = Value::NIL;
+        if !self.frame_live_p(f) {
+            return Ok(Value::NIL);
+        } else if force != sym::NOELISP && !self.other_frames(f, false, !force.is_nil()) {
+            return Err(if force.is_nil() {
+                self.error("Attempt to delete the sole visible or iconified frame")
+            } else {
+                self.error("Attempt to delete the only frame")
+            });
+        }
+        let frame = f;
+        self.stack.push(frame);
+        if self.is_tty_frame(f) && force.is_nil() {
+            unreachable!("tty frames need frame_subsumes_p");
+        }
+        for frame1 in self.rooted_frame_list() {
+            if !self.frames.list.contains(&frame1)
+                || frame1 == frame
+                || self.frame(frame1).flags.tooltip
+            {
+                continue;
+            } else if self.frame_parent_frame(frame1) == f {
+                if self.frame_has_minibuf_p(frame1)
+                    && !self.frame_has_minibuf_p(f)
+                    && self.frame(f).minibuffer_window == self.frame(frame1).minibuffer_window
+                {
+                    let cell = self.cons(sym::PARENT_FRAME, Value::NIL);
+                    let alist = self.cons(cell, Value::NIL);
+                    f_modify_frame_parameters(self, &[frame1, alist])?;
+                    minibuffer_child_frame = frame1;
+                    self.stack.push(minibuffer_child_frame);
+                } else {
+                    self.delete_frame(frame1, Value::NIL)?;
+                }
+            } else if nochild && self.get_frame_param(frame1, sym::DELETE_BEFORE) == frame {
+                self.delete_frame(frame1, Value::NIL)?;
+            }
+        }
+        if self.frame_has_minibuf_p(f) {
+            for frame1 in self.rooted_frame_list() {
+                if !self.frames.list.contains(&frame1) || frame1 == frame {
+                    continue;
+                }
+                let fminiw = self.frame(frame1).minibuffer_window;
+                if self.is_window(fminiw) && frame == self.window(fminiw).frame {
+                    if force == sym::NOELISP {
+                        self.delete_frame(frame1, sym::NOELISP)?;
+                    } else {
+                        return Err(self.error("Attempt to delete a surrogate minibuffer frame"));
+                    }
+                }
+            }
+        }
+        let is_tooltip_frame = self.frame(f).flags.tooltip;
+        if !self.plain_value(sym::RUN_HOOKS_ENABLED).is_nil() && !is_tooltip_frame {
+            self.delete_frame_hook_call(sym::DELETE_FRAME_FUNCTIONS, frame, force)?;
+        }
+        if !self.frame_live_p(f) {
+            return Ok(Value::NIL);
+        } else if force != sym::NOELISP && !self.other_frames(f, false, !force.is_nil()) {
+            return Err(if force.is_nil() {
+                self.error("Attempt to delete the sole visible or iconified frame")
+            } else {
+                self.error("Attempt to delete the only frame")
+            });
+        }
+        let mut sf = self.frames.selected_frame;
+        if f == sf {
+            if self.is_tty_child_frame(f) {
+                unreachable!("tty child frames need mru_rooted_frame");
+            }
+            let mut frame1 = Value::NIL;
+            if self.find_symbol_value(sym::DELETE_FRAME_CHOOSE_SELECTED) == sym::MRU
+                && force != sym::NOELISP
+            {
+                frame1 = self.safe_calln(sym::GET_MRU_FRAME, &[sym::VISIBLE, Value::NIL, frame])?;
+                if self.is_frame(frame1) {
+                    let f1 = self.frame(frame1);
+                    if f1.flags.tooltip
+                        || self.frame(f).terminal != f1.terminal
+                        || !f1.flags.visible
+                        || frame1 == frame
+                    {
+                        frame1 = Value::NIL;
+                    }
+                } else {
+                    frame1 = Value::NIL;
+                }
+            }
+            if frame1.is_nil() {
+                let terminal = self.frame(f).terminal;
+                frame1 = self
+                    .frames
+                    .list
+                    .iter()
+                    .copied()
+                    .find(|&f1| {
+                        let fr = self.frame(f1);
+                        f1 != frame
+                            && !fr.flags.tooltip
+                            && fr.terminal == terminal
+                            && fr.flags.visible
+                    })
+                    .unwrap_or(Value::NIL);
+                if frame1.is_nil() || frame1 == frame {
+                    frame1 = self
+                        .frames
+                        .list
+                        .iter()
+                        .copied()
+                        .find(|&f1| {
+                            f1 != frame && self.frame_live_p(f1) && !self.frame(f1).flags.tooltip
+                        })
+                        .unwrap_or(Value::NIL);
+                    if !frame1.is_nil() && self.is_tty_frame(frame1) {
+                        unreachable!("tty frames need their terminal's top frame");
+                    }
+                }
+            }
+            if self.is_frame(frame1) && frame1 != f {
+                self.do_switch_frame(frame1, true, Value::NIL)?;
+            } else if force == sym::NOELISP {
+                crate::emacs::f_kill_emacs(self, &[Value::fixnum(70), Value::NIL])?;
+            } else {
+                panic!("emacs_abort: no frame to select instead of the deleted one");
+            }
+            sf = self.frames.selected_frame;
+        } else {
+            let selected = self.frames.selected_frame;
+            self.move_minibuffers_onto_frame(f, selected, true)?;
+        }
+        if self.frame(f).minibuffer_window == self.xdisp.echo_area_window {
+            self.xdisp.echo_area_window = self.frame(sf).minibuffer_window;
+        }
+        self.font_update_drivers(f, Value::NIL)?;
+        let root = self.frame(f).root_window;
+        self.delete_all_child_windows(root)?;
+        self.frame_mut(f).root_window = Value::NIL;
+        self.frames.list.retain(|&f1| f1 != frame);
+        let fr = self.frame_mut(f);
+        fr.flags.visible = false;
+        fr.menu_bar_vector = Value::NIL;
+        fr.buffer_list = Value::NIL;
+        fr.buried_buffer_list = Value::NIL;
+        self.free_font_driver_list(f);
+        let terminal = self.frame(f).terminal;
+        if let Some(hook) = self.terminal(terminal).hooks.delete_frame {
+            hook(self, f);
+        }
+        self.frame_mut(f).terminal = Value::NIL;
+        let t = self.terminal_mut(terminal);
+        t.reference_count -= 1;
+        if t.reference_count == 0 && t.kind == OutputMethod::Pgtk {
+            t.reference_count = 1;
+        }
+        let kb = if self.terminal(terminal).reference_count == 0 {
+            if force != sym::NOELISP {
+                let force = if force.is_nil() { sym::T } else { force };
+                crate::terminal::f_delete_terminal(self, &[terminal, force])?;
+            }
+            None
+        } else {
+            self.terminal(terminal).kboard
+        };
+        if f == self.frames.last_nonminibuf_frame {
+            self.frames.last_nonminibuf_frame = self
+                .frames
+                .list
+                .iter()
+                .copied()
+                .find(|&f1| !self.frame_minibuf_only_p(f1))
+                .unwrap_or(Value::NIL);
+        }
+        if let Some(kb) = kb
+            && !self
+                .frames
+                .list
+                .iter()
+                .any(|&f1| self.frame_kboard(f1) == Some(kb))
+        {
+            self.not_single_kboard_state(kb);
+        }
+        let slot = crate::keyboard::Kvar::DefaultMinibufferFrame as usize;
+        if let Some(kb) = kb
+            && frame == self.kboards[kb].vars[slot]
+        {
+            let mut frame_with_minibuf = Value::NIL;
+            let mut frame_on_same_kboard = Value::NIL;
+            for &f1 in &self.frames.list {
+                if !self.frame(f1).flags.tooltip && self.frame_kboard(f1) == Some(kb) {
+                    frame_on_same_kboard = f1;
+                    if self.frame_has_minibuf_p(f1) {
+                        frame_with_minibuf = f1;
+                        if self.frame_minibuf_only_p(f1) {
+                            break;
+                        }
+                    }
+                }
+            }
+            if !frame_on_same_kboard.is_nil() {
+                if frame_with_minibuf.is_nil() {
+                    panic!("emacs_abort: frames on a kboard without a minibuffer frame");
+                }
+                self.kboards[kb].vars[slot] = frame_with_minibuf;
+            } else {
+                self.kboards[kb].vars[slot] = Value::NIL;
+            }
+        }
+        if !is_tooltip_frame {
+            self.windows.update_mode_lines = 15;
+        }
+        if !self.plain_value(sym::RUN_HOOKS_ENABLED).is_nil() && !is_tooltip_frame {
+            self.delete_frame_hook_call(sym::AFTER_DELETE_FRAME_FUNCTIONS, frame, force)?;
+        }
+        if !minibuffer_child_frame.is_nil() && self.frame_live_p(minibuffer_child_frame) {
+            let f1 = minibuffer_child_frame;
+            let window1 = self.frame(f1).root_window;
+            for frame2 in self.rooted_frame_list() {
+                if frame2 == minibuffer_child_frame || self.frame(frame2).flags.tooltip {
+                    continue;
+                } else if self.frame(frame2).minibuffer_window == window1 {
+                    let fl = &self.frame(f1).flags;
+                    if !fl.visible && !fl.iconified {
+                        f_make_frame_visible(self, &[minibuffer_child_frame])?;
+                    }
+                    return Ok(Value::NIL);
+                }
+            }
+            if force == sym::NOELISP || self.other_frames(f1, false, !force.is_nil()) {
+                self.delete_frame(minibuffer_child_frame, sym::NOELISP)?;
+            }
+        }
+        Ok(Value::NIL)
     }
 
     fn make_frame_visible_1(&mut self, window: Value) -> LispResult<()> {
@@ -2094,7 +2361,12 @@ impl Lisp {
         self.tty_color_name(f, pixel)
     }
 
-    pub fn do_switch_frame(&mut self, frame: Value, norecord: Value) -> LispResult {
+    pub fn do_switch_frame(
+        &mut self,
+        frame: Value,
+        for_deletion: bool,
+        norecord: Value,
+    ) -> LispResult {
         let frame = if frame.is_cons()
             && self.xcar(frame) == sym::SWITCH_FRAME
             && self.xcdr(frame).is_cons()
@@ -2116,6 +2388,7 @@ impl Lisp {
             self.window(sw).mini
         };
         self.frame_mut(sf).flags.select_mini_window_flag = sf_mini;
+        self.move_minibuffers_onto_frame(sf, frame, for_deletion)?;
         let (fsw, fmw) = {
             let fr = self.frame(frame);
             (fr.selected_window, fr.minibuffer_window)
@@ -2202,14 +2475,14 @@ pub(crate) fn f_select_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if lisp.frame(frame).flags.tooltip {
         return Err(lisp.error("Cannot select a tooltip frame"));
     }
-    lisp.do_switch_frame(frame, arg(args, 1))
+    lisp.do_switch_frame(frame, false, arg(args, 1))
 }
 
 fn f_handle_switch_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let prefix = lisp.find_symbol_value(sym::CURRENT_PREFIX_ARG);
     lisp.set_kvar(crate::keyboard::Kvar::PrefixArg, prefix);
     lisp.run_hook(sym::MOUSE_LEAVE_BUFFER_HOOK)?;
-    lisp.do_switch_frame(args[0], Value::NIL)
+    lisp.do_switch_frame(args[0], false, Value::NIL)
 }
 
 fn f_selected_frame(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
@@ -2331,6 +2604,15 @@ fn f_previous_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_last_nonminibuffer_frame(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let f = lisp.frames.last_nonminibuf_frame;
     Ok(if lisp.frame_live_p(f) { f } else { Value::NIL })
+}
+
+fn f_delete_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let force = if arg(args, 1).is_nil() {
+        Value::NIL
+    } else {
+        sym::T
+    };
+    lisp.delete_frame(arg(args, 0), force)
 }
 
 fn f_frame_visible_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {

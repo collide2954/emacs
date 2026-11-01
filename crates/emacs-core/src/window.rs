@@ -354,6 +354,8 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-point", 0, 1, f_window_point),
     Subr::fixed("window-old-point", 0, 1, f_window_old_point),
     Subr::fixed("window-start", 0, 1, f_window_start),
+    Subr::fixed("set-window-point", 2, 2, f_set_window_point),
+    Subr::fixed("set-window-start", 2, 3, f_set_window_start),
     Subr::fixed("window-dedicated-p", 0, 1, f_window_dedicated_p),
     Subr::fixed("set-window-dedicated-p", 2, 2, f_set_window_dedicated_p),
     Subr::fixed("window-prev-buffers", 0, 1, f_window_prev_buffers),
@@ -2095,7 +2097,7 @@ fn f_window_hscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.window(w).hscroll))
 }
 
-fn f_window_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_window_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let w = lisp.decode_live_window(arg(args, 0))?;
     Ok(Value::fixnum(lisp.window_point(w)))
 }
@@ -2106,10 +2108,58 @@ fn f_window_old_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.marker_position_value(m).unwrap_or(Value::NIL))
 }
 
-fn f_window_start(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_window_start(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let w = lisp.decode_live_window(arg(args, 0))?;
     let m = lisp.window(w).start;
     Ok(lisp.marker_position_value(m).unwrap_or(Value::NIL))
+}
+
+pub(crate) fn f_set_window_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(args[0])?;
+    let mut pos = args[1];
+    if w == lisp.windows.selected_window {
+        let contents = lisp.window(w).contents;
+        if contents == lisp.current_buffer {
+            crate::editfns::f_goto_char(lisp, &[pos])?;
+        } else {
+            let old_buffer = lisp.current_buffer;
+            if lisp.is_marker(pos) {
+                pos = Value::fixnum(lisp.marker_position_checked(pos)? as i64);
+            } else if !pos.is_fixnum() {
+                return Err(lisp.wrong_type(sym::INTEGER_OR_MARKER_P, pos));
+            }
+            lisp.set_buffer_internal(contents);
+            let r = crate::editfns::f_goto_char(lisp, &[pos]);
+            lisp.set_buffer_internal(old_buffer);
+            r?;
+        }
+    } else {
+        let (pointm, contents) = {
+            let win = lisp.window(w);
+            (win.pointm, win.contents)
+        };
+        lisp.set_marker(pointm, pos, contents, true)?;
+        lisp.wset_redisplay(w);
+    }
+    Ok(pos)
+}
+
+pub(crate) fn f_set_window_start(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(args[0])?;
+    let (start, contents) = {
+        let win = lisp.window(w);
+        (win.start, win.contents)
+    };
+    lisp.set_marker(start, args[1], contents, true)?;
+    let win = lisp.window_mut(w);
+    win.flags.start_at_line_beg = false;
+    if arg(args, 2).is_nil() {
+        win.flags.force_start = true;
+    }
+    lisp.wset_update_mode_line(w);
+    lisp.window_mut(w).flags.window_end_valid = false;
+    lisp.wset_redisplay(w);
+    Ok(args[1])
 }
 
 fn f_window_dedicated_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -2897,7 +2947,7 @@ impl Lisp {
                 } else {
                     old_frame
                 };
-                self.do_switch_frame(target, Value::NIL)?;
+                self.do_switch_frame(target, false, Value::NIL)?;
             }
         }
         self.frame_mut(frame).flags.window_change = true;

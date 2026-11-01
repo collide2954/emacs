@@ -1671,7 +1671,7 @@ fn f_internal_delete_indirect_variable(lisp: &mut Lisp, args: &[Value]) -> LispR
     Ok(symbol)
 }
 
-fn f_default_toplevel_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_default_toplevel_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let symbol = args[0];
     let binding = lisp.default_toplevel_binding(symbol);
     let value = match binding {

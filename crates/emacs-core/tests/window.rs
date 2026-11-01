@@ -204,6 +204,45 @@ fn window_line_and_divider_sizes() {
 }
 
 #[test]
+fn set_window_start_and_point() {
+    check(&[
+        (
+            "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (set-window-buffer nil (get-buffer-create \"sp\")) (set-buffer \"sp\") (insert \"hello world\") (list (set-window-start nil 3) (window-start) (set-window-point nil 5) (window-point) (point)))",
+            "(3 3 5 5 5)",
+        ),
+        (
+            "(list (set-window-start nil 100 t) (window-start))",
+            "(100 12)",
+        ),
+        (
+            "(set-window-start nil 'x)",
+            "error: (wrong-type-argument integer-or-marker-p x)",
+        ),
+        (
+            "(set-window-start 'x 1)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+        (
+            "(progn (set-buffer \"*scratch*\") (list (set-window-point nil 4) (point) (save-current-buffer (set-buffer \"sp\") (point))))",
+            "(4 1 4)",
+        ),
+        (
+            "(set-window-point nil 'x)",
+            "error: (wrong-type-argument integer-or-marker-p x)",
+        ),
+        ("(set-window-point nil (copy-marker 1))", "1"),
+        (
+            "(progn (save-current-buffer (set-buffer \" *Minibuf-0*\") (insert \"abcdef\")) (list (set-window-point (minibuffer-window) 3) (window-point (minibuffer-window)) (set-window-point (minibuffer-window) 99) (window-point (minibuffer-window))))",
+            "(3 3 99 7)",
+        ),
+        (
+            "(set-window-point (minibuffer-window) 'z)",
+            "error: (wrong-type-argument integer-or-marker-p z)",
+        ),
+    ]);
+}
+
+#[test]
 fn window_fringes_scroll_bars_and_margins_on_a_tty() {
     check(&[
         ("(set-window-fringes nil 3 4 t t)", "nil"),
