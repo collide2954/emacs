@@ -1563,7 +1563,10 @@ impl Lisp {
     pub fn defined_color(&mut self, f: Value, color_name: &[u8]) -> LispResult<(bool, EmacsColor)> {
         match self.frame(f).output_method {
             OutputMethod::Initial => self.tty_defined_color(f, color_name),
-            OutputMethod::Pgtk => unreachable!(),
+            OutputMethod::Pgtk => match self.frame_terminal_hooks(f).defined_color {
+                Some(hook) => hook(self, f, color_name),
+                None => Ok((false, EmacsColor::default())),
+            },
         }
     }
 

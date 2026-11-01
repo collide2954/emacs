@@ -5,6 +5,7 @@ use emacs_core::terminal::WindowSystem;
 
 pub mod display;
 pub mod font;
+pub mod gdkrgba;
 pub mod keysym;
 pub mod pgtkfns;
 pub mod pgtkim;

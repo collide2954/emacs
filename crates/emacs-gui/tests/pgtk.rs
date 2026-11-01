@@ -177,6 +177,33 @@ fn x_get_resource_without_a_defaults_database() {
 }
 
 #[test]
+fn color_primitives_need_a_window_frame() {
+    on_big_stack(|| {
+        let mut lisp = booted(Startup::program(false));
+        assert_eq!(
+            eval(&mut lisp, "(xw-display-color-p)"),
+            "error: (error \"Frames are not in use or not initialized\")"
+        );
+        assert_eq!(eval(&mut lisp, "(x-display-grayscale-p)"), "t");
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(progn (setq x-resource-name \"emacs\") (x-open-connection nil) (xw-display-color-p))"
+            ),
+            "t"
+        );
+        assert_eq!(
+            eval(&mut lisp, "(xw-color-values \"red\")"),
+            "error: (error \"Window system frame should be used\")"
+        );
+        assert_eq!(
+            eval(&mut lisp, "(xw-color-defined-p \"red\")"),
+            "error: (error \"Window system frame should be used\")"
+        );
+    });
+}
+
+#[test]
 fn init_display_chooses_pgtk_only_for_interactive_window_sessions() {
     on_big_stack(|| {
         let mut lisp = booted(Startup::program(false));

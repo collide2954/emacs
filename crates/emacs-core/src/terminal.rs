@@ -16,6 +16,8 @@ pub type StringResourceHook = fn(&mut Lisp, &[u8], &[u8]) -> LispResult<Option<V
 pub type FrameParmHandler = fn(&mut Lisp, Value, Value, Value) -> LispResult<()>;
 pub type FrameHook = fn(&mut Lisp, Value) -> LispResult<()>;
 pub type FrameOffsetHook = fn(&mut Lisp, Value, i64, i64, i64) -> LispResult<()>;
+pub type DefinedColorHook =
+    fn(&mut Lisp, Value, &[u8]) -> LispResult<(bool, crate::xfaces::EmacsColor)>;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TerminalHooks {
@@ -24,6 +26,7 @@ pub struct TerminalHooks {
     pub frame_raise_lower: Option<fn(&mut Lisp, Value, bool)>,
     pub iconify_frame: Option<fn(&mut Lisp, Value)>,
     pub get_string_resource: Option<StringResourceHook>,
+    pub defined_color: Option<DefinedColorHook>,
     pub frame_parm_handlers: Option<&'static [Option<FrameParmHandler>]>,
     pub fullscreen: Option<FrameHook>,
     pub set_frame_offset: Option<FrameOffsetHook>,

@@ -11,6 +11,7 @@ use emacs_core::object::Weakness;
 use emacs_core::symbols as sym;
 use emacs_core::terminal::OutputMethod;
 use emacs_core::value::Value;
+use emacs_core::xfaces::EmacsColor;
 
 pub struct DisplayInfo {
     pub terminal: Value,
@@ -265,4 +266,28 @@ pub fn syms_of_pgtkterm(lisp: &mut Lisp) {
     let table = lisp.make_hash_table_with(sym::EQL, Weakness::None);
     lisp.defvar(symbol, table);
     f_provide(lisp, &[sym::PGTK, Value::NIL]).expect("provide pgtk");
+}
+
+pub fn pgtk_parse_color(color_name: &[u8]) -> Option<EmacsColor> {
+    let rgba = crate::gdkrgba::gdk_rgba_parse(color_name)?;
+    let red = (rgba[0] * 65535.0) as u16;
+    let green = (rgba[1] * 65535.0) as u16;
+    let blue = (rgba[2] * 65535.0) as u16;
+    Some(EmacsColor {
+        pixel: (i64::from(red >> 8) << 16) | (i64::from(green >> 8) << 8) | i64::from(blue >> 8),
+        red,
+        green,
+        blue,
+    })
+}
+
+pub fn pgtk_defined_color(
+    _lisp: &mut Lisp,
+    _f: Value,
+    name: &[u8],
+) -> LispResult<(bool, EmacsColor)> {
+    Ok(match pgtk_parse_color(name) {
+        Some(color) => (true, color),
+        None => (false, EmacsColor::default()),
+    })
 }

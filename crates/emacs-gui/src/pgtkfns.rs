@@ -7,13 +7,17 @@ use emacs_core::symbols as sym;
 use emacs_core::terminal::OutputMethod;
 use emacs_core::value::Value;
 
-use crate::pgtkterm::{fatal, pgtk_term_init, with_display_list};
+use crate::pgtkterm::{fatal, pgtk_defined_color, pgtk_term_init, with_display_list};
 
 const ICED_VERSION: &str = "0.14.0";
 const TINY_SKIA_VERSION: &str = "0.11.4";
 
 static SUBRS: &[Subr] = &[
     Subr::fixed("pgtk-set-resource", 2, 2, f_pgtk_set_resource),
+    Subr::fixed("xw-display-color-p", 0, 1, f_xw_display_color_p),
+    Subr::fixed("x-display-grayscale-p", 0, 1, f_x_display_grayscale_p),
+    Subr::fixed("xw-color-defined-p", 1, 2, f_xw_color_defined_p),
+    Subr::fixed("xw-color-values", 1, 2, f_xw_color_values),
     Subr::fixed("x-open-connection", 1, 3, f_x_open_connection),
     Subr::fixed("x-display-list", 0, 0, f_x_display_list),
 ];
@@ -205,4 +209,61 @@ pub fn syms_of_pgtkfns(lisp: &mut Lisp) {
     }
     let symbol = lisp.intern("x-max-tooltip-size");
     lisp.defvar(symbol, Value::NIL);
+}
+
+pub fn x_decode_color(
+    lisp: &mut Lisp,
+    f: Value,
+    color_name: Value,
+    mono_color: i64,
+) -> LispResult<i64> {
+    lisp.check_string(color_name)?;
+    let terminal = lisp.frame(f).terminal;
+    let n_planes = with_display_list(|displays| {
+        displays
+            .iter()
+            .find(|d| d.terminal == terminal)
+            .map_or(0, |d| d.n_planes)
+    });
+    if n_planes == 1 {
+        return Ok(mono_color);
+    }
+    let name = lisp.string_bytes(color_name).to_vec();
+    let (defined, color) = pgtk_defined_color(lisp, f, &name)?;
+    if defined {
+        return Ok(color.pixel);
+    }
+    Err(lisp.signal_error("Undefined color", color_name))
+}
+
+fn f_xw_color_defined_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_window_system_frame(arg(args, 1))?;
+    let color = lisp.check_string(args[0])?;
+    let name = lisp.string_bytes(color).to_vec();
+    let (defined, _) = pgtk_defined_color(lisp, f, &name)?;
+    Ok(lisp.bool(defined))
+}
+
+fn f_xw_color_values(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_window_system_frame(arg(args, 1))?;
+    let color = lisp.check_string(args[0])?;
+    let name = lisp.string_bytes(color).to_vec();
+    let (defined, col) = pgtk_defined_color(lisp, f, &name)?;
+    if !defined {
+        return Ok(Value::NIL);
+    }
+    Ok(lisp.list(&[
+        Value::fixnum(i64::from(col.red)),
+        Value::fixnum(i64::from(col.green)),
+        Value::fixnum(i64::from(col.blue)),
+    ]))
+}
+
+fn f_xw_display_color_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    check_pgtk_display_info(lisp, arg(args, 0))?;
+    Ok(sym::T)
+}
+
+fn f_x_display_grayscale_p(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    Ok(sym::T)
 }

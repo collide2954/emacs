@@ -278,9 +278,14 @@ tiny-skia versions) and registers the window system's hooks, and `init_display` 
 terminal, its display info and kboard; the display is named after `$WAYLAND_DISPLAY` or
 `$DISPLAY`, else `iced`, and only that one display can be opened), `x-get-resource`
 (`frame.c`) and `pgtk-set-resource`, which behave as pgtk built without GSettings (no
-defaults database). Terminals carry C's hook table (`TerminalHooks`); pgtk fills in only
-`get_string_resource` so far. An interactive start now runs window-system initialization
-and stops at `x-create-frame`.
+defaults database). Colors go through `gdkrgba.rs`, a port of GTK 3's `gdk_rgba_parse` and
+Pango's `pango_color_parse_with_alpha` (CSS `rgb()`/`rgba()`, `#` hex forms, and the X11 names
+of `etc/rgb.txt` matched ignoring case and spaces), so `pgtk_parse_color`,
+`pgtk_defined_color`, `x_decode_color` and the `xw-color-*` primitives behave as under GTK;
+`gtk_selection_bg_color` and `gtk_selection_fg_color` are undefined, as there is no GTK style
+context. Terminals carry C's hook table (`TerminalHooks`); pgtk fills in
+`get_string_resource` and `defined_color` so far. An interactive start now runs
+window-system initialization and stops at `x-create-frame`.
 
 Next: showing a real Emacs frame needs `x-create-frame` (frame parameters, colors, the default
 font, faces), `delete-frame`, the display engine in emacs-core (`frame.c`, `window.c`,

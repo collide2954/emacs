@@ -106,3 +106,43 @@ fn initial_windows() {
         ("(frame-first-window)", "#<window 1 on *scratch*>"),
     ]);
 }
+
+#[test]
+fn make_frame_without_minibuffer_and_minibuffer_frame() {
+    common::on_big_stack(|| {
+        let mut lisp = emacs_core::lisp::Lisp::new();
+        let kb = lisp.current_kboard;
+        let sf = lisp.frames.selected_frame;
+        assert!(
+            lisp.eval_string("(setq default-minibuffer-frame (selected-frame))")
+                .is_ok()
+        );
+        let f = lisp
+            .make_frame_without_minibuffer(
+                emacs_core::value::Value::NIL,
+                kb,
+                emacs_core::value::Value::NIL,
+            )
+            .unwrap();
+        let mini = lisp.frame(sf).minibuffer_window;
+        assert_eq!(lisp.frame(f).minibuffer_window, mini);
+        assert_eq!(
+            lisp.get_frame_param(f, emacs_core::symbols::MINIBUFFER),
+            mini
+        );
+        assert!(!lisp.window(lisp.frame(f).root_window).mini);
+        let e = lisp.make_frame_without_minibuffer(mini, kb + 7, emacs_core::value::Value::NIL);
+        assert!(e.is_err());
+        let m = lisp.make_minibuffer_frame().unwrap();
+        let fr = lisp.frame(m);
+        assert_eq!(fr.minibuffer_window, fr.root_window);
+        assert!(fr.flags.no_split && !fr.flags.wants_modeline && !fr.flags.auto_raise);
+        assert_eq!(
+            lisp.get_frame_param(m, emacs_core::symbols::MINIBUFFER),
+            emacs_core::symbols::ONLY
+        );
+        let w = lisp.window(lisp.frame(m).root_window);
+        assert!(w.mini && w.next.is_nil() && w.prev.is_nil());
+        assert!(lisp.is_buffer(w.contents));
+    });
+}

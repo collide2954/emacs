@@ -1255,6 +1255,100 @@ impl Lisp {
         Ok(frame)
     }
 
+    pub fn make_frame_without_minibuffer(
+        &mut self,
+        mut mini_window: Value,
+        kb: usize,
+        display: Value,
+    ) -> LispResult<Value> {
+        if !mini_window.is_nil() {
+            self.check_live_window(mini_window)?;
+        }
+        if !mini_window.is_nil() {
+            let frame = self.window(mini_window).frame;
+            if self.frame_kboard(frame) != Some(kb) {
+                return Err(self.error("Frame and minibuffer must be on the same terminal"));
+            }
+        }
+        let f = self.make_frame(false)?;
+        let base = self.stack.len();
+        self.stack.push(f);
+        let r = self.make_frame_without_minibuffer_1(f, &mut mini_window, kb, display);
+        self.stack.truncate(base);
+        r?;
+        Ok(f)
+    }
+
+    fn make_frame_without_minibuffer_1(
+        &mut self,
+        f: Value,
+        mini_window: &mut Value,
+        kb: usize,
+        display: Value,
+    ) -> LispResult<()> {
+        let slot = crate::keyboard::Kvar::DefaultMinibufferFrame as usize;
+        if mini_window.is_nil() {
+            let default = self.kboards[kb].vars[slot];
+            if !self.is_frame(default) || !self.frame_live_p(default) {
+                let initial_frame = self.funcall(sym::MAKE_INITIAL_MINIBUFFER_FRAME, &[display])?;
+                self.kboards[kb].vars[slot] = initial_frame;
+            }
+            let default = self.kboards[kb].vars[slot];
+            *mini_window = self.frame(default).minibuffer_window;
+        }
+        let mini_window = *mini_window;
+        self.frame_mut(f).minibuffer_window = mini_window;
+        self.store_frame_param(f, sym::MINIBUFFER, mini_window)?;
+        let contents = self.window(mini_window).contents;
+        let list = self.minibuf.minibuffer_list;
+        if self.memq(contents, list).is_nil() {
+            let buffer = if list.is_nil() {
+                self.get_minibuffer(0)?
+            } else {
+                self.car(list)?
+            };
+            self.set_window_buffer(mini_window, buffer, false, false)?;
+        }
+        Ok(())
+    }
+
+    pub fn make_minibuffer_frame(&mut self) -> LispResult<Value> {
+        let f = self.make_frame(false)?;
+        let base = self.stack.len();
+        self.stack.push(f);
+        let r = self.make_minibuffer_frame_1(f);
+        self.stack.truncate(base);
+        r?;
+        Ok(f)
+    }
+
+    fn make_minibuffer_frame_1(&mut self, f: Value) -> LispResult<()> {
+        {
+            let flags = &mut self.frame_mut(f).flags;
+            flags.auto_raise = false;
+            flags.auto_lower = false;
+            flags.no_split = true;
+            flags.wants_modeline = false;
+        }
+        let mini_window = self.frame(f).root_window;
+        self.frame_mut(f).minibuffer_window = mini_window;
+        self.store_frame_param(f, sym::MINIBUFFER, sym::ONLY)?;
+        {
+            let w = self.window_mut(mini_window);
+            w.mini = true;
+            w.next = Value::NIL;
+            w.prev = Value::NIL;
+            w.frame = f;
+        }
+        let list = self.minibuf.minibuffer_list;
+        let buffer = if list.is_nil() {
+            self.get_minibuffer(0)?
+        } else {
+            self.car(list)?
+        };
+        self.set_window_buffer(mini_window, buffer, false, false)
+    }
+
     fn make_frame_1(&mut self, frame: Value, mini_p: bool) -> LispResult<()> {
         let root_window = self.make_window();
         self.stack.push(root_window);
