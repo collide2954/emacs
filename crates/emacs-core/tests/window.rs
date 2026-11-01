@@ -202,3 +202,37 @@ fn window_line_and_divider_sizes() {
         ("(window-scroll-bar-width (frame-root-window))", "0"),
     ]);
 }
+
+#[test]
+fn window_fringes_scroll_bars_and_margins_on_a_tty() {
+    check(&[
+        ("(set-window-fringes nil 3 4 t t)", "nil"),
+        ("(set-window-fringes nil -1)", "nil"),
+        ("(window-fringes)", "(0 0 nil nil)"),
+        ("(set-window-scroll-bars nil 10 'bogus)", "nil"),
+        ("(window-scroll-bars)", "(nil 0 t nil 0 t nil)"),
+        (
+            "(window-scroll-bars 1)",
+            "error: (wrong-type-argument window-live-p 1)",
+        ),
+        ("(set-window-margins nil 2 3)", "t"),
+        ("(window-margins)", "(2 . 3)"),
+        ("(set-window-margins nil 2 3)", "nil"),
+        ("(set-window-margins nil 1000)", "nil"),
+        ("(window-margins)", "(2 . 3)"),
+        (
+            "(set-window-margins nil -1)",
+            "error: (args-out-of-range -1 0 2147483647)",
+        ),
+        (
+            "(set-window-margins 'x 1)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+        ("(set-window-margins nil nil)", "t"),
+        ("(window-margins)", "(nil)"),
+        (
+            "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (set-buffer (get-buffer-create \"mg\")) (setq left-margin-width 4) (set-window-buffer nil \"mg\") (window-margins))",
+            "(4)",
+        ),
+    ]);
+}

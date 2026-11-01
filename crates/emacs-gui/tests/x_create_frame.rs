@@ -28,6 +28,99 @@ fn eval(lisp: &mut Lisp, source: &str) -> String {
     }
 }
 
+fn connect(lisp: &mut Lisp) {
+    lisp.init_display();
+    eval(
+        lisp,
+        "(progn (set-char-table-range char-script-table '(0 . #x24F) 'latin) (set-char-table-extra-slot char-script-table 0 '(latin)))",
+    );
+    assert_eq!(
+        eval(
+            lisp,
+            "(progn (setq x-resource-name \"emacs\") (x-open-connection nil) nil)"
+        ),
+        "nil"
+    );
+}
+
+#[test]
+fn window_fringes_scroll_bars_and_margins_on_a_pgtk_frame() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::boot(Startup::program(false));
+        emacs_gui::install(
+            &mut lisp,
+            Display::new(fmpsc::unbounded().0, mpsc::channel().1),
+        );
+        connect(&mut lisp);
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(progn (setq f (x-create-frame '((name . \"w\") (width . 40) (height . 10))) r (frame-root-window f)) (window-live-p r))"
+            ),
+            "t"
+        );
+        for (source, expected) in [
+            ("(set-window-fringes r 3 4 t t)", "t"),
+            ("(window-fringes r)", "(3 4 t t)"),
+            ("(set-window-fringes r 3 4 t t)", "nil"),
+            ("(set-window-fringes r 100000)", "t"),
+            ("(window-fringes r)", "(3 4 nil t)"),
+            ("(set-window-fringes r 100000 nil nil)", "nil"),
+            (
+                "(set-window-fringes r -1)",
+                "error: (args-out-of-range -1 0 2147483647)",
+            ),
+            ("(set-window-fringes r nil nil)", "t"),
+            ("(nthcdr 2 (window-fringes r))", "(nil nil)"),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+        let symbol = lisp.intern("f");
+        let f = lisp.find_symbol_value(symbol);
+        let geometry = &lisp.frame(f).geometry;
+        let fringes = format!(
+            "({} {})",
+            geometry.left_fringe_width, geometry.right_fringe_width
+        );
+        assert!(geometry.left_fringe_width > 0);
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(list (car (window-fringes r)) (nth 1 (window-fringes r)))"
+            ),
+            fringes
+        );
+        for (source, expected) in [
+            ("(set-window-scroll-bars r 12 'left nil nil t)", "t"),
+            (
+                "(equal (window-scroll-bars r) (list 12 (/ (+ 12 (frame-char-width f) -1) (frame-char-width f)) 'left nil 0 nil t))",
+                "t",
+            ),
+            ("(set-window-scroll-bars r 12 'left nil nil t)", "nil"),
+            (
+                "(set-window-scroll-bars r 12 'bogus)",
+                "error: (error \"Invalid type of vertical scroll bar\")",
+            ),
+            ("(set-window-scroll-bars r 0 'bogus)", "t"),
+            ("(window-scroll-bars r)", "(0 0 nil nil 0 nil nil)"),
+            ("(set-window-scroll-bars r 100000 'right)", "nil"),
+            ("(window-scroll-bars r)", "(0 0 nil nil 0 nil nil)"),
+            ("(set-window-margins r 1 2)", "t"),
+            ("(window-margins r)", "(1 . 2)"),
+            (
+                "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (set-window-fringes r 2 2 nil t) (set-window-scroll-bars r 7 'right nil nil nil) (save-current-buffer (set-buffer (get-buffer-create \"fr\")) (setq left-fringe-width 5 scroll-bar-width 9 vertical-scroll-bar 'left)) (set-window-buffer r \"fr\") (list (window-fringes r) (car (window-scroll-bars r)) (nth 2 (window-scroll-bars r)) (window-margins r)))",
+                "((2 2 nil t) 9 left (nil))",
+            ),
+            (
+                "(list (set-window-fringes r 2 2 nil nil) (progn (set-window-buffer r \"fr\") (car (window-fringes r))) (nth 3 (window-fringes r)))",
+                "(nil 5 nil)",
+            ),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+    });
+}
+
 #[test]
 fn x_create_frame_makes_a_visible_pgtk_frame() {
     on_big_stack(|| {
@@ -35,18 +128,7 @@ fn x_create_frame_makes_a_visible_pgtk_frame() {
         let (commands, mut command_rx) = fmpsc::unbounded();
         let (_notice_tx, notices) = mpsc::channel();
         emacs_gui::install(&mut lisp, Display::new(commands, notices));
-        lisp.init_display();
-        eval(
-            &mut lisp,
-            "(progn (set-char-table-range char-script-table '(0 . #x24F) 'latin) (set-char-table-extra-slot char-script-table 0 '(latin)))",
-        );
-        assert_eq!(
-            eval(
-                &mut lisp,
-                "(progn (setq x-resource-name \"emacs\") (x-open-connection nil) nil)"
-            ),
-            "nil"
-        );
+        connect(&mut lisp);
         let frames_before = eval(&mut lisp, "(length (frame-list))");
         assert_eq!(
             eval(

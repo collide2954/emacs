@@ -365,7 +365,11 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("set-window-parameter", 3, 3, f_set_window_parameter),
     Subr::fixed("window-display-table", 0, 1, f_window_display_table),
     Subr::fixed("set-window-display-table", 2, 2, f_set_window_display_table),
+    Subr::fixed("set-window-margins", 2, 3, f_set_window_margins),
     Subr::fixed("window-margins", 0, 1, f_window_margins),
+    Subr::fixed("set-window-fringes", 2, 5, f_set_window_fringes),
+    Subr::fixed("set-window-scroll-bars", 1, 6, f_set_window_scroll_bars),
+    Subr::fixed("window-scroll-bars", 0, 1, f_window_scroll_bars),
     Subr::fixed("next-window", 0, 3, f_next_window),
     Subr::fixed("previous-window", 0, 3, f_previous_window),
     Subr::fixed("window-list", 0, 3, f_window_list),
@@ -1007,23 +1011,60 @@ impl Lisp {
         self.frame(self.window(w).frame).window_p()
     }
 
+    fn window_left_fringe_width(&self, w: Value) -> i64 {
+        let win = self.window(w);
+        if win.left_fringe_width >= 0 {
+            win.left_fringe_width
+        } else {
+            self.frame(win.frame).geometry.left_fringe_width
+        }
+    }
+
+    fn window_right_fringe_width(&self, w: Value) -> i64 {
+        let win = self.window(w);
+        if win.right_fringe_width >= 0 {
+            win.right_fringe_width
+        } else {
+            self.frame(win.frame).geometry.right_fringe_width
+        }
+    }
+
     fn window_fringes_width(&self, w: Value) -> i64 {
         if !self.window_frame_window_p(w) {
             return 0;
         }
+        self.window_left_fringe_width(w) + self.window_right_fringe_width(w)
+    }
+
+    fn window_margins_width(&self, w: Value) -> i64 {
         let win = self.window(w);
-        let g = &self.frame(win.frame).geometry;
-        let left = if win.left_fringe_width >= 0 {
-            win.left_fringe_width
+        (win.left_margin_cols + win.right_margin_cols) * self.window_frame_column_width(w)
+    }
+
+    fn window_scroll_bar_cols(&self, w: Value) -> i64 {
+        if !self.window_has_vertical_scroll_bar(w) {
+            return 0;
+        }
+        let win = self.window(w);
+        if win.scroll_bar_width >= 0 {
+            let unit = self.window_frame_column_width(w);
+            (win.scroll_bar_width + unit - 1) / unit
         } else {
-            g.left_fringe_width
-        };
-        let right = if win.right_fringe_width >= 0 {
-            win.right_fringe_width
+            self.frame(win.frame).geometry.config_scroll_bar_cols
+        }
+    }
+
+    fn window_scroll_bar_lines(&self, w: Value) -> i64 {
+        if !self.window_has_horizontal_scroll_bar(w) {
+            return 0;
+        }
+        let win = self.window(w);
+        if win.scroll_bar_height >= 0 {
+            let unit = self.window_frame_line_height(w);
+            (win.scroll_bar_height + unit - 1) / unit
         } else {
-            g.right_fringe_width
-        };
-        left + right
+            self.frame(win.frame).geometry.config_scroll_bar_lines
+        }
     }
 
     fn window_vertical_scroll_bar_type(&self, w: Value) -> VerticalScrollBarType {
@@ -1268,6 +1309,149 @@ impl Lisp {
         Ok(false)
     }
 
+    fn set_window_fringes(
+        &mut self,
+        w: Value,
+        left_width: Value,
+        right_width: Value,
+        outside_margins: Value,
+        persistent: Value,
+    ) -> LispResult<bool> {
+        if !self.window_frame_window_p(w) {
+            return Ok(false);
+        }
+        let f = self.window(w).frame;
+        let old_left = self.window_left_fringe_width(w);
+        let old_right = self.window_right_fringe_width(w);
+        let new_left = self.extract_dimension(left_width)?;
+        let new_right = self.extract_dimension(right_width)?;
+        let outside = !outside_margins.is_nil();
+        let mut changed = false;
+        let mut failed = false;
+        let g = &self.frame(f).geometry;
+        let room = self.window(w).pixel_width
+            - self.window_margins_width(w)
+            - self.window_scroll_bar_area_width(w)
+            - self.window_right_divider_width(w)
+            - if new_left == -1 {
+                g.left_fringe_width
+            } else {
+                new_left
+            }
+            - if new_right == -1 {
+                g.right_fringe_width
+            } else {
+                new_right
+            };
+        if room >= self.min_safe_window_pixel_width(w) {
+            let win = self.window_mut(w);
+            win.left_fringe_width = new_left;
+            win.right_fringe_width = new_right;
+            changed = new_left != old_left || new_right != old_right;
+        } else {
+            failed = true;
+        }
+        let win = self.window_mut(w);
+        if outside != win.flags.fringes_outside_margins {
+            win.flags.fringes_outside_margins = outside;
+            changed = true;
+        }
+        if !failed {
+            win.flags.fringes_persistent = !persistent.is_nil();
+        }
+        if changed {
+            self.windows.windows_or_buffers_changed = 35;
+        }
+        Ok(changed)
+    }
+
+    fn set_window_scroll_bars(
+        &mut self,
+        w: Value,
+        width: Value,
+        vertical_type: Value,
+        height: Value,
+        horizontal_type: Value,
+        persistent: Value,
+    ) -> LispResult<bool> {
+        if !self.window_frame_window_p(w) {
+            return Ok(false);
+        }
+        let f = self.window(w).frame;
+        let new_width = self.extract_dimension(width)?;
+        let mut vertical_type = vertical_type;
+        let mut changed = false;
+        let mut failed = false;
+        if new_width == 0 {
+            vertical_type = Value::NIL;
+        } else if !(vertical_type.is_nil()
+            || vertical_type == sym::LEFT
+            || vertical_type == sym::RIGHT
+            || vertical_type == sym::T)
+        {
+            return Err(self.error("Invalid type of vertical scroll bar"));
+        }
+        let room = self.window(w).pixel_width
+            - self.window_margins_width(w)
+            - self.window_fringes_width(w)
+            - self.window_right_divider_width(w)
+            - if new_width == -1 {
+                self.frame_scroll_bar_area_width(f)
+            } else {
+                new_width
+            };
+        if room >= self.min_safe_window_pixel_width(w) {
+            changed = vertical_type != self.window(w).vertical_scroll_bar_type
+                || new_width != self.window_scroll_bar_area_width(w);
+            let win = self.window_mut(w);
+            win.vertical_scroll_bar_type = vertical_type;
+            win.scroll_bar_width = new_width;
+        } else {
+            failed = true;
+        }
+        if USE_HORIZONTAL_SCROLL_BARS {
+            let new_height = self.extract_dimension(height)?;
+            let mut horizontal_type = horizontal_type;
+            if (self.window(w).mini && horizontal_type != sym::BOTTOM) || new_height == 0 {
+                horizontal_type = Value::NIL;
+            }
+            if !(horizontal_type.is_nil()
+                || horizontal_type == sym::BOTTOM
+                || horizontal_type == sym::T)
+            {
+                return Err(self.error("Invalid type of horizontal scroll bar"));
+            }
+            let room = self.window(w).pixel_height
+                - self.window_tab_line_height(w)
+                - self.window_header_line_height(w)
+                - self.window_mode_line_height(w)
+                - if new_height == -1 {
+                    self.frame_scroll_bar_area_height(f)
+                } else {
+                    new_height
+                };
+            if room >= self.window_frame_line_height(w) {
+                changed = changed
+                    || horizontal_type != self.window(w).horizontal_scroll_bar_type
+                    || new_height != self.window_scroll_bar_area_height(w);
+                let win = self.window_mut(w);
+                win.horizontal_scroll_bar_type = horizontal_type;
+                win.scroll_bar_height = new_height;
+            } else {
+                failed = true;
+            }
+        } else {
+            self.window_mut(w).horizontal_scroll_bar_type = Value::NIL;
+        }
+        if !failed {
+            self.window_mut(w).flags.scroll_bars_persistent = !persistent.is_nil();
+        }
+        if changed {
+            self.wset_redisplay(w);
+        }
+        Ok(changed)
+    }
+
     fn extract_dimension(&mut self, dimension: Value) -> LispResult<i64> {
         if dimension.is_nil() {
             return Ok(-1);
@@ -1373,11 +1557,34 @@ impl Lisp {
         self.marker_mut(pointm).insertion_type = insertion_type;
         self.marker_mut(old_pointm).insertion_type = insertion_type;
         if !keep_margins_p {
+            let local = |l: &Lisp, var| l.buffer_local_value(var, buffer);
+            if !self.window(window).flags.fringes_persistent {
+                let (left, right, outside) = (
+                    local(self, sym::LEFT_FRINGE_WIDTH),
+                    local(self, sym::RIGHT_FRINGE_WIDTH),
+                    local(self, sym::FRINGES_OUTSIDE_MARGINS),
+                );
+                self.set_window_fringes(window, left, right, outside, Value::NIL)?;
+            }
+            if !self.window(window).flags.scroll_bars_persistent {
+                let (width, vertical, height, horizontal) = (
+                    local(self, sym::SCROLL_BAR_WIDTH),
+                    local(self, sym::VERTICAL_SCROLL_BAR),
+                    local(self, sym::SCROLL_BAR_HEIGHT),
+                    local(self, sym::HORIZONTAL_SCROLL_BAR),
+                );
+                self.set_window_scroll_bars(
+                    window,
+                    width,
+                    vertical,
+                    height,
+                    horizontal,
+                    Value::NIL,
+                )?;
+            }
             let (left, right) = (
-                self.buffer_local_get(buffer, sym::LEFT_MARGIN_WIDTH)
-                    .unwrap_or(Value::NIL),
-                self.buffer_local_get(buffer, sym::RIGHT_MARGIN_WIDTH)
-                    .unwrap_or(Value::NIL),
+                local(self, sym::LEFT_MARGIN_WIDTH),
+                local(self, sym::RIGHT_MARGIN_WIDTH),
             );
             self.set_window_margins(window, left, right)?;
             self.apply_window_adjustment(window);
@@ -1984,6 +2191,63 @@ fn f_set_window_display_table(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let w = lisp.decode_live_window(args[0])?;
     lisp.window_mut(w).display_table = args[1];
     Ok(args[1])
+}
+
+fn f_set_window_margins(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(args[0])?;
+    if lisp.set_window_margins(w, args[1], arg(args, 2))? {
+        lisp.apply_window_adjustment(w);
+        Ok(sym::T)
+    } else {
+        Ok(Value::NIL)
+    }
+}
+
+fn f_set_window_fringes(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(args[0])?;
+    if lisp.set_window_fringes(w, args[1], arg(args, 2), arg(args, 3), arg(args, 4))? {
+        lisp.apply_window_adjustment(w);
+        Ok(sym::T)
+    } else {
+        Ok(Value::NIL)
+    }
+}
+
+fn f_set_window_scroll_bars(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(args[0])?;
+    if lisp.set_window_scroll_bars(
+        w,
+        arg(args, 1),
+        arg(args, 2),
+        arg(args, 3),
+        arg(args, 4),
+        arg(args, 5),
+    )? {
+        lisp.apply_window_adjustment(w);
+        Ok(sym::T)
+    } else {
+        Ok(Value::NIL)
+    }
+}
+
+fn f_window_scroll_bars(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    let win = lisp.window(w);
+    let width = if win.scroll_bar_width >= 0 {
+        Value::fixnum(win.scroll_bar_width)
+    } else {
+        Value::NIL
+    };
+    let height = if win.scroll_bar_height >= 0 {
+        Value::fixnum(win.scroll_bar_height)
+    } else {
+        Value::NIL
+    };
+    let (vertical, horizontal) = (win.vertical_scroll_bar_type, win.horizontal_scroll_bar_type);
+    let persistent = lisp.bool(win.flags.scroll_bars_persistent);
+    let cols = Value::fixnum(lisp.window_scroll_bar_cols(w));
+    let lines = Value::fixnum(lisp.window_scroll_bar_lines(w));
+    Ok(lisp.list(&[width, cols, vertical, height, lines, horizontal, persistent]))
 }
 
 fn f_window_margins(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -2823,18 +3087,9 @@ pub(crate) fn restore_window_configuration(
 
 fn f_window_fringes(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let window = lisp.decode_live_window(arg(args, 0))?;
+    let left = lisp.window_left_fringe_width(window);
+    let right = lisp.window_right_fringe_width(window);
     let w = lisp.window(window);
-    let g = &lisp.frame(w.frame).geometry;
-    let left = if w.left_fringe_width >= 0 {
-        w.left_fringe_width
-    } else {
-        g.left_fringe_width
-    };
-    let right = if w.right_fringe_width >= 0 {
-        w.right_fringe_width
-    } else {
-        g.right_fringe_width
-    };
     let outside = lisp.bool(w.flags.fringes_outside_margins);
     let persistent = lisp.bool(w.flags.fringes_persistent);
     Ok(lisp.list(&[
