@@ -68,6 +68,7 @@ pub const SUBRS: &[Subr] = &[
         f_event_symbol_parse_modifiers,
     ),
     Subr::fixed("event-convert-list", 1, 1, f_event_convert_list),
+    Subr::fixed("internal-handle-focus-in", 1, 1, f_internal_handle_focus_in),
     Subr::fixed("set-input-interrupt-mode", 1, 1, f_set_input_interrupt_mode),
     Subr::fixed("set-output-flow-control", 1, 2, f_set_output_flow_control),
     Subr::fixed("set-input-meta-mode", 1, 2, f_set_input_meta_mode),
@@ -478,6 +479,39 @@ impl Keyboard {
     }
 }
 
+fn f_internal_handle_focus_in(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let event = args[0];
+    let rest = lisp.cdr_safe(event);
+    let frame = lisp.car_safe(rest);
+    if lisp.car_safe(event) != sym::FOCUS_IN || !rest.is_cons() || !lisp.is_frame(frame) {
+        return Err(lisp.error("Invalid focus-in event"));
+    }
+    let switching =
+        frame != lisp.keyboard.internal_last_event_frame && frame != lisp.frames.selected_frame;
+    lisp.keyboard.internal_last_event_frame = frame;
+    if switching || !lisp.keyboard.unread_switch_frame.is_nil() {
+        lisp.keyboard.unread_switch_frame = lisp.make_lispy_switch_frame(frame);
+    }
+    Ok(Value::NIL)
+}
+
+fn keys_of_keyboard(lisp: &mut Lisp, special: Value) {
+    lisp.initial_define_lispy_key(special, "delete-frame", "handle-delete-frame");
+    lisp.initial_define_lispy_key(special, "iconify-frame", "ignore");
+    lisp.initial_define_lispy_key(special, "make-frame-visible", "ignore");
+    lisp.initial_define_lispy_key(special, "save-session", "handle-save-session");
+    lisp.initial_define_lispy_key(special, "thread-event", "thread-handle-event");
+    lisp.initial_define_lispy_key(special, "file-notify", "file-notify-handle-event");
+    lisp.initial_define_lispy_key(special, "config-changed-event", "ignore");
+    if cfg!(windows) {
+        lisp.initial_define_lispy_key(special, "language-change", "ignore");
+    }
+    lisp.initial_define_lispy_key(special, "focus-in", "handle-focus-in");
+    lisp.initial_define_lispy_key(special, "focus-out", "handle-focus-out");
+    lisp.initial_define_lispy_key(special, "move-frame", "handle-move-frame");
+    lisp.initial_define_lispy_key(special, "sleep-event", "ignore");
+}
+
 pub fn f_set_input_interrupt_mode(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let new_interrupt_input = cfg!(unix) && !args[0].is_nil();
     if new_interrupt_input != lisp.keyboard.interrupt_input {
@@ -861,6 +895,7 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::OVERRIDING_LOCAL_MAP_MENU_FLAG, Value::NIL);
     let special = lisp.list(&[sym::KEYMAP]);
     lisp.defvar(sym::SPECIAL_EVENT_MAP, special);
+    keys_of_keyboard(lisp, special);
     lisp.defvar(sym::TRACK_MOUSE, Value::NIL);
     lisp.defvar_kboard(sym::SYSTEM_KEY_ALIST, Kvar::SystemKeyAlist);
     lisp.defvar_kboard(sym::LOCAL_FUNCTION_KEY_MAP, Kvar::LocalFunctionKeyMap);

@@ -197,3 +197,33 @@ fn special_events_and_input_pending() {
         ),
     ]);
 }
+
+#[test]
+fn special_event_bindings() {
+    check(&[(
+        "(mapcar (function (lambda (e) (lookup-key special-event-map (vector e)))) '(delete-frame iconify-frame make-frame-visible save-session thread-event file-notify config-changed-event language-change focus-in focus-out move-frame sleep-event))",
+        if cfg!(windows) {
+            "(handle-delete-frame ignore ignore handle-save-session thread-handle-event file-notify-handle-event ignore ignore handle-focus-in handle-focus-out handle-move-frame ignore)"
+        } else {
+            "(handle-delete-frame ignore ignore handle-save-session thread-handle-event file-notify-handle-event ignore nil handle-focus-in handle-focus-out handle-move-frame ignore)"
+        },
+    )]);
+}
+
+#[test]
+fn internal_handle_focus_in() {
+    check(&[
+        (
+            "(internal-handle-focus-in '(focus-in nil))",
+            "error: (error \"Invalid focus-in event\")",
+        ),
+        (
+            "(internal-handle-focus-in 'focus-in)",
+            "error: (error \"Invalid focus-in event\")",
+        ),
+        (
+            "(list (internal-handle-focus-in (list 'focus-in (selected-frame))) (progn (setq unread-command-events nil) (read-event nil nil 0)))",
+            "(nil nil)",
+        ),
+    ]);
+}

@@ -69,6 +69,14 @@ fn spec_errors_and_lisp_specs() {
                     "error: (wrong-type-argument commandp plain)",
                 ),
                 (
+                    "(list (interactive-form 'self-insert-command) (interactive-form (function (lambda () \"doc\" (interactive \"p\" text-mode) 1))) (interactive-form 'car) (interactive-form 'no-such-function))",
+                    "((interactive (list (prefix-numeric-value current-prefix-arg) last-command-event)) (interactive \"p\") nil nil)",
+                ),
+                (
+                    "(progn (erase-buffer) (let ((last-command-event 120) (current-prefix-arg 3)) (call-interactively 'self-insert-command)) (buffer-string))",
+                    "\"xxx\"",
+                ),
+                (
                     "(call-interactively (function (lambda (x) (interactive \"q\") x)))",
                     "error: (error \"Invalid control letter ‘q’ (#o161, #x0071) in interactive calling string\")",
                 ),

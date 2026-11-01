@@ -1314,68 +1314,77 @@ fn f_subr_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.string(subr.name))
 }
 
-fn f_interactive_form(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+fn valid_docstring_p(lisp: &Lisp, doc: Value) -> bool {
+    doc.is_fixnum()
+        || doc.is_string()
+        || (doc.is_cons() && lisp.xcar(doc).is_string() && lisp.xcdr(doc).is_fixnum())
+}
+
+pub(crate) fn f_interactive_form(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let cmd = args[0];
-    let mut fun = lisp.indirect_function(cmd);
-    let genfun = false;
-    if fun.is_symbol() && !fun.is_nil() {
-        let spec = lisp.get(fun, sym::INTERACTIVE_FORM);
-        if !spec.is_nil() {
-            return Ok(spec);
-        }
+    if lisp.indirect_function(cmd).is_nil() {
+        return Ok(Value::NIL);
     }
-    let _ = genfun;
-    if fun.is_symbol() {
-        let spec = lisp.get(cmd, sym::INTERACTIVE_FORM);
-        if !spec.is_nil() {
-            return Ok(spec);
+    let mut genfun = false;
+    let mut fun = cmd;
+    while fun.is_symbol() {
+        let tmp = lisp.get(fun, sym::INTERACTIVE_FORM);
+        if !tmp.is_nil() {
+            return Ok(tmp);
         }
+        fun = lisp.heap.symbol_ref(fun).function;
     }
     if let Some(subr) = lisp.subr(fun) {
         if let Some(spec) = subr.interactive {
             let s = lisp.string(spec);
-            return Ok(lisp.list(&[sym::INTERACTIVE, s]));
+            let form = if spec.starts_with('(') {
+                let read = crate::lread::f_read_from_string(lisp, &[s, Value::NIL, Value::NIL])?;
+                lisp.car(read)?
+            } else {
+                s
+            };
+            return Ok(lisp.list(&[sym::INTERACTIVE, form]));
         }
-        return Ok(Value::NIL);
-    }
-    if fun.is_vectorlike() && lisp.is_closure(fun) {
+    } else if fun.is_vectorlike() && lisp.is_closure(fun) {
         let slots = lisp.vector_items(fun);
         if slots.len() > 5 {
             let form = slots[5];
-            if lisp.is_vector(form) {
-                let items = lisp.vector_items(form).to_vec();
-                let spec = items.first().copied().unwrap_or(Value::NIL);
-                let modes = items.get(1).copied().unwrap_or(Value::NIL);
-                let tail = lisp.list(&[spec]);
-                let _ = modes;
-                return Ok(lisp.cons(sym::INTERACTIVE, tail));
-            }
-            return Ok(lisp.list(&[sym::INTERACTIVE, form]));
+            let spec = if lisp.is_vector(form) {
+                lisp.vector_items(form)
+                    .first()
+                    .copied()
+                    .unwrap_or(Value::NIL)
+            } else {
+                form
+            };
+            return Ok(lisp.list(&[sym::INTERACTIVE, spec]));
+        } else if slots.len() > 4 {
+            let doc = slots[4];
+            genfun = !(doc.is_nil() || valid_docstring_p(lisp, doc));
         }
-        return Ok(Value::NIL);
+    } else if fun.is_cons() && lisp.xcar(fun) == sym::AUTOLOAD {
+        let loaded = lisp.autoload_do_load(fun, cmd, Value::NIL)?;
+        return f_interactive_form(lisp, &[loaded]);
+    } else if fun.is_cons() && lisp.xcar(fun) == sym::LAMBDA {
+        let rest = lisp.xcdr(fun);
+        let form = lisp.cdr(rest)?;
+        let spec = lisp.assq(sym::INTERACTIVE, form);
+        let tail = lisp.cdr(spec)?;
+        let after = lisp.cdr(tail)?;
+        if after.is_nil() {
+            return Ok(spec);
+        }
+        let first = lisp.car(tail)?;
+        return Ok(lisp.list(&[sym::INTERACTIVE, first]));
     }
-    if fun.is_cons() {
-        let funcar = lisp.xcar(fun);
-        if funcar == sym::AUTOLOAD {
-            return Ok(Value::NIL);
-        }
-        if funcar == sym::LAMBDA {
-            fun = lisp.xcdr(fun);
-            let mut body = lisp.cdr_safe(fun);
-            if body.is_cons() && lisp.xcar(body).is_string() {
-                body = lisp.xcdr(body);
-            }
-            while body.is_cons() {
-                let form = lisp.xcar(body);
-                if form.is_cons() && lisp.xcar(form) == sym::INTERACTIVE {
-                    return Ok(form);
-                }
-                if !(form.is_cons() && lisp.xcar(form) == sym::DECLARE) {
-                    break;
-                }
-                body = lisp.xcdr(body);
-            }
-        }
+    if genfun
+        && !lisp
+            .heap
+            .symbol_ref(sym::OCLOSURE_INTERACTIVE_FORM)
+            .function
+            .is_nil()
+    {
+        return lisp.funcall(sym::OCLOSURE_INTERACTIVE_FORM, &[fun]);
     }
     Ok(Value::NIL)
 }

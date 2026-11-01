@@ -422,6 +422,13 @@ impl Lisp {
         self.unbind_to_value(count, r)
     }
 
+    pub fn initial_define_lispy_key(&mut self, keymap: Value, keyname: &str, defname: &str) {
+        let key = self.intern(keyname);
+        let def = self.intern(defname);
+        self.store_in_keymap(keymap, key, def, false)
+            .expect("initial_define_lispy_key");
+    }
+
     fn store_in_keymap(
         &mut self,
         keymap: Value,
