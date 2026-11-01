@@ -159,6 +159,7 @@ pub struct Lisp {
     pub indent: crate::indent::Indent,
     pub frame_and_buffer_state: Value,
     pub pending_funcalls: Value,
+    pub window_system: Option<crate::terminal::WindowSystem>,
 }
 
 impl Default for Lisp {
@@ -371,6 +372,7 @@ impl Lisp {
             indent: crate::indent::Indent::default(),
             frame_and_buffer_state: Value::NIL,
             pending_funcalls: Value::NIL,
+            window_system: None,
         };
         lisp.init_symbols();
         lisp.empty_unibyte = lisp.heap.string(LispString::unibyte(Vec::new()));
@@ -1142,6 +1144,9 @@ impl Lisp {
         roots.extend_from_slice(&self.flow_roots);
         self.atimer.trace(&mut roots);
         roots.push(self.signaling_function);
+        if let Some(window_system) = self.window_system {
+            (window_system.mark)(&mut roots);
+        }
         for binding in &self.specpdl {
             match *binding {
                 SpecBinding::Let { symbol, old } => {

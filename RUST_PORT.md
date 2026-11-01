@@ -266,5 +266,23 @@ Done:
 `cargo run -p emacs-gui --example shell` opens a frame from the Lisp thread, paints a test
 pattern and prints the events it receives.
 
-Next: showing a real Emacs frame needs the display engine in emacs-core (`frame.c`, `window.c`, `dispnew.c`, `xdisp.c`, `xfaces.c`, `font.c`,
-`fontset.c`) and the command loop in `keyboard.c`.
+Lisp sees the iced frontend as the `pgtk` window system for now, so the unmodified
+`term/pgtk-win.el` drives it; the plan is to consolidate into a window system of its own
+later. `emacs` without `--batch`, `-nw` or `--version` runs the iced daemon on the main
+thread and the Lisp machine on its own thread. `emacs_gui::install` does what
+`syms_of_pgtkterm`, `syms_of_pgtkfns`, `syms_of_pgtkselect` and `syms_of_pgtkim` do (the
+variables, the `pgtk`, `gtk` and `cairo` features, whose version strings give the iced and
+tiny-skia versions) and registers the window system's hooks, and `init_display` then sets
+`initial-window-system` to `pgtk` as C's `HAVE_PGTK` branch does. Ported so far:
+`x-open-connection` and `x-display-list` (`pgtk_term_init` without the GTK plumbing: a pgtk
+terminal, its display info and kboard; the display is named after `$WAYLAND_DISPLAY` or
+`$DISPLAY`, else `iced`, and only that one display can be opened), `x-get-resource`
+(`frame.c`) and `pgtk-set-resource`, which behave as pgtk built without GSettings (no
+defaults database). Terminals carry C's hook table (`TerminalHooks`); pgtk fills in only
+`get_string_resource` so far. An interactive start now runs window-system initialization
+and stops at `x-create-frame`.
+
+Next: showing a real Emacs frame needs `x-create-frame` (frame parameters, colors, the default
+font, faces), `delete-frame`, the display engine in emacs-core (`frame.c`, `window.c`,
+`dispnew.c`, `xdisp.c`, `xfaces.c`, `font.c`, `fontset.c`) and the command loop in
+`keyboard.c`.

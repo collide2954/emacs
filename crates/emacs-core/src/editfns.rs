@@ -794,7 +794,7 @@ fn f_user_full_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.string(&name))
 }
 
-pub(crate) fn f_system_name(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub fn f_system_name(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let v = lisp.plain_value(sym::SYSTEM_NAME);
     if v.is_string() {
         return Ok(v);

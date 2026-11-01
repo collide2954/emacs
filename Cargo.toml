@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.86"
+version = "0.1.87"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 emacs-core = { path = "crates/emacs-core" }
+emacs-gui = { path = "crates/emacs-gui" }
 emacs-charsets = { path = "crates/emacs-charsets" }
 emacs-unidata = { path = "crates/emacs-unidata" }
 emacs-w32 = { path = "crates/emacs-w32" }

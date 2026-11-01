@@ -43,6 +43,7 @@ pub struct FrameFlags {
     pub face_change: bool,
     pub default_face_done_p: bool,
     pub pointer_invisible: bool,
+    pub mouse_moved: bool,
     pub was_invisible: bool,
     pub horizontal_scroll_bars: bool,
 }
@@ -225,6 +226,7 @@ impl Frame {
     pub fn window_p(&self) -> bool {
         match self.output_method {
             OutputMethod::Initial => false,
+            OutputMethod::Pgtk => true,
         }
     }
 
@@ -406,18 +408,123 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("iconify-frame", 0, 1, f_iconify_frame).interactive(""),
     Subr::fixed("raise-frame", 0, 1, f_raise_frame).interactive(""),
     Subr::fixed("lower-frame", 0, 1, f_lower_frame).interactive(""),
+    Subr::fixed("x-get-resource", 2, 4, f_x_get_resource),
 ];
+
+const EMACS_CLASS: &[u8] = b"Emacs";
+const MAX_ALLOCA: usize = 16 * 1024;
+
+fn x_resource_char_p(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'-' || c == b'_'
+}
+
+impl Lisp {
+    pub fn validate_x_resource_name(&mut self) -> LispResult<()> {
+        if !self.is_string(self.plain_value(sym::X_RESOURCE_CLASS)) {
+            let class = self.make_string(EMACS_CLASS);
+            self.set_plain_value(sym::X_RESOURCE_CLASS, class);
+        }
+        let name = self.plain_value(sym::X_RESOURCE_NAME);
+        let (len, good_count, bad_count) = if self.is_string(name) {
+            let bytes = self.string_bytes(name);
+            let good = bytes.iter().filter(|&&c| x_resource_char_p(c)).count();
+            (bytes.len(), good, bytes.len() - good)
+        } else {
+            (0, 0, 5)
+        };
+        if bad_count == 0 {
+            return Ok(());
+        }
+        if good_count < 2 || MAX_ALLOCA - ".customization\0".len() < len {
+            let emacs = self.make_string(b"emacs");
+            self.set_plain_value(sym::X_RESOURCE_NAME, emacs);
+            return Ok(());
+        }
+        let new = crate::fns::f_copy_sequence(self, &[name])?;
+        self.set_plain_value(sym::X_RESOURCE_NAME, new);
+        for c in self.heap.string_mut(new).data.iter_mut() {
+            if !x_resource_char_p(*c) {
+                *c = b'_';
+            }
+        }
+        Ok(())
+    }
+
+    pub fn decode_window_system_frame(&mut self, frame: Value) -> LispResult<Value> {
+        let f = self.decode_live_frame(frame)?;
+        self.check_window_system(Some(f))?;
+        Ok(f)
+    }
+
+    pub fn gui_display_get_resource(
+        &mut self,
+        terminal: Value,
+        attribute: Value,
+        class: Value,
+        component: Value,
+        subclass: Value,
+    ) -> LispResult {
+        self.check_string(attribute)?;
+        self.check_string(class)?;
+        if !component.is_nil() {
+            self.check_string(component)?;
+        }
+        if !subclass.is_nil() {
+            self.check_string(subclass)?;
+        }
+        if component.is_nil() != subclass.is_nil() {
+            return Err(
+                self.error("x-get-resource: must specify both COMPONENT and SUBCLASS or neither")
+            );
+        }
+        self.validate_x_resource_name()?;
+        let mut name_key = self
+            .string_bytes(self.plain_value(sym::X_RESOURCE_NAME))
+            .to_vec();
+        let mut class_key = self
+            .string_bytes(self.plain_value(sym::X_RESOURCE_CLASS))
+            .to_vec();
+        class_key.push(b'.');
+        class_key.extend_from_slice(self.string_bytes(class));
+        if !component.is_nil() {
+            class_key.push(b'.');
+            class_key.extend_from_slice(self.string_bytes(subclass));
+            name_key.push(b'.');
+            name_key.extend_from_slice(self.string_bytes(component));
+        }
+        name_key.push(b'.');
+        name_key.extend_from_slice(self.string_bytes(attribute));
+        let value = match self.terminal(terminal).hooks.get_string_resource {
+            Some(hook) => hook(self, &name_key, &class_key)?,
+            None => None,
+        };
+        Ok(match value {
+            Some(value) if !value.is_empty() => self.make_string(&value),
+            _ => Value::NIL,
+        })
+    }
+}
+
+fn f_x_get_resource(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    lisp.check_window_system(None)?;
+    let terminal = match lisp.window_system {
+        Some(window_system) => (window_system.check_x_display_info)(lisp, Value::NIL)?,
+        None => return Err(lisp.error("Window system is not in use or not initialized")),
+    };
+    lisp.gui_display_get_resource(terminal, args[0], args[1], arg(args, 2), arg(args, 3))
+}
 
 impl Lisp {
     pub fn frame_window_p(&self, f: Value) -> bool {
         match self.frame(f).output_method {
             OutputMethod::Initial => false,
+            OutputMethod::Pgtk => true,
         }
     }
 
     fn is_tty_child_frame(&self, f: Value) -> bool {
         match self.frame(f).output_method {
-            OutputMethod::Initial => false,
+            OutputMethod::Initial | OutputMethod::Pgtk => false,
         }
     }
 
@@ -489,24 +596,29 @@ fn f_iconify_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
             return Ok(Value::NIL);
         }
     }
-    match lisp.frame(f).output_method {
-        OutputMethod::Initial => Ok(Value::NIL),
+    if lisp.frame_window_p(f)
+        && let Some(hook) = lisp.frame_terminal_hooks(f).iconify_frame
+    {
+        hook(lisp, f);
     }
+    Ok(Value::NIL)
 }
 
 fn f_raise_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(arg(args, 0))?;
     f_make_frame_visible(lisp, &[f])?;
-    match lisp.frame(f).output_method {
-        OutputMethod::Initial => Ok(Value::NIL),
+    if let Some(hook) = lisp.frame_terminal_hooks(f).frame_raise_lower {
+        hook(lisp, f, true);
     }
+    Ok(Value::NIL)
 }
 
 fn f_lower_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(arg(args, 0))?;
-    match lisp.frame(f).output_method {
-        OutputMethod::Initial => Ok(Value::NIL),
+    if let Some(hook) = lisp.frame_terminal_hooks(f).frame_raise_lower {
+        hook(lisp, f, false);
     }
+    Ok(Value::NIL)
 }
 
 pub fn init_vars(lisp: &mut Lisp) {
@@ -666,14 +778,19 @@ impl Lisp {
         }
     }
 
+    pub fn frame_terminal_hooks(&self, f: Value) -> crate::terminal::TerminalHooks {
+        self.terminal(self.frame(f).terminal).hooks
+    }
+
     pub fn frame_make_pointer_invisible(&mut self, f: Value) {
         if !self.find_symbol_value(sym::MAKE_POINTER_INVISIBLE).is_nil()
             && self.frame_live_p(f)
             && !self.frame(f).flags.pointer_invisible
+            && let Some(hook) = self.frame_terminal_hooks(f).toggle_invisible_pointer
         {
-            match self.terminal(self.frame(f).terminal).kind {
-                OutputMethod::Initial => {}
-            }
+            self.frame_mut(f).flags.mouse_moved = false;
+            hook(self, f, true);
+            self.frame_mut(f).flags.pointer_invisible = true;
         }
     }
 
@@ -804,7 +921,7 @@ impl Lisp {
 
     fn is_tty_frame(&self, f: Value) -> bool {
         match self.frame(f).output_method {
-            OutputMethod::Initial => false,
+            OutputMethod::Initial | OutputMethod::Pgtk => false,
         }
     }
 
@@ -1596,6 +1713,7 @@ fn framep_value(lisp: &Lisp, object: Value) -> Value {
     }
     match lisp.frame(object).output_method {
         OutputMethod::Initial => sym::T,
+        OutputMethod::Pgtk => sym::PGTK,
     }
 }
 

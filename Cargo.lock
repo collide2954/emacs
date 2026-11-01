@@ -877,16 +877,17 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "emacs"
-version = "0.1.86"
+version = "0.1.87"
 dependencies = [
  "emacs-charsets",
  "emacs-core",
+ "emacs-gui",
  "emacs-unidata",
 ]
 
 [[package]]
 name = "emacs-charsets"
-version = "0.1.86"
+version = "0.1.87"
 dependencies = [
  "flate2",
  "regex",
@@ -894,7 +895,7 @@ dependencies = [
 
 [[package]]
 name = "emacs-core"
-version = "0.1.86"
+version = "0.1.87"
 dependencies = [
  "emacs-unix",
  "emacs-w32",
@@ -906,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "emacs-gui"
-version = "0.1.86"
+version = "0.1.87"
 dependencies = [
  "cosmic-text",
  "emacs-core",
@@ -917,21 +918,21 @@ dependencies = [
 
 [[package]]
 name = "emacs-unidata"
-version = "0.1.86"
+version = "0.1.87"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "emacs-unix"
-version = "0.1.86"
+version = "0.1.87"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "emacs-w32"
-version = "0.1.86"
+version = "0.1.87"
 dependencies = [
  "windows-sys 0.61.2",
 ]

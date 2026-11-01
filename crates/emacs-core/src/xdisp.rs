@@ -180,6 +180,7 @@ impl Lisp {
         let sf = self.frames.selected_frame;
         match self.frame(sf).output_method {
             crate::terminal::OutputMethod::Initial => self.message_to_stderr(m),
+            crate::terminal::OutputMethod::Pgtk => unreachable!(),
         }
     }
 

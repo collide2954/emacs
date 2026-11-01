@@ -9,6 +9,24 @@ use crate::value::Value;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OutputMethod {
     Initial,
+    Pgtk,
+}
+
+pub type StringResourceHook = fn(&mut Lisp, &[u8], &[u8]) -> LispResult<Option<Vec<u8>>>;
+
+#[derive(Clone, Copy, Default, Debug)]
+pub struct TerminalHooks {
+    pub ring_bell: Option<fn(&mut Lisp, Value)>,
+    pub toggle_invisible_pointer: Option<fn(&mut Lisp, Value, bool)>,
+    pub frame_raise_lower: Option<fn(&mut Lisp, Value, bool)>,
+    pub iconify_frame: Option<fn(&mut Lisp, Value)>,
+    pub get_string_resource: Option<StringResourceHook>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct WindowSystem {
+    pub mark: fn(&mut Vec<Value>),
+    pub check_x_display_info: fn(&mut Lisp, Value) -> LispResult<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -24,6 +42,7 @@ pub struct Terminal {
     pub kboard: Option<usize>,
     pub terminal_coding: Box<CodingSystem>,
     pub keyboard_coding: Box<CodingSystem>,
+    pub hooks: TerminalHooks,
 }
 
 impl Terminal {
@@ -155,6 +174,7 @@ impl Lisp {
                 kboard: None,
                 terminal_coding: Box::new(terminal_coding),
                 keyboard_coding: Box::new(keyboard_coding),
+                hooks: TerminalHooks::default(),
             })));
         self.terminals.list.insert(0, terminal);
         Ok(terminal)
@@ -187,13 +207,14 @@ impl Lisp {
 
     pub fn terminal_glyph_code(&self, t: Value, _ch: u32) -> Value {
         match self.terminal(t).kind {
-            OutputMethod::Initial => Value::NIL,
+            OutputMethod::Initial | OutputMethod::Pgtk => Value::NIL,
         }
     }
 
     pub fn terminal_type_symbol(&self, terminal: Value) -> Value {
         match self.terminal(terminal).kind {
             OutputMethod::Initial => sym::T,
+            OutputMethod::Pgtk => sym::PGTK,
         }
     }
 }

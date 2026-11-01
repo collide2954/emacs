@@ -1098,7 +1098,7 @@ impl Lisp {
     fn tty_type_name(&self) -> Option<String> {
         let f = self.frames.selected_frame;
         match self.frame(f).output_method {
-            OutputMethod::Initial => None,
+            OutputMethod::Initial | OutputMethod::Pgtk => None,
         }
     }
 

@@ -34,14 +34,14 @@ impl Lisp {
     pub fn decode_tty_terminal(&mut self, terminal: Value) -> LispResult<Option<TtyTerminal>> {
         let t = self.decode_live_terminal(terminal)?;
         Ok(match self.terminal(t).kind {
-            OutputMethod::Initial => None,
+            OutputMethod::Initial | OutputMethod::Pgtk => None,
         })
     }
 
     pub fn get_named_terminal(&self, _name: &str) -> Option<TtyTerminal> {
         for &t in &self.terminals.list {
             match self.terminal(t).kind {
-                OutputMethod::Initial => {}
+                OutputMethod::Initial | OutputMethod::Pgtk => {}
             }
         }
         None
@@ -81,21 +81,21 @@ fn f_controlling_tty_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_tty_no_underline(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let t = lisp.decode_live_terminal(args[0])?;
     match lisp.terminal(t).kind {
-        OutputMethod::Initial => Ok(Value::NIL),
+        OutputMethod::Initial | OutputMethod::Pgtk => Ok(Value::NIL),
     }
 }
 
 fn f_tty_enable_overline(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let t = lisp.decode_live_terminal(args[1])?;
     match lisp.terminal(t).kind {
-        OutputMethod::Initial => Ok(Value::NIL),
+        OutputMethod::Initial | OutputMethod::Pgtk => Ok(Value::NIL),
     }
 }
 
 fn f_tty_top_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let t = lisp.decode_live_terminal(args[0])?;
     match lisp.terminal(t).kind {
-        OutputMethod::Initial => Ok(Value::NIL),
+        OutputMethod::Initial | OutputMethod::Pgtk => Ok(Value::NIL),
     }
 }
 
@@ -138,7 +138,7 @@ fn f_tty_output_buffer_size(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn tty_frame_geometry(lisp: &mut Lisp, frame: Value, _attribute: Value) -> LispResult {
     let f = lisp.decode_live_frame(frame)?;
     match lisp.frame(f).output_method {
-        OutputMethod::Initial => Ok(Value::NIL),
+        OutputMethod::Initial | OutputMethod::Pgtk => Ok(Value::NIL),
     }
 }
 
@@ -168,6 +168,7 @@ fn tty_display_dimension(lisp: &Lisp, frame: Value) -> (i64, i64) {
     };
     match lisp.frame(frame).output_method {
         OutputMethod::Initial => (80, 25),
+        OutputMethod::Pgtk => unreachable!(),
     }
 }
 

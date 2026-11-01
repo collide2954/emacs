@@ -346,7 +346,7 @@ impl Default for Keyboard {
     }
 }
 
-fn f_set_input_interrupt_mode(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_set_input_interrupt_mode(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let new_interrupt_input = cfg!(unix) && !args[0].is_nil();
     if new_interrupt_input != lisp.keyboard.interrupt_input {
         lisp.keyboard.interrupt_input = new_interrupt_input;
@@ -390,7 +390,9 @@ fn f_current_input_mode(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let sf = lisp.frames.selected_frame;
     let interrupt = lisp.bool(lisp.keyboard.interrupt_input);
     let (flow, meta) = match lisp.frame(sf).output_method {
-        crate::terminal::OutputMethod::Initial => (Value::NIL, sym::T),
+        crate::terminal::OutputMethod::Initial | crate::terminal::OutputMethod::Pgtk => {
+            (Value::NIL, sym::T)
+        }
     };
     let quit = Value::fixnum(lisp.keyboard.quit_char);
     Ok(lisp.list(&[interrupt, flow, meta, quit]))

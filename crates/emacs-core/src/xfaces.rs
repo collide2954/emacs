@@ -1563,6 +1563,7 @@ impl Lisp {
     pub fn defined_color(&mut self, f: Value, color_name: &[u8]) -> LispResult<(bool, EmacsColor)> {
         match self.frame(f).output_method {
             OutputMethod::Initial => self.tty_defined_color(f, color_name),
+            OutputMethod::Pgtk => unreachable!(),
         }
     }
 
@@ -1717,6 +1718,7 @@ impl Lisp {
         }
         let face = match self.frame(f).output_method {
             crate::terminal::OutputMethod::Initial => Face::make_realized(attrs),
+            crate::terminal::OutputMethod::Pgtk => unreachable!(),
         };
         let hash = lface_hash(self, &attrs);
         self.face_cache_mut(f).cache_face(face, hash)

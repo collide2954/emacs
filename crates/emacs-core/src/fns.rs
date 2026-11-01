@@ -3231,7 +3231,7 @@ fn f_featurep(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(!tem.is_nil()))
 }
 
-pub(crate) fn f_provide(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_provide(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let feature = lisp.check_symbol(args[0])?;
     let subfeatures = lisp.check_list(args[1])?;
     let features = lisp.plain_value(sym::FEATURES);

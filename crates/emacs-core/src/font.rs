@@ -1545,6 +1545,7 @@ fn f_internal_char_font(lisp: &mut Lisp, args: &[Value]) -> LispResult {
             let t = lisp.frame(f).terminal;
             Ok(lisp.terminal_glyph_code(t, c as u32))
         }
+        crate::terminal::OutputMethod::Pgtk => unreachable!(),
     }
 }
 

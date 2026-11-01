@@ -190,9 +190,10 @@ impl Lisp {
             self.set_plain_value(sym::RING_BELL_FUNCTION, function);
             Ok(())
         } else {
-            match self.terminal(self.frame(f).terminal).kind {
-                crate::terminal::OutputMethod::Initial => Ok(()),
+            if let Some(hook) = self.frame_terminal_hooks(f).ring_bell {
+                hook(self, f);
             }
+            Ok(())
         }
     }
 }
@@ -290,6 +291,23 @@ fn f_frame_or_buffer_changed_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         lisp.vector_set(state, i, v);
     }
     Ok(sym::T)
+}
+
+impl Lisp {
+    fn init_display_interactive(&mut self) {
+        self.set_plain_value(sym::INVERSE_VIDEO, Value::NIL);
+        self.set_plain_value(sym::CURSOR_IN_ECHO_AREA, Value::NIL);
+        self.set_plain_value(sym::INITIAL_WINDOW_SYSTEM, Value::NIL);
+        if self.window_system.is_some() && !self.startup.inhibit_window_system {
+            self.set_plain_value(sym::INITIAL_WINDOW_SYSTEM, sym::PGTK);
+        }
+    }
+
+    pub fn init_display(&mut self) {
+        if !self.noninteractive {
+            self.init_display_interactive();
+        }
+    }
 }
 
 pub fn init_vars(lisp: &mut Lisp) {
