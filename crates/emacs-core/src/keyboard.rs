@@ -10,6 +10,7 @@ use crate::terminal::OutputMethod;
 use crate::timefns::{Timespec, current_timespec, timespec_sub};
 use crate::value::Value;
 
+pub mod cmdloop;
 pub mod events;
 pub mod keyseq;
 pub mod reader;
@@ -83,12 +84,8 @@ pub const SUBRS: &[Subr] = &[
 ];
 
 impl Lisp {
-    pub fn command_loop(&mut self) -> LispResult<()> {
-        self.internal_catch(sym::TOP_LEVEL, |l| l.top_level_1())?;
-        if self.noninteractive {
-            crate::emacs::f_kill_emacs(self, &[sym::T, Value::NIL])?;
-        }
-        Ok(())
+    pub fn init_keyboard(&mut self) {
+        self.minibuf.command_loop_level = -1;
     }
 
     fn top_level_1(&mut self) -> LispResult {
@@ -405,6 +402,8 @@ pub struct Keyboard {
     pub raw_keybuf: Vec<Value>,
     pub read_key_sequence_cmd: Value,
     pub read_key_sequence_remapped: Value,
+    pub num_input_events: u64,
+    pub last_point_position: usize,
 }
 
 impl Default for Keyboard {
@@ -448,6 +447,8 @@ impl Default for Keyboard {
             raw_keybuf: Vec::new(),
             read_key_sequence_cmd: Value::NIL,
             read_key_sequence_remapped: Value::NIL,
+            num_input_events: 0,
+            last_point_position: 0,
         }
     }
 }

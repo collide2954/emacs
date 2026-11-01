@@ -39,7 +39,7 @@ fn reading_unread_and_queued_events() {
             &[
                 (
                     "(progn (setq unread-command-events '(97)) (list (read-event) (this-command-keys-vector) (recent-keys) last-input-event num-input-keys))",
-                    "(97 [97] [97] 97 1)",
+                    "(97 [97] [97] 97 0)",
                 ),
                 (
                     "(progn (setq unread-command-events '((t . 98))) (list (read-event) (this-command-keys-vector)))",

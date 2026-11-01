@@ -257,8 +257,12 @@ impl Lisp {
         buffer: Value,
         pos: usize,
         prop: Value,
+        window: Value,
     ) -> Option<(Value, Value)> {
         for ov in self.sorted_overlays_at(buffer, pos) {
+            if !window.is_nil() && !self.overlay_matches_window(window, ov) {
+                continue;
+            }
             let plist = self.overlay(ov).plist;
             let mut tail = plist;
             while tail.is_cons() {
@@ -571,7 +575,7 @@ fn f_overlay_recenter(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_overlay_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_overlay_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let o = lisp.check_overlay(args[0])?;
     Ok(lisp.overlay_get(o, args[1]))
 }

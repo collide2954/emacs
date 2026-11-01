@@ -837,10 +837,16 @@ impl Lisp {
         prop: Value,
         object: Value,
     ) -> LispResult<(Value, Value)> {
+        let mut object = object;
+        let mut window = Value::NIL;
+        if self.is_window(object) {
+            window = self.check_live_window(object)?;
+            object = self.window(window).contents;
+        }
         let obj = self.decode_obj(object)?;
         if let Obj::Buffer(b) = obj {
             let pos = self.validate_position(obj, position)?;
-            if let Some((val, ov)) = self.overlay_property_at(b, pos, prop) {
+            if let Some((val, ov)) = self.overlay_property_at(b, pos, prop, window) {
                 return Ok((val, ov));
             }
             let plist = self.props_at(obj, pos);
@@ -1020,6 +1026,13 @@ impl Lisp {
     }
 
     pub fn get_pos_property(&mut self, position: Value, prop: Value, object: Value) -> LispResult {
+        let mut object = object;
+        if self.is_window(object) {
+            object = self.window(object).contents;
+            if !self.is_buffer(object) {
+                return f_get_text_property(self, &[position, prop, object]);
+            }
+        }
         let obj = self.decode_obj(object)?;
         let pos = self.validate_position(obj, position)?;
         if let Obj::Buffer(b) = obj

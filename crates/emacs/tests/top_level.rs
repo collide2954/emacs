@@ -28,6 +28,9 @@ fn run(dir: &Path, source: &str) -> Output {
 
 const FOO: &str = "(defalias 'foo (function (lambda () (signal 'error '(\"Boo\")))))\n";
 
+const COMMANDS: &str = "(defalias 'command-execute (function (lambda (cmd &rest _) (funcall cmd))))\n\
+                        (defalias 'undo-auto--add-boundary (function (lambda () nil)))\n";
+
 #[test]
 fn unhandled_error_in_batch() {
     let dir = scratch("unhandled");
@@ -54,6 +57,9 @@ fn command_error_function() {
             "(defalias 'debug-early--handler (function (lambda (_err) nil)))\n\
              (setq kill-emacs-hook (list (function (lambda () (princ \"bye\")))))\n\
              (setq command-error-function (function (lambda (data context signal) (message \"cef %S %S %S\" data context signal))))\n\
+             {COMMANDS}(use-global-map (make-sparse-keymap))\n\
+             (define-key (current-global-map) [113] 'kill-emacs)\n\
+             (setq unread-command-events '(113))\n\
              {FOO}(foo)\n"
         ),
     );
@@ -64,12 +70,23 @@ fn command_error_function() {
 }
 
 #[test]
-fn end_of_top_level_kills_emacs() {
-    let dir = scratch("end");
+fn command_loop_after_top_level() {
+    let dir = scratch("loop");
     let out = run(
         &dir,
-        "(setq kill-emacs-hook (list (function (lambda () (princ \"bye\")))))\n",
+        &format!(
+            "(setq kill-emacs-hook (list (function (lambda () (princ \"bye\")))))\n\
+             {COMMANDS}(defalias 'finish (function (lambda () (princ (format \"%S %S \" this-command (recursion-depth))) (kill-emacs 3))))\n\
+             (use-global-map (make-sparse-keymap))\n\
+             (define-key (current-global-map) [113] 'finish)\n\
+             (setq unread-command-events '(113))\n"
+        ),
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "bye");
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "finish 0 bye",
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(3));
 }

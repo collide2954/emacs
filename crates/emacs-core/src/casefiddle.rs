@@ -11,6 +11,10 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("upcase-initials", 1, 1, f_upcase_initials),
 ];
 
+pub fn init_vars(lisp: &mut Lisp) {
+    lisp.defvar(sym::REGION_EXTRACT_FUNCTION, Value::NIL);
+}
+
 pub fn upcase_char(c: u32) -> u32 {
     match char::from_u32(c) {
         Some(ch) => {

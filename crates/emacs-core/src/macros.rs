@@ -47,6 +47,11 @@ impl Lisp {
         kb.kbd_macro_ptr += 1;
     }
 
+    pub fn finalize_kbd_macro_chars(&mut self) {
+        let kb = &mut self.kboards[self.current_kboard];
+        kb.kbd_macro_end = kb.kbd_macro_ptr;
+    }
+
     pub fn end_kbd_macro(&mut self) {
         self.set_kvar(Kvar::DefiningKbdMacro, Value::NIL);
         self.windows.update_mode_lines = 20;

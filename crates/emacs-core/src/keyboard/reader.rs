@@ -258,7 +258,7 @@ impl Lisp {
         self.vector_items(self.keyboard.recent_keys)[i]
     }
 
-    fn set_recent_key(&mut self, i: usize, value: Value) {
+    pub(super) fn set_recent_key(&mut self, i: usize, value: Value) {
         if let crate::object::Vectorlike::Vector(items) =
             self.heap.vectorlike_mut(self.keyboard.recent_keys)
         {
@@ -1153,8 +1153,7 @@ impl Lisp {
                         self.echo_update()?;
                     }
                     self.set_plain_value(sym::LAST_INPUT_EVENT, c);
-                    let n = self.int_var(sym::NUM_INPUT_KEYS);
-                    self.set_forwarded_int(sym::NUM_INPUT_KEYS, n + 1);
+                    self.keyboard.num_input_events += 1;
                     if !self.plain_value(sym::HELP_FORM).is_nil() && self.help_char_p(c) {
                         let count = self.specpdl.len();
                         let config =

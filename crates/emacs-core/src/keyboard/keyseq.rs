@@ -102,7 +102,7 @@ impl Lisp {
         Ok(())
     }
 
-    fn kill_emacs_unless_selected_frame_live(&mut self) -> LispResult<()> {
+    pub(super) fn kill_emacs_unless_selected_frame_live(&mut self) -> LispResult<()> {
         if !self.frame_live_p(self.frames.selected_frame) {
             crate::emacs::f_kill_emacs(self, &[Value::NIL, Value::NIL])?;
         }

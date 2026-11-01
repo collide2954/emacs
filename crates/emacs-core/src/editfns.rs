@@ -1083,6 +1083,24 @@ impl Lisp {
         b.pt = pos;
         b.pt_byte = b.text.char_to_byte(pos);
     }
+
+    pub fn labeled_narrow_to_region(
+        &mut self,
+        begv: Value,
+        zv: Value,
+        label: Value,
+    ) -> LispResult<()> {
+        let point = f_point_marker(self, &[])?;
+        self.record_unwind(crate::fileio::restore_point_unwind, point);
+        self.record_unwind(unwind_labeled_narrow_to_region, label);
+        f_labeled_narrow_to_region(self, &[begv, zv, label])?;
+        Ok(())
+    }
+}
+
+fn unwind_labeled_narrow_to_region(lisp: &mut Lisp, label: Value) -> LispResult<()> {
+    f_labeled_widen(lisp, &[label])?;
+    Ok(())
 }
 
 fn f_save_restriction(lisp: &mut Lisp, body: Value) -> LispResult {

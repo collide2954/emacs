@@ -2465,7 +2465,7 @@ fn f_frame_live_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-fn f_window_system(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_window_system(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let frame = if arg(args, 0).is_nil() {
         lisp.frames.selected_frame
     } else {

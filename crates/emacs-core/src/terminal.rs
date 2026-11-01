@@ -442,7 +442,7 @@ fn f_terminal_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     crate::fns::f_copy_alist(lisp, &[alist])
 }
 
-fn f_terminal_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_terminal_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let parameter = lisp.check_symbol(args[1])?;
     let t = lisp.decode_live_terminal(args[0])?;
     let alist = lisp.terminal(t).param_alist;

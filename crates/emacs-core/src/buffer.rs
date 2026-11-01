@@ -635,6 +635,8 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::DELETE_AUTO_SAVE_FILES, sym::T);
     lisp.defvar_int(sym::LARGE_HSCROLL_THRESHOLD, 10000);
     lisp.defvar(sym::LONG_LINE_THRESHOLD, Value::fixnum(50000));
+    lisp.defvar_int(sym::LONG_LINE_OPTIMIZATIONS_REGION_SIZE, 500_000);
+    lisp.defvar_int(sym::LONG_LINE_OPTIMIZATIONS_BOL_SEARCH_LIMIT, 128);
     lisp.defvar(sym::UNDO_OUTER_LIMIT, Value::fixnum(24_000_000));
     lisp.defvar_int(sym::UNDO_LIMIT, 160_000);
     lisp.defvar_int(sym::UNDO_STRONG_LIMIT, 240_000);

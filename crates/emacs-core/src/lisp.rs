@@ -192,6 +192,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::keyboard::events::SUBRS,
     crate::keyboard::reader::SUBRS,
     crate::keyboard::keyseq::SUBRS,
+    crate::keyboard::cmdloop::SUBRS,
     crate::macros::SUBRS,
     crate::keymap::SUBRS,
     crate::syntax::SUBRS,
@@ -261,6 +262,7 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::syntax::init_vars,
     crate::category::init_vars,
     crate::casetab::init_vars,
+    crate::casefiddle::init_vars,
     crate::search::init_vars,
     crate::timefns::init_vars,
     crate::charset::init_vars,
@@ -1136,6 +1138,7 @@ impl Lisp {
         roots.push(self.xdisp.message_stack);
         roots.push(self.xdisp.echo_area_window);
         roots.extend_from_slice(&self.xdisp.echo_area_buffer);
+        roots.push(self.xdisp.redisplay_ticks_window);
         self.keyboard.roots(&mut roots);
         roots.push(self.fileio.annotation_buffers);
         for kboard in &self.kboards {

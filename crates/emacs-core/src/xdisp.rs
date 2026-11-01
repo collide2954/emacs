@@ -182,6 +182,18 @@ pub struct Xdisp {
     pub echo_area_window: Value,
     pub echo_area_buffer: [Value; 2],
     pub help_echo_showing_p: bool,
+    pub display_working_on_window_p: bool,
+    pub redisplay_ticks_window: Value,
+    pub window_ticks: i64,
+}
+
+#[derive(Clone, Copy)]
+struct DisplaySpecContext {
+    object: Value,
+    position: usize,
+    bufpos: usize,
+    frame_window_p: bool,
+    enable_eval: bool,
 }
 
 pub fn pop_message_unwind(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
@@ -955,5 +967,277 @@ impl Lisp {
 
     pub fn get_font_ascent_descent(&mut self, font: Value) -> (i32, i32) {
         self.normal_char_ascent_descent(font, -1)
+    }
+}
+
+impl Lisp {
+    pub fn get_large_narrowing_begv(&self, pos: usize) -> usize {
+        let b = self.cur();
+        let size = self.int_var(sym::LONG_LINE_OPTIMIZATIONS_REGION_SIZE);
+        if size <= 0 {
+            return b.begv;
+        }
+        let len = size / 2;
+        let mut begv = (pos as i64 - len).max(b.begv as i64) as usize;
+        let mut limit = self.int_var(sym::LONG_LINE_OPTIMIZATIONS_BOL_SEARCH_LIMIT);
+        while limit > 0 {
+            if begv == b.begv || b.text.byte_at(b.text.char_to_byte(begv) - 1) == b'\n' {
+                return begv;
+            }
+            begv -= 1;
+            limit -= 1;
+        }
+        begv
+    }
+
+    pub fn get_large_narrowing_zv(&self, pos: usize) -> usize {
+        let zv = self.cur().zv;
+        let size = self.int_var(sym::LONG_LINE_OPTIMIZATIONS_REGION_SIZE);
+        if size <= 0 {
+            return zv;
+        }
+        (pos as i64 + size / 2).min(zv as i64) as usize
+    }
+
+    pub fn update_redisplay_ticks(&mut self, ticks: i64, w: Value) -> LispResult<()> {
+        if ticks == 0 && w != self.xdisp.redisplay_ticks_window {
+            self.xdisp.redisplay_ticks_window = w;
+            self.xdisp.window_ticks = 0;
+        }
+        if (w.is_nil() && !self.xdisp.redisplaying_p && !self.xdisp.display_working_on_window_p)
+            || (!w.is_nil() && self.window(w).mini)
+        {
+            return Ok(());
+        }
+        if ticks > 0 {
+            self.xdisp.window_ticks += ticks;
+        }
+        let max_redisplay_ticks = self.int_var(sym::MAX_REDISPLAY_TICKS);
+        if max_redisplay_ticks > 0 && self.xdisp.window_ticks > max_redisplay_ticks {
+            let contents = if w.is_nil() {
+                Value::NIL
+            } else {
+                self.window(w).contents
+            };
+            let bufname = if contents.is_nil() {
+                self.string_to_rust(self.cur().name)
+            } else if self.is_buffer(contents) {
+                self.string_to_rust(self.buffer(contents).name)
+            } else {
+                "<unknown>".to_string()
+            };
+            self.windows.windows_or_buffers_changed = 177;
+            return Err(self.verror(
+                "Window showing buffer %s takes too long to redisplay",
+                &[crate::doprnt::Arg::Str(bufname.as_bytes())],
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn resize_echo_area_exactly(&mut self) {
+        if self.is_buffer(self.xdisp.echo_area_buffer[0])
+            && self.is_window(self.xdisp.echo_area_window)
+        {
+            unreachable!("resize_echo_area_exactly needs resize_mini_window and glyph matrices");
+        }
+    }
+
+    fn safe_eval_handler(&mut self, arg: Value, args: &[Value]) -> LispResult {
+        let list = self.list(args);
+        self.add_to_log("Error during redisplay: %S signaled %S", &[list, arg])?;
+        Ok(Value::NIL)
+    }
+
+    pub fn safe_call(&mut self, inhibit_quit: bool, args: &[Value]) -> LispResult {
+        if self.var_true(sym::INHIBIT_EVAL_DURING_REDISPLAY) {
+            return Ok(Value::NIL);
+        }
+        let count = self.specpdl_index();
+        self.specbind(sym::INHIBIT_REDISPLAY, sym::T)?;
+        if inhibit_quit {
+            self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+        }
+        let base = self.stack.len();
+        self.stack.extend_from_slice(args);
+        let r = self.condition_case_internal(
+            sym::T,
+            |l| l.funcall(args[0], &args[1..]),
+            |l, error| l.safe_eval_handler(error, args),
+        );
+        self.stack.truncate(base);
+        self.unbind_to_value(count, r)
+    }
+
+    pub fn dsafe_eval(&mut self, sexpr: Value) -> LispResult {
+        self.safe_call(true, &[sym::EVAL, sexpr])
+    }
+
+    pub fn valid_image_p(&self, object: Value) -> bool {
+        if object.is_cons() && self.xcar(object) == sym::IMAGE {
+            unreachable!("valid_image_p needs image.c's image types");
+        }
+        false
+    }
+
+    pub fn display_prop_intangible_p(&mut self, prop: Value, charpos: usize) -> LispResult<bool> {
+        let frame_window_p = self.frame_window_p(self.frames.selected_frame);
+        let ctx = DisplaySpecContext {
+            object: Value::NIL,
+            position: charpos,
+            bufpos: charpos,
+            frame_window_p,
+            enable_eval: true,
+        };
+        Ok(self.handle_display_spec_without_iterator(prop, ctx)? != 0)
+    }
+
+    fn handle_display_spec_without_iterator(
+        &mut self,
+        mut spec: Value,
+        mut ctx: DisplaySpecContext,
+    ) -> LispResult<i32> {
+        let mut replacing = 0;
+        if spec.is_cons() && self.xcar(spec) == sym::DISABLE_EVAL {
+            ctx.enable_eval = false;
+            let rest = self.xcdr(spec);
+            spec = if rest.is_cons() {
+                self.xcar(rest)
+            } else {
+                Value::NIL
+            };
+        }
+        let simple_list = spec.is_cons() && {
+            let head = self.xcar(spec);
+            ![
+                sym::IMAGE,
+                sym::SPACE,
+                sym::WHEN,
+                sym::SLICE,
+                sym::SPACE_WIDTH,
+                sym::HEIGHT,
+                sym::RAISE,
+                sym::LEFT_FRINGE,
+                sym::RIGHT_FRINGE,
+                sym::MIN_WIDTH,
+            ]
+            .contains(&head)
+                && !(head.is_cons() && self.xcar(head) == sym::MARGIN)
+                && !head.is_nil()
+        };
+        if simple_list {
+            let mut tail = spec;
+            while tail.is_cons() {
+                let item = self.xcar(tail);
+                let rv = self.handle_single_display_spec_without_iterator(item, ctx, replacing)?;
+                if rv != 0 {
+                    replacing = rv;
+                    break;
+                }
+                tail = self.xcdr(tail);
+            }
+        } else if self.is_vector(spec) {
+            let mut i = 0;
+            while i < self.vector_items(spec).len() {
+                let item = self.vector_items(spec)[i];
+                let rv = self.handle_single_display_spec_without_iterator(item, ctx, replacing)?;
+                if rv != 0 {
+                    replacing = rv;
+                    break;
+                }
+                i += 1;
+            }
+        } else {
+            replacing = self.handle_single_display_spec_without_iterator(spec, ctx, 0)?;
+        }
+        Ok(replacing)
+    }
+
+    fn handle_single_display_spec_without_iterator(
+        &mut self,
+        mut spec: Value,
+        ctx: DisplaySpecContext,
+        display_replaced: i32,
+    ) -> LispResult<i32> {
+        let mut form = sym::T;
+        if spec.is_cons() && self.xcar(spec) == sym::WHEN {
+            spec = self.xcdr(spec);
+            if !spec.is_cons() {
+                return Ok(0);
+            }
+            form = self.xcar(spec);
+            spec = self.xcdr(spec);
+        }
+        if !form.is_nil() && form != sym::T && !ctx.enable_eval {
+            form = Value::NIL;
+        }
+        if !form.is_nil() && form != sym::T {
+            let count = self.specpdl_index();
+            let object = if ctx.object.is_nil() {
+                self.current_buffer
+            } else {
+                ctx.object
+            };
+            self.specbind(sym::OBJECT, object)?;
+            self.specbind(sym::POSITION, Value::fixnum(ctx.position as i64))?;
+            self.specbind(sym::BUFFER_POSITION, Value::fixnum(ctx.bufpos as i64))?;
+            self.stack.push(spec);
+            let r = self.dsafe_eval(form);
+            self.stack.pop();
+            form = self.unbind_to_value(count, r)?;
+        }
+        if form.is_nil() {
+            return Ok(0);
+        }
+        let head = self.car_safe(spec);
+        let rest = self.cdr_safe(spec);
+        if spec.is_cons()
+            && (head == sym::HEIGHT || head == sym::SPACE_WIDTH || head == sym::RAISE)
+            && rest.is_cons()
+        {
+            return Ok(0);
+        }
+        if spec.is_cons() && head == sym::MIN_WIDTH && rest.is_cons() && self.xcar(rest).is_cons() {
+            return Ok(0);
+        }
+        if spec.is_cons() && head == sym::SLICE {
+            return Ok(0);
+        }
+        if spec.is_cons()
+            && (head == sym::LEFT_FRINGE || head == sym::RIGHT_FRINGE)
+            && rest.is_cons()
+        {
+            return Ok(1);
+        }
+        let mut location = sym::UNBOUND;
+        let mut value = Value::NIL;
+        if spec.is_cons() && head.is_cons() {
+            value = rest;
+            if value.is_cons() {
+                value = self.xcar(value);
+            }
+            if self.xcar(head) == sym::MARGIN {
+                let tem = self.xcdr(head);
+                let tem = if tem.is_cons() {
+                    self.xcar(tem)
+                } else {
+                    Value::NIL
+                };
+                if tem.is_nil() || tem == sym::LEFT_MARGIN || tem == sym::RIGHT_MARGIN {
+                    location = tem;
+                }
+            }
+        }
+        if location == sym::UNBOUND {
+            location = Value::NIL;
+            value = spec;
+        }
+        let space = value.is_cons() && self.xcar(value) == sym::SPACE;
+        let valid_p =
+            value.is_string() || (ctx.frame_window_p && self.valid_image_p(value)) || space;
+        if valid_p && display_replaced == 0 {
+            return Ok(if space && location.is_nil() { 2 } else { 1 });
+        }
+        Ok(0)
     }
 }

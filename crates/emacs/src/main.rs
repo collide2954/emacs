@@ -57,6 +57,7 @@ fn run(startup: Startup, display: Option<Display>) -> i32 {
         emacs_gui::install(&mut lisp, display);
     }
     lisp.init_display();
+    lisp.init_keyboard();
     match find_source_root() {
         Some(root) => lisp.set_source_directory(&root),
         None => {
@@ -79,7 +80,10 @@ fn run(startup: Startup, display: Option<Display>) -> i32 {
         let top_level = lisp.list(&[sym::LOAD, loadup]);
         lisp.set_plain_value(sym::TOP_LEVEL, top_level);
     }
-    let result = lisp.catch_all(|l| l.command_loop().map(|()| emacs_core::value::Value::NIL));
+    let result = lisp.catch_all(|l| {
+        l.set_initial_minibuffer_mode()?;
+        l.recursive_edit()
+    });
     let _ = lisp.stdout.flush();
     match result {
         Ok(_) => 0,
