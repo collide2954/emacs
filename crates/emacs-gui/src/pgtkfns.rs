@@ -24,6 +24,18 @@ static SUBRS: &[Subr] = &[
     Subr::fixed("xw-color-values", 1, 2, f_xw_color_values),
     Subr::fixed("x-open-connection", 1, 3, f_x_open_connection),
     Subr::fixed("x-close-connection", 1, 1, f_x_close_connection),
+    Subr::fixed(
+        "x-server-max-request-size",
+        0,
+        1,
+        f_x_server_max_request_size,
+    ),
+    Subr::fixed("x-display-screens", 0, 1, f_x_display_screens),
+    Subr::fixed("x-display-backing-store", 0, 1, f_x_display_backing_store),
+    Subr::fixed("x-display-visual-class", 0, 1, f_x_display_visual_class),
+    Subr::fixed("x-display-save-under", 0, 1, f_x_display_save_under),
+    Subr::fixed("x-display-planes", 0, 1, f_x_display_planes),
+    Subr::fixed("x-display-color-cells", 0, 1, f_x_display_color_cells),
     Subr::fixed("x-display-list", 0, 0, f_x_display_list),
     Subr::fixed("x-create-frame", 1, 1, f_x_create_frame),
 ];
@@ -175,6 +187,41 @@ fn f_x_open_connection(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         return Err(lisp.verror("Display on %s not responding.\n", &[Arg::Str(&name)]));
     }
     Ok(Value::NIL)
+}
+
+fn f_x_server_max_request_size(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    check_pgtk_display_info(lisp, arg(args, 0))?;
+    Ok(Value::NIL)
+}
+
+fn f_x_display_screens(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    check_pgtk_display_info(lisp, arg(args, 0))?;
+    Ok(Value::fixnum(1))
+}
+
+fn f_x_display_backing_store(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    check_pgtk_display_info(lisp, arg(args, 0))?;
+    Ok(Value::NIL)
+}
+
+fn f_x_display_visual_class(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    Ok(lisp.intern("true-color"))
+}
+
+fn f_x_display_save_under(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    check_pgtk_display_info(lisp, arg(args, 0))?;
+    Ok(Value::NIL)
+}
+
+fn f_x_display_planes(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    check_pgtk_display_info(lisp, arg(args, 0))?;
+    Ok(Value::fixnum(32))
+}
+
+fn f_x_display_color_cells(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let dpyinfo = check_pgtk_display_info(lisp, arg(args, 0))?;
+    let n_planes = lisp.display_info(dpyinfo).n_planes;
+    Ok(Value::fixnum(1 << n_planes.min(24)))
 }
 
 fn f_x_close_connection(lisp: &mut Lisp, args: &[Value]) -> LispResult {

@@ -129,6 +129,38 @@ fn x_open_connection_makes_a_pgtk_terminal() {
 }
 
 #[test]
+fn display_queries() {
+    on_big_stack(|| {
+        let mut lisp = booted(Startup::program(false));
+        assert_eq!(
+            eval(&mut lisp, "(x-display-planes)"),
+            "error: (error \"Frames are not in use or not initialized\")"
+        );
+        assert_eq!(eval(&mut lisp, "(x-display-visual-class)"), "true-color");
+        eval(
+            &mut lisp,
+            "(progn (setq x-resource-name \"emacs\") (x-open-connection nil))",
+        );
+        for (source, expected) in [
+            ("(x-display-planes)", "32"),
+            ("(x-display-color-cells)", "16777216"),
+            ("(x-display-screens)", "1"),
+            ("(x-server-max-request-size)", "nil"),
+            ("(x-display-backing-store)", "nil"),
+            ("(x-display-save-under)", "nil"),
+            ("(x-display-visual-class 7)", "true-color"),
+            (
+                "(x-display-color-cells 5)",
+                "error: (wrong-type-argument frame-live-p 5)",
+            ),
+            ("(x-display-planes (car (x-display-list)))", "32"),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+    });
+}
+
+#[test]
 fn x_get_resource_without_a_defaults_database() {
     on_big_stack(|| {
         let mut lisp = booted(Startup::program(false));
