@@ -49,6 +49,7 @@ pub struct PgtkOutput {
     pub preferred_width: i64,
     pub preferred_height: i64,
     pub widget: bool,
+    pub drag_dest_targets: Option<Vec<Vec<u8>>>,
 }
 
 thread_local! {

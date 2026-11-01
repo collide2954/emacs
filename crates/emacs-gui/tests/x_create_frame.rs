@@ -122,6 +122,61 @@ fn window_fringes_scroll_bars_and_margins_on_a_pgtk_frame() {
 }
 
 #[test]
+fn pgtk_register_dnd_targets_sets_the_frame_drop_targets() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::boot(Startup::program(false));
+        emacs_gui::install(
+            &mut lisp,
+            Display::new(fmpsc::unbounded().0, mpsc::channel().1),
+        );
+        connect(&mut lisp);
+        assert_eq!(
+            eval(&mut lisp, "(pgtk-register-dnd-targets nil '(\"STRING\"))"),
+            "error: (error \"Window system frame should be used\")"
+        );
+        eval(
+            &mut lisp,
+            "(setq f (x-create-frame '((name . \"d\") (width . 20) (height . 5))))",
+        );
+        for (source, expected) in [
+            (
+                "(pgtk-register-dnd-targets f '(\"text/uri-list\" \"STRING\"))",
+                "nil",
+            ),
+            (
+                "(pgtk-register-dnd-targets f 'x)",
+                "error: (wrong-type-argument listp x)",
+            ),
+            (
+                "(pgtk-register-dnd-targets f '(\"a\" . \"b\"))",
+                "error: (wrong-type-argument listp \"b\")",
+            ),
+            (
+                "(pgtk-register-dnd-targets f '(\"a\" 1))",
+                "error: (wrong-type-argument stringp 1)",
+            ),
+            (
+                "(pgtk-register-dnd-targets 'g nil)",
+                "error: (wrong-type-argument frame-live-p g)",
+            ),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+        let symbol = lisp.intern("f");
+        let f = lisp.find_symbol_value(symbol);
+        assert_eq!(
+            emacs_gui::pgtkterm::with_output(&lisp, f, |output| output.drag_dest_targets.clone()),
+            Some(vec![b"text/uri-list".to_vec(), b"STRING".to_vec()])
+        );
+        eval(&mut lisp, "(pgtk-register-dnd-targets f nil)");
+        assert_eq!(
+            emacs_gui::pgtkterm::with_output(&lisp, f, |output| output.drag_dest_targets.clone()),
+            Some(Vec::new())
+        );
+    });
+}
+
+#[test]
 fn x_create_frame_makes_a_visible_pgtk_frame() {
     on_big_stack(|| {
         let mut lisp = Lisp::boot(Startup::program(false));
