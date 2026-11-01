@@ -426,6 +426,23 @@ pub fn emoji_zwj_el(sources: &[&str]) -> String {
     out
 }
 
+pub fn unidata_txt(unicode_data: &str) -> String {
+    let mut out = String::with_capacity(unicode_data.len() * 2);
+    for line in unicode_data.split_inclusive('\n') {
+        let (body, newline) = match line.strip_suffix('\n') {
+            Some(body) => (body, "\n"),
+            None => (line, ""),
+        };
+        let body = match body.split_once(';') {
+            Some((code, rest)) => format!("(#x{code} \"{rest}\")"),
+            None => body.to_owned(),
+        };
+        out.push_str(&body.replace(';', "\" \""));
+        out.push_str(newline);
+    }
+    out
+}
+
 fn read(dir: &Path, name: &str) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&fs::read(dir.join(name))?).into_owned())
 }
@@ -433,17 +450,40 @@ fn read(dir: &Path, name: &str) -> io::Result<String> {
 pub fn generate(top: &Path) -> io::Result<()> {
     let unidata = top.join("admin/unidata");
     let out = top.join("lisp/international");
-    let charscript = charscript_el(
-        &read(&unidata, "Blocks.txt")?,
-        &read(&unidata, "emoji-data.txt")?,
-    );
-    fs::write(out.join("charscript.el"), charscript)?;
-    let zwj: Vec<String> = ZWJ_SOURCES
-        .iter()
-        .map(|name| read(&unidata, name))
-        .collect::<io::Result<_>>()?;
-    let zwj: Vec<&str> = zwj.iter().map(String::as_str).collect();
-    fs::write(out.join("emoji-zwj.el"), emoji_zwj_el(&zwj))?;
+    if !current(
+        &out.join("charscript.el"),
+        &unidata,
+        &BLOCKS_SOURCES,
+        "blocks.awk",
+    ) {
+        let charscript = charscript_el(
+            &read(&unidata, "Blocks.txt")?,
+            &read(&unidata, "emoji-data.txt")?,
+        );
+        fs::write(out.join("charscript.el"), charscript)?;
+    }
+    if !current(
+        &out.join("emoji-zwj.el"),
+        &unidata,
+        &ZWJ_SOURCES,
+        "emoji-zwj.awk",
+    ) {
+        let zwj: Vec<String> = ZWJ_SOURCES
+            .iter()
+            .map(|name| read(&unidata, name))
+            .collect::<io::Result<_>>()?;
+        let zwj: Vec<&str> = zwj.iter().map(String::as_str).collect();
+        fs::write(out.join("emoji-zwj.el"), emoji_zwj_el(&zwj))?;
+    }
+    if !current(
+        &unidata.join("unidata.txt"),
+        &unidata,
+        &[],
+        "UnicodeData.txt",
+    ) {
+        let unicode_data = read(&unidata, "UnicodeData.txt")?;
+        fs::write(unidata.join("unidata.txt"), unidata_txt(&unicode_data))?;
+    }
     Ok(())
 }
 
@@ -451,18 +491,33 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
     fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
+fn current(target: &Path, unidata: &Path, sources: &[&str], script: &str) -> bool {
+    let Some(t) = modified(target) else {
+        return false;
+    };
+    sources
+        .iter()
+        .chain(std::iter::once(&script))
+        .all(|s| modified(&unidata.join(s)).is_some_and(|m| m <= t))
+}
+
 pub fn up_to_date(top: &Path) -> bool {
     let unidata = top.join("admin/unidata");
     let out = top.join("lisp/international");
-    let check = |target: &str, sources: &[&str], script: &str| {
-        let Some(t) = modified(&out.join(target)) else {
-            return false;
-        };
-        sources
-            .iter()
-            .chain(std::iter::once(&script))
-            .all(|s| modified(&unidata.join(s)).is_some_and(|m| m <= t))
-    };
-    check("charscript.el", &BLOCKS_SOURCES, "blocks.awk")
-        && check("emoji-zwj.el", &ZWJ_SOURCES, "emoji-zwj.awk")
+    current(
+        &out.join("charscript.el"),
+        &unidata,
+        &BLOCKS_SOURCES,
+        "blocks.awk",
+    ) && current(
+        &out.join("emoji-zwj.el"),
+        &unidata,
+        &ZWJ_SOURCES,
+        "emoji-zwj.awk",
+    ) && current(
+        &unidata.join("unidata.txt"),
+        &unidata,
+        &[],
+        "UnicodeData.txt",
+    )
 }

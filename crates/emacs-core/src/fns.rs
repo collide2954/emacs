@@ -2317,27 +2317,17 @@ pub fn f_copy_sequence(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         return Ok(lisp.heap.string(s));
     }
     if arg.is_vectorlike() {
+        if let Vectorlike::CharTable(_) = lisp.heap.vectorlike_ref(arg) {
+            return Ok(lisp.copy_char_table(arg));
+        }
         let copy = match lisp.heap.vectorlike_ref(arg) {
             Vectorlike::Vector(v) => Some(Vectorlike::Vector(v.clone())),
             Vectorlike::Record(v) => Some(Vectorlike::Record(v.clone())),
             Vectorlike::Closure(v) => Some(Vectorlike::Closure(v.clone())),
             Vectorlike::BoolVector(b) => Some(Vectorlike::BoolVector(b.clone())),
-            Vectorlike::CharTable(t) => Some(Vectorlike::CharTable(t.clone())),
             _ => None,
         };
         if let Some(copy) = copy {
-            if let Vectorlike::CharTable(t) = &copy {
-                let contents = t.contents.clone();
-                let mut copy = copy;
-                let mut new_contents = Vec::with_capacity(contents.len());
-                for c in contents {
-                    new_contents.push(lisp.copy_sub_char_table(c));
-                }
-                if let Vectorlike::CharTable(t) = &mut copy {
-                    t.contents = new_contents;
-                }
-                return Ok(lisp.heap.vectorlike(copy));
-            }
             return Ok(lisp.heap.vectorlike(copy));
         }
     }

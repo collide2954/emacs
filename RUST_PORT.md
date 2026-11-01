@@ -68,6 +68,24 @@ takes about 8 minutes with a debug build. `.elc` files written before 0.1.69 hav
 docstring positions (their bytecode strings hold raw bytes instead of octal escapes), so
 rebuild them.
 
+Then generate the Unicode property tables as `admin/unidata/Makefile` does, with the port,
+from `admin/unidata` (where the build has written `unidata.txt`). Byte-compile
+`unidata-gen.el` with `--batch -f batch-byte-compile unidata-gen.el`, then run one process
+per file:
+
+```
+target/debug/emacs --batch --no-site-file --no-site-lisp -L . -l unidata-gen \
+  -f unidata-gen-file ../../lisp/international/uni-NAME.el .
+```
+
+for each `uni-*.el` that `unidata-gen.el` lists, then `-f unidata-gen-charprop` for
+`charprop.el`, `-l emoji.el -f emoji--generate-file` for `emoji-labels.el`, and
+`-l unidata-gen.el` with `-f unidata-gen-scripts`, `-f unidata-gen-confusable` and
+`-f unidata-gen-idna-mapping` for `uni-scripts.el`, `uni-confusable.el` and
+`idna-mapping.el`. Each takes a few seconds except `emoji-labels.el` (about two minutes).
+The files are ignored by git. Once `charprop.el` exists, loadup loads it, `characters.el`
+builds its tables from the Unicode data, and Tramp loads.
+
 ## Status
 
 C files fully replaced and deleted: `keymap.c`, `regex-emacs.c`, `search.c`, `casetab.c`,
@@ -79,7 +97,8 @@ Ported but not yet complete (C kept):
 
 | C file | Rust | Missing |
 | --- | --- | --- |
-| `alloc.c`, `data.c`, `eval.c`, `fns.c`, `floatfns.c`, `chartab.c` | same names | assorted primitives |
+| `alloc.c`, `data.c`, `eval.c`, `fns.c`, `floatfns.c` | same names | assorted primitives |
+| `chartab.c` | `chartab.rs` | `map_char_table`'s C-callback form: Rust callers use `map_char_table_collect`, which gathers the ranges first; `char_table_ref` callers that only borrow `Lisp` decode a compressed uniprop block without replacing it |
 | `atimer.c` | `atimer.rs` | `debug-timer-check` (checking builds only) and the timerfd and POSIX-timer paths: on every platform a thread stands in for `SIGALRM`, as `w32proc.c`'s `setitimer` emulation does on Windows, and sets `pending_signals`, which `maybe_quit` acts on; sleeps in `wait_reading_process_output` do not yet wake for a ripe timer |
 | `print.c` | `print.rs` | assorted primitives (`print_error_message` and `error-message-string` are ported); the printer builds its output as characters before writing it to the destination, but applies `print_prepare`'s and `print_string`'s destination rules: raw bytes become octal escapes in multibyte buffers and in `prin1-to-string` (which `.elc` docstring positions depend on) and reach a function as Latin-1 characters |
 | `lread.c` | `lread.rs` | assorted primitives; `load`, `openp` and `locate-file-internal` follow C (handlers, `load-prefer-newer`, the `.elc` version check, emacs-mule `.elc` files from before Emacs 22, text-mode reading of source files on Windows), but a loaded file is read whole and decoded up front rather than byte by byte, and the lexical-binding cookie check is an approximation of `lisp_file_lexical_cookie` |
@@ -154,9 +173,11 @@ mostly spent printing ERT's interpreted test closures. `cl-preloaded.el` checks 
 predicates are defined while it is compiled, so `.elc` files from before 0.1.75, when
 `processp` was added, lack the `process` type; rebuild them.
 
-`crates/emacs-unidata` replaces the awk half of `admin/unidata`: `crates/emacs/build.rs`
-writes `lisp/international/charscript.el` and `emoji-zwj.el`. The `uni-*.el` and
-`charprop.el` files still need `unidata-gen.el` run by a working Emacs.
+`crates/emacs-unidata` replaces the awk and sed half of `admin/unidata`:
+`crates/emacs/build.rs` writes `lisp/international/charscript.el`, `emoji-zwj.el` and
+`admin/unidata/unidata.txt`, each only when its sources are newer. The port runs the Lisp
+half itself (see Build and run), and `get-char-code-property` reads the generated tables
+through `chartab.c`'s uniprop code (compressed blocks, decoders and encoders).
 
 `emacs --batch` loads every preloaded file in `loadup.el`, including the `w32-*` files and
 `cus-start.el`, runs `Snarf-documentation`, then runs startup to the end. `main.rs`

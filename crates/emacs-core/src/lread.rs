@@ -2420,6 +2420,22 @@ fn text_mode(bytes: Vec<u8>) -> Vec<u8> {
     out
 }
 
+impl Lisp {
+    pub fn save_match_data_load(
+        &mut self,
+        file: Value,
+        noerror: Value,
+        nomessage: Value,
+        nosuffix: Value,
+        must_suffix: Value,
+    ) -> LispResult {
+        let count = self.specpdl.len();
+        self.record_unwind_save_match_data()?;
+        let result = f_load(self, &[file, noerror, nomessage, nosuffix, must_suffix]);
+        self.unbind_to_value(count, result)
+    }
+}
+
 fn f_load(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let base = lisp.stack.len();
     lisp.stack.extend_from_slice(&args[..5]);

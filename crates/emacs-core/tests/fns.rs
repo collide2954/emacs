@@ -908,8 +908,12 @@ fn char_tables() {
             "1",
         ),
         (
-            "(let ((ct (make-char-table 'test)) (r nil)) (set-char-table-range ct '(?a . ?c) 1) (map-char-table #'(lambda (k v) (setq r (cons k r))) ct) r)",
+            "(let ((ct (make-char-table 'test)) (r nil)) (set-char-table-range ct '(?a . ?c) 1) (map-char-table #'(lambda (k v) (setq r (cons (cons (car k) (cdr k)) r))) ct) r)",
             "((97 . 99))",
+        ),
+        (
+            "(let ((ct (make-char-table 'test)) (r nil)) (set-char-table-range ct '(?a . ?c) 1) (map-char-table #'(lambda (k v) (setq r (cons k r))) ct) r)",
+            "((100 . 4194303))",
         ),
         (
             "(let* ((p (make-char-table 'test)) (c (make-char-table 'test))) (aset p ?q 'from-parent) (set-char-table-parent c p) (aref c ?q))",

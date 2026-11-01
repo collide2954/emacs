@@ -743,7 +743,7 @@ impl Lisp {
             }
             Vectorlike::CharTable(_) => {
                 let c = self.check_character(idx)?;
-                Ok(self.char_table_ref(array, c))
+                Ok(self.char_table_ref_mut(array, c))
             }
             _ => Err(self.wrong_type(sym::ARRAYP, array)),
         }

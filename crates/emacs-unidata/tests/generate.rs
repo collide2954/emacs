@@ -1,4 +1,23 @@
-use emacs_unidata::{charscript_el, emoji_zwj_el};
+use emacs_unidata::{charscript_el, emoji_zwj_el, unidata_txt};
+
+#[test]
+fn unidata_text() {
+    let data = "\
+0041;LATIN CAPITAL LETTER A;Lu;0;L;;;;;N;;;;0061;
+4E00;<CJK Ideograph, First>;Lo;0;L;;;;;N;;;;;
+no fields here
+00C5;LATIN CAPITAL LETTER A WITH RING ABOVE;Lu;0;L;0041 030A;;;;N;LATIN CAPITAL LETTER A RING;;;00E5;\r
+FFFD;REPLACEMENT CHARACTER;So;0;ON;;;;;N;;;;;";
+    assert_eq!(
+        unidata_txt(data),
+        "\
+(#x0041 \"LATIN CAPITAL LETTER A\" \"Lu\" \"0\" \"L\" \"\" \"\" \"\" \"\" \"N\" \"\" \"\" \"\" \"0061\" \"\")
+(#x4E00 \"<CJK Ideograph, First>\" \"Lo\" \"0\" \"L\" \"\" \"\" \"\" \"\" \"N\" \"\" \"\" \"\" \"\" \"\")
+no fields here
+(#x00C5 \"LATIN CAPITAL LETTER A WITH RING ABOVE\" \"Lu\" \"0\" \"L\" \"0041 030A\" \"\" \"\" \"\" \"N\" \"LATIN CAPITAL LETTER A RING\" \"\" \"\" \"00E5\" \"\r\")
+(#xFFFD \"REPLACEMENT CHARACTER\" \"So\" \"0\" \"ON\" \"\" \"\" \"\" \"\" \"N\" \"\" \"\" \"\" \"\" \"\")"
+    );
+}
 
 const BLOCKS: &str = "\
 # Blocks-16.0.0.txt\r
