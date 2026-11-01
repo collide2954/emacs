@@ -1695,7 +1695,7 @@ impl Lisp {
             .expect("frame has no face cache")
     }
 
-    pub(crate) fn set_frame_garbaged(&mut self, f: Value) {
+    pub fn set_frame_garbaged(&mut self, f: Value) {
         self.frames.frame_garbaged = true;
         self.fset_redisplay(f);
         self.frame_mut(f).flags.garbaged = true;
@@ -1724,6 +1724,13 @@ impl Lisp {
             }
         }
         Ok(())
+    }
+
+    pub fn free_frame_faces(&mut self, f: Value) {
+        if self.frame(f).face_cache.is_some() {
+            self.free_realized_faces(f);
+            self.frame_mut(f).face_cache = None;
+        }
     }
 
     fn free_realized_faces(&mut self, f: Value) {

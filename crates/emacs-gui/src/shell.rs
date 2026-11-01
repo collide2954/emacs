@@ -151,6 +151,17 @@ impl Shell {
                 }
                 Task::none()
             }
+            Command::ResizeFrame {
+                frame,
+                width,
+                height,
+            } => match self.window_of(frame) {
+                Some(id) => {
+                    let scale = self.views.get(&id).map_or(1.0, |v| v.scale);
+                    window::resize(id, Size::new(width as f32 / scale, height as f32 / scale))
+                }
+                None => Task::none(),
+            },
             Command::Present {
                 frame,
                 width,

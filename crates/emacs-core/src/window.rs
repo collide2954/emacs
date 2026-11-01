@@ -1167,7 +1167,12 @@ impl Lisp {
         if height >= 0 {
             return height;
         }
-        let height = self.estimate_mode_line_height(self.window(w).frame);
+        let face_id = self.current_line_active_face_id(
+            w,
+            crate::xfaces::MODE_LINE_ACTIVE_FACE_ID,
+            crate::xfaces::MODE_LINE_INACTIVE_FACE_ID,
+        );
+        let height = self.estimate_mode_line_height(self.window(w).frame, face_id);
         self.window_mut(w).mode_line_height = height;
         height
     }
@@ -1177,7 +1182,12 @@ impl Lisp {
         if height >= 0 {
             return height;
         }
-        let height = self.estimate_mode_line_height(self.window(w).frame);
+        let face_id = self.current_line_active_face_id(
+            w,
+            crate::xfaces::HEADER_LINE_ACTIVE_FACE_ID,
+            crate::xfaces::HEADER_LINE_INACTIVE_FACE_ID,
+        );
+        let height = self.estimate_mode_line_height(self.window(w).frame, face_id);
         self.window_mut(w).header_line_height = height;
         height
     }
@@ -1187,7 +1197,12 @@ impl Lisp {
         if height >= 0 {
             return height;
         }
-        let height = self.estimate_mode_line_height(self.window(w).frame);
+        let face_id = self.current_line_active_face_id(
+            w,
+            crate::xfaces::TAB_LINE_ACTIVE_FACE_ID,
+            crate::xfaces::TAB_LINE_INACTIVE_FACE_ID,
+        );
+        let height = self.estimate_mode_line_height(self.window(w).frame, face_id);
         self.window_mut(w).tab_line_height = height;
         height
     }

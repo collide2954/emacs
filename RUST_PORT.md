@@ -122,7 +122,7 @@ Ported but not yet complete (C kept):
 | `coding.c` | `coding.rs`, `coding/` | `encode_string_utf_8`/`decode_string_utf_8` (for `json.c`), file-name encoding |
 | `bytecode.c` | `bytecode.rs` | nothing but two opcodes obsolete since Emacs 24.1: `temp-output-buffer-setup`/`-show` signal an error; `debug-on-next-call` is not honored (as elsewhere in the port). The VM keeps its operands on `Lisp::stack` (so they are GC roots) and recurses for calls where C chains frames on its own stack; primitives are called through the subr table by name, not through function cells, as C calls `Fcar` and friends directly |
 | `terminal.c` | `terminal.rs` | `delete-terminal` (needs `delete-frame`) |
-| `frame.c` | `frame.rs` | `delete-frame`, `x-create-frame`; of the window-system parameter code (`gui_display_get_arg`, `gui_default_parameter`, `gui_set_frame_parameters`, `frame_float` and the generic `gui_set_*` handlers, dispatched through the terminal's `frame_parm_handlers`), the divider-width and `scroll-bar-width` handlers (they need glyph matrices; `gui_set_font` and `gui_set_font_backend` are ported, minus the image-cache rescaling, as there are no images yet); `adjust_frame_size` is ported but stops with `unreachable!` where it would call a window system's size hook or resize child frames, which don't exist yet |
+| `frame.c` | `frame.rs` | `delete-frame`; of the window-system parameter code (`gui_display_get_arg`, `gui_default_parameter`, `gui_set_frame_parameters`, `frame_float` and the generic `gui_set_*` handlers, dispatched through the terminal's `frame_parm_handlers`), the divider-width and `scroll-bar-width` handlers (they need glyph matrices; `gui_set_font` and `gui_set_font_backend` are ported, minus the image-cache rescaling, as there are no images yet); `adjust_frame_size` is ported but stops with `unreachable!` where it would call a window system's size hook or resize child frames, which don't exist yet |
 | `window.c` | `window.rs` | splitting, resizing (`resize_frame_windows` handles only a leaf root window, the only kind the port can make), `window-list`; window configurations (`current-window-configuration`, `set-window-configuration`, `window-configuration-equal-p` and the dead-windows table) follow C, as do the mode/header/tab line, divider and scroll bar size DEFUNs (without glyph matrices, line heights always come from `estimate_mode_line_height`; horizontal scroll bars don't exist, as in C without toolkit scroll bars) |
 | `minibuf.c` | `minibuf.rs` | interactive reading (needs the command loop; it signals an error) |
 | `font.c` | `font.rs` | `font-face-attributes`, `font-shape-gstring`, `font-variation-glyphs`, `font-get-glyphs`, `font-at`, `font_range`, the OTF DEFUNs; `font_put_frame_data` (unused with cairo); the driver layer (`struct font_driver` as `FontDriver`, per-frame driver lists, font caches, listing, sorting, matching, opening, `font_load_for_lface`, `font_open_by_name`, the font log) and its DEFUNs are ported |
@@ -299,8 +299,18 @@ character size, the font-cache list) are `terminal::DisplayInfo` on the core ter
 pgtk-only fields stay in the GUI crate's `PgtkDisplayInfo`. Font drivers are `FontDriver`
 tables of function pointers, as C's `struct font_driver`; a font object keeps C's
 `struct font` metrics in `FontObject` and its driver's private data behind an `Rc<dyn Any>`,
-dropped with the object as C's GC calls `close_font`. An interactive start now runs
-window-system initialization and stops at `x-create-frame`.
+dropped with the object as C's GC calls `close_font`. `x-create-frame` (`pgtkfns.c`) is ported: it builds a pgtk frame with its
+per-frame `PgtkOutput`, registers the `ftcr` driver, picks the default font, applies the
+default parameters, realizes faces, sizes the frame with `gui_figure_window_size`, creates the
+frame's surface (C's `xg_create_frame_widgets`) and, when visible, asks iced to open the window
+(`pgtk_make_frame_visible`); `pgtk_set_window_size` resizes the surface and the window. The
+frame's handlers so far are the colors, cursor and mouse color, name and title; menu, tab and
+tool bar lines, borders, icons, cursor types, child frames and the window-manager hints are
+not ported. A frame becomes visible only when its map event is handled, which needs the
+command loop, so `frame-visible-p` is nil for now; making a frame invisible only clears its
+flags; a frame whose font can't be opened is unwound instead of going through
+`delete_frame`. An interactive `emacs -Q` now loads everything, creates its first frame and
+stops at `set-window-fringes` (window.c).
 
 Next: showing a real Emacs frame needs `x-create-frame` (frame parameters, colors, the default
 font, faces), `delete-frame`, the display engine in emacs-core (`frame.c`, `window.c`,

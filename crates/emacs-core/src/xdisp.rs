@@ -215,11 +215,41 @@ impl Lisp {
         Ok(())
     }
 
-    pub fn estimate_mode_line_height(&self, f: Value) -> i64 {
+    pub fn estimate_mode_line_height(&mut self, f: Value, face_id: usize) -> i64 {
         if self.frame(f).window_p() {
-            unreachable!("window-system frames need FRAME_FONT and realized mode-line faces");
+            let frame_font = self.frame(f).font;
+            let mut height = i64::from(self.font_object(frame_font).height);
+            if self.frame(f).face_cache.is_some()
+                && let Some(face) = self.face_from_id(f, face_id)
+            {
+                let (font, box_width) = (face.font, face.box_horizontal_line_width);
+                if !font.is_nil() {
+                    let (ascent, descent) = self.normal_char_ascent_descent(font, -1);
+                    height = i64::from(ascent + descent);
+                }
+                if box_width > 0 {
+                    height += 2 * i64::from(box_width);
+                }
+            }
+            return height;
         }
         1
+    }
+
+    pub fn current_line_active_face_id(&self, w: Value, active: usize, inactive: usize) -> usize {
+        let selected = self.windows.selected_window;
+        let minibuf_selected = self.windows.minibuf_selected_window;
+        if !self.var_true(sym::MODE_LINE_IN_NON_SELECTED_WINDOWS)
+            || w == selected
+            || (self.minibuf.minibuf_level > 0
+                && !minibuf_selected.is_nil()
+                && selected == self.windows.minibuf_window
+                && w == minibuf_selected)
+        {
+            active
+        } else {
+            inactive
+        }
     }
 
     pub fn message_with_string(&mut self, m: &str, string: Value, log: bool) -> LispResult<()> {
@@ -810,7 +840,7 @@ impl Lisp {
         Some(text_extents(self, font, &[char2b]))
     }
 
-    fn normal_char_ascent_descent(&mut self, font: Value, c: i32) -> (i32, i32) {
+    pub fn normal_char_ascent_descent(&mut self, font: Value, c: i32) -> (i32, i32) {
         let f = self.font_object(font);
         let mut ascent = f.ascent;
         let mut descent = f.descent;

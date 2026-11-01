@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
@@ -14,6 +14,7 @@ pub struct Display {
     commands: UnboundedSender<Command>,
     notices: Receiver<Notice>,
     surfaces: HashMap<u64, Surface>,
+    shown: HashSet<u64>,
 }
 
 impl Display {
@@ -22,6 +23,7 @@ impl Display {
             commands,
             notices,
             surfaces: HashMap::new(),
+            shown: HashSet::new(),
         }
     }
 
@@ -37,14 +39,46 @@ impl Display {
         height: u32,
         background: u32,
     ) {
+        self.create_frame(frame, width, height, background);
+        self.show_frame(frame, title);
+    }
+
+    pub fn create_frame(&mut self, frame: u64, width: u32, height: u32, background: u32) {
         self.surfaces
             .insert(frame, Surface::new(width, height, background));
+    }
+
+    pub fn show_frame(&mut self, frame: u64, title: &str) {
+        if self.shown.contains(&frame) {
+            return;
+        }
+        let Some(surface) = self.surfaces.get(&frame) else {
+            return;
+        };
+        let (width, height) = (surface.width(), surface.height());
+        self.shown.insert(frame);
         self.send(Command::OpenFrame {
             frame,
             title: title.to_string(),
             width,
             height,
         });
+    }
+
+    pub fn resize_frame(&mut self, frame: u64, width: u32, height: u32) {
+        let Some(surface) = self.surfaces.get_mut(&frame) else {
+            return;
+        };
+        if (surface.width(), surface.height()) != (width, height) {
+            surface.resize(width, height);
+        }
+        if self.shown.contains(&frame) {
+            self.send(Command::ResizeFrame {
+                frame,
+                width,
+                height,
+            });
+        }
     }
 
     pub fn surface(&self, frame: u64) -> Option<&Surface> {
@@ -75,6 +109,7 @@ impl Display {
 
     pub fn close_frame(&mut self, frame: u64) {
         self.surfaces.remove(&frame);
+        self.shown.remove(&frame);
         self.send(Command::CloseFrame { frame });
     }
 

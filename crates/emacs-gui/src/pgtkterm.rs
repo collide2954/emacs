@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::Write;
 
 use emacs_core::character::{CHAR_ALT, CHAR_CTL, CHAR_HYPER, CHAR_META, CHAR_SUPER};
@@ -31,8 +32,111 @@ struct Pgtk {
     displays: Vec<PgtkDisplayInfo>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct PgtkOutput {
+    pub foreground_color: i64,
+    pub background_color: i64,
+    pub cursor_color: i64,
+    pub cursor_foreground_color: i64,
+    pub border_pixel: i64,
+    pub mouse_color: i64,
+    pub cursor_xgcv_foreground: i64,
+    pub cursor_xgcv_background: i64,
+    pub white_relief_pixel: i64,
+    pub black_relief_pixel: i64,
+    pub parent_desc: i64,
+    pub explicit_parent: bool,
+    pub preferred_width: i64,
+    pub preferred_height: i64,
+    pub widget: bool,
+}
+
 thread_local! {
     static PGTK: RefCell<Pgtk> = RefCell::new(Pgtk::default());
+    static OUTPUTS: RefCell<HashMap<i64, PgtkOutput>> = RefCell::new(HashMap::new());
+}
+
+pub fn frame_key(lisp: &Lisp, f: Value) -> i64 {
+    lisp.frame(f).id
+}
+
+pub fn with_output<T>(lisp: &Lisp, f: Value, g: impl FnOnce(&mut PgtkOutput) -> T) -> T {
+    let key = frame_key(lisp, f);
+    OUTPUTS.with(|outputs| g(outputs.borrow_mut().entry(key).or_default()))
+}
+
+pub fn has_output(lisp: &Lisp, f: Value) -> bool {
+    let key = frame_key(lisp, f);
+    OUTPUTS.with(|outputs| outputs.borrow().contains_key(&key))
+}
+
+pub fn allocate_output(lisp: &Lisp, f: Value) {
+    let key = frame_key(lisp, f);
+    OUTPUTS.with(|outputs| outputs.borrow_mut().insert(key, PgtkOutput::default()));
+}
+
+fn free_output(lisp: &Lisp, f: Value) {
+    let key = frame_key(lisp, f);
+    OUTPUTS.with(|outputs| outputs.borrow_mut().remove(&key));
+}
+
+pub fn pgtk_set_window_size(
+    lisp: &mut Lisp,
+    f: Value,
+    _change_gravity: bool,
+    pixelwidth: i64,
+    pixelheight: i64,
+) -> LispResult<()> {
+    with_output(lisp, f, |output| {
+        output.preferred_width = pixelwidth;
+        output.preferred_height = pixelheight;
+    });
+    let key = frame_key(lisp, f) as u64;
+    crate::with_display(|display| {
+        display.resize_frame(key, pixelwidth.max(1) as u32, pixelheight.max(1) as u32)
+    });
+    Ok(())
+}
+
+pub fn frame_title(lisp: &Lisp, f: Value) -> String {
+    let fr = lisp.frame(f);
+    let name = if fr.title.is_nil() { fr.name } else { fr.title };
+    if name.is_string() {
+        String::from_utf8_lossy(lisp.string_bytes(name)).into_owned()
+    } else {
+        String::new()
+    }
+}
+
+pub fn pgtk_make_frame_visible(lisp: &mut Lisp, f: Value) {
+    if !lisp.frame(f).flags.visible {
+        let key = frame_key(lisp, f) as u64;
+        let title = frame_title(lisp, f);
+        crate::with_display(|display| display.show_frame(key, &title));
+    }
+}
+
+pub fn pgtk_make_frame_invisible(lisp: &mut Lisp, f: Value) {
+    if lisp.frame(f).flags.visible {
+        let fr = lisp.frame_mut(f);
+        fr.flags.visible = false;
+        fr.flags.iconified = false;
+    }
+}
+
+pub fn pgtk_make_frame_visible_invisible(lisp: &mut Lisp, f: Value, visible: bool) {
+    if visible {
+        pgtk_make_frame_visible(lisp, f);
+    } else {
+        pgtk_make_frame_invisible(lisp, f);
+    }
+}
+
+pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) {
+    lisp.free_frame_faces(f);
+    let key = frame_key(lisp, f) as u64;
+    crate::with_display(|display| display.close_frame(key));
+    free_output(lisp, f);
 }
 
 pub fn with_display_list<T>(f: impl FnOnce(&mut Vec<PgtkDisplayInfo>) -> T) -> T {
@@ -155,6 +259,8 @@ pub fn pgtk_term_init(
     hooks.get_string_resource = Some(crate::pgtkfns::pgtk_get_string_resource);
     hooks.defined_color = Some(pgtk_defined_color);
     hooks.set_new_font = Some(pgtk_new_font);
+    hooks.set_window_size = Some(pgtk_set_window_size);
+    hooks.frame_visible_invisible = Some(pgtk_make_frame_visible_invisible);
     hooks.default_font_parameter = Some(crate::pgtkfns::pgtk_default_font_parameter);
     hooks.frame_parm_handlers = Some(crate::pgtkfns::PGTK_FRAME_PARM_HANDLERS);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);

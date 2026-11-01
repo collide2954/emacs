@@ -12,6 +12,11 @@ pub enum Command {
         frame: u64,
         title: String,
     },
+    ResizeFrame {
+        frame: u64,
+        width: u32,
+        height: u32,
+    },
     Present {
         frame: u64,
         width: u32,

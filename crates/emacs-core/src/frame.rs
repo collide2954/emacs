@@ -30,7 +30,18 @@ pub enum Fullscreen {
 
 pub const X_NEGATIVE: i64 = 0x0010;
 pub const Y_NEGATIVE: i64 = 0x0020;
+pub const US_POSITION: i64 = 1 << 0;
+pub const US_SIZE: i64 = 1 << 1;
+pub const P_POSITION: i64 = 1 << 2;
+pub const P_SIZE: i64 = 1 << 3;
 pub const NORTH_WEST_GRAVITY: i64 = 1;
+pub const NORTH_EAST_GRAVITY: i64 = 3;
+pub const SOUTH_WEST_GRAVITY: i64 = 7;
+pub const SOUTH_EAST_GRAVITY: i64 = 9;
+const DEFAULT_TAB_BAR_BUTTON_RELIEF: i64 = 1;
+const DEFAULT_TAB_BAR_IMAGE_HEIGHT: i64 = 18;
+const DEFAULT_TOOL_BAR_BUTTON_RELIEF: i64 = 1;
+const DEFAULT_TOOL_BAR_IMAGE_HEIGHT: i64 = 24;
 
 #[derive(Clone, Debug, Default)]
 pub struct FrameFlags {
@@ -53,6 +64,7 @@ pub struct FrameFlags {
     pub no_special_glyphs: bool,
     pub no_accept_focus: bool,
     pub undecorated: bool,
+    pub override_redirect: bool,
     pub tooltip: bool,
     pub face_change: bool,
     pub default_face_done_p: bool,
@@ -287,6 +299,8 @@ pub struct Frames {
     pub tty_frame_count: i64,
     pub delayed_size_change: bool,
     pub frame_garbaged: bool,
+    pub default_tab_bar_height: i64,
+    pub default_tool_bar_height: i64,
 }
 
 impl Default for Frames {
@@ -300,6 +314,8 @@ impl Default for Frames {
             tty_frame_count: 0,
             delayed_size_change: false,
             frame_garbaged: false,
+            default_tab_bar_height: 0,
+            default_tool_bar_height: 0,
         }
     }
 }
@@ -605,8 +621,13 @@ impl Lisp {
 
 fn f_make_frame_visible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(arg(args, 0))?;
-    if lisp.frame_window_p(f) || lisp.is_tty_child_frame(f) {
-        unreachable!();
+    if lisp.frame_window_p(f)
+        && let Some(hook) = lisp.frame_terminal_hooks(f).frame_visible_invisible
+    {
+        hook(lisp, f, true);
+    }
+    if lisp.is_tty_child_frame(f) {
+        unreachable!("tty child frames need tty_raise_lower_frame");
     }
     let root = lisp.frame(f).root_window;
     lisp.make_frame_visible_1(root)?;
@@ -618,8 +639,13 @@ fn f_make_frame_invisible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     if arg(args, 1).is_nil() && !lisp.other_frames(f, true, false) {
         return Err(lisp.error("Attempt to make invisible the sole visible or iconified frame"));
     }
-    if lisp.frame_window_p(f) || lisp.is_tty_child_frame(f) {
-        unreachable!();
+    if lisp.frame_window_p(f)
+        && let Some(hook) = lisp.frame_terminal_hooks(f).frame_visible_invisible
+    {
+        hook(lisp, f, false);
+    }
+    if lisp.is_tty_child_frame(f) {
+        unreachable!("tty child frames need mru_rooted_frame");
     }
     lisp.windows.windows_or_buffers_changed = 16;
     Ok(Value::NIL)
@@ -1141,7 +1167,57 @@ impl Lisp {
                 || (!inhibit_vertical
                     && (new_native_height != old_native_height || inhibit == 0 || inhibit == 2)))
         {
-            unreachable!("set_window_size_hook needs window-system frames");
+            let (mut new_native_width, mut new_native_height) =
+                (new_native_width, new_native_height);
+            if inhibit == 2
+                && (self.frame(f).geometry.new_width >= 0 || self.frame(f).geometry.new_height >= 0)
+            {
+                if self.frame(f).geometry.new_width >= 0 {
+                    new_native_width = self.frame(f).geometry.new_width;
+                }
+                if self.frame(f).geometry.new_height >= 0 {
+                    new_native_height = self.frame(f).geometry.new_height;
+                }
+            }
+            self.frame_size_history_adjust(
+                f,
+                inhibit,
+                parameter,
+                [
+                    old_text_width,
+                    old_text_height,
+                    new_text_width,
+                    new_text_height,
+                    old_text_cols,
+                    old_text_lines,
+                    new_text_cols,
+                    new_text_lines,
+                    old_native_width,
+                    old_native_height,
+                    new_native_width,
+                    new_native_height,
+                    old_inner_width,
+                    old_inner_height,
+                    new_inner_width,
+                    new_inner_height,
+                ],
+                (min_inner_width, min_inner_height),
+                inhibit_horizontal,
+                inhibit_vertical,
+            );
+            if inhibit == 0 || inhibit == 1 {
+                let fr = self.frame_mut(f);
+                fr.geometry.new_width = new_native_width;
+                fr.geometry.new_height = new_native_height;
+                fr.flags.new_size_p = false;
+            }
+            if size_and_position {
+                unreachable!("set_window_size_and_position_hook needs child frames");
+            } else if let Some(set_window_size) = self.frame_terminal_hooks(f).set_window_size {
+                set_window_size(self, f, false, new_native_width, new_native_height)?;
+            }
+            self.frame_mut(f).flags.resized_p = true;
+            return Ok(());
         }
         self.frame_size_history_adjust(
             f,
@@ -1224,6 +1300,244 @@ impl Lisp {
             unreachable!("keep_ratio needs child frames");
         }
         Ok(())
+    }
+
+    pub fn frame_set_id_from_params(&mut self, f: Value, params: Value) -> LispResult<i64> {
+        let cell = self.assq(sym::FRAME_ID, params);
+        let param_id = self.cdr(cell)?;
+        let id = match param_id.as_fixnum() {
+            Some(id) if id > 0 && id <= i64::from(i32::MAX) => id,
+            _ => 0,
+        };
+        self.frame_set_id(f, id)
+    }
+
+    pub fn gui_figure_window_size(
+        &mut self,
+        f: Value,
+        parms: Value,
+        tabbar_p: bool,
+        toolbar_p: bool,
+    ) -> LispResult<i64> {
+        let mut window_prompting = 0;
+        let dpyinfo = self.frame_display_info(f);
+        let mut cache = FrameFloatCache::default();
+        let mut text_width = 80 * self.frame(f).geometry.column_width;
+        let mut text_height = 36 * self.frame(f).geometry.line_height;
+        self.frame_mut(f).geometry.top_pos = 0;
+        self.frame_mut(f).geometry.left_pos = 0;
+        if tabbar_p && self.frame(f).geometry.tab_bar_lines != 0 {
+            let height = if self.frames.default_tab_bar_height != 0 {
+                self.frames.default_tab_bar_height
+            } else {
+                let relief = self
+                    .find_symbol_value(sym::TAB_BAR_BUTTON_RELIEF)
+                    .as_fixnum()
+                    .unwrap_or(-1);
+                let relief = if relief < 0 {
+                    DEFAULT_TAB_BAR_BUTTON_RELIEF
+                } else {
+                    relief.min(1_000_000)
+                };
+                let margin = self.bar_button_margin(sym::TAB_BAR_BUTTON_MARGIN);
+                DEFAULT_TAB_BAR_IMAGE_HEIGHT + 2 * margin + 2 * relief
+            };
+            self.frame_mut(f).geometry.tab_bar_height = height;
+        }
+        if toolbar_p && self.frame(f).geometry.tool_bar_lines != 0 {
+            let height = if self.frames.default_tool_bar_height != 0 {
+                self.frames.default_tool_bar_height
+            } else {
+                let relief = self
+                    .find_symbol_value(sym::TOOL_BAR_BUTTON_RELIEF)
+                    .as_fixnum()
+                    .unwrap_or(-1);
+                let relief = if relief < 0 {
+                    DEFAULT_TOOL_BAR_BUTTON_RELIEF
+                } else {
+                    relief.min(1_000_000)
+                };
+                let margin = self.bar_button_margin(sym::TOOL_BAR_BUTTON_MARGIN);
+                DEFAULT_TOOL_BAR_IMAGE_HEIGHT + 2 * margin + 2 * relief
+            };
+            self.frame_mut(f).geometry.tool_bar_height = height;
+        }
+        self.frame_mut(f).geometry.new_width = -1;
+        self.frame_mut(f).geometry.new_height = -1;
+        let height = self.gui_display_get_arg(
+            dpyinfo,
+            parms,
+            sym::HEIGHT,
+            None,
+            None,
+            ResourceType::Number,
+        )?;
+        let width =
+            self.gui_display_get_arg(dpyinfo, parms, sym::WIDTH, None, None, ResourceType::Number)?;
+        if width != sym::UNBOUND || height != sym::UNBOUND {
+            if width != sym::UNBOUND {
+                text_width = self.figure_size_arg(f, width, true, &mut cache, text_width)?;
+            }
+            if height != sym::UNBOUND {
+                text_height = self.figure_size_arg(f, height, false, &mut cache, text_height)?;
+            }
+            let user_size = self.gui_display_get_arg(
+                dpyinfo,
+                parms,
+                sym::USER_SIZE,
+                None,
+                None,
+                ResourceType::Number,
+            )?;
+            if !user_size.is_nil() && user_size != sym::UNBOUND {
+                window_prompting |= US_SIZE;
+            } else {
+                window_prompting |= P_SIZE;
+            }
+        }
+        self.adjust_frame_size(f, text_width, text_height, 5, sym::GUI_FIGURE_WINDOW_SIZE)?;
+        let top =
+            self.gui_display_get_arg(dpyinfo, parms, sym::TOP, None, None, ResourceType::Number)?;
+        let left =
+            self.gui_display_get_arg(dpyinfo, parms, sym::LEFT, None, None, ResourceType::Number)?;
+        let user_position = self.gui_display_get_arg(
+            dpyinfo,
+            parms,
+            sym::USER_POSITION,
+            None,
+            None,
+            ResourceType::Number,
+        )?;
+        if top != sym::UNBOUND || left != sym::UNBOUND {
+            let (pos, negative) = self.figure_position_arg(f, top, false, &mut cache)?;
+            self.frame_mut(f).geometry.top_pos = pos;
+            if negative {
+                window_prompting |= Y_NEGATIVE;
+            }
+            let (pos, negative) = self.figure_position_arg(f, left, true, &mut cache)?;
+            self.frame_mut(f).geometry.left_pos = pos;
+            if negative {
+                window_prompting |= X_NEGATIVE;
+            }
+            if !user_position.is_nil() && user_position != sym::UNBOUND {
+                window_prompting |= US_POSITION;
+            } else {
+                window_prompting |= P_POSITION;
+            }
+        }
+        let gravity = match (
+            window_prompting & X_NEGATIVE != 0,
+            window_prompting & Y_NEGATIVE != 0,
+        ) {
+            (true, true) => SOUTH_EAST_GRAVITY,
+            (true, false) => NORTH_EAST_GRAVITY,
+            (false, true) => SOUTH_WEST_GRAVITY,
+            (false, false) => NORTH_WEST_GRAVITY,
+        };
+        self.frame_mut(f).win_gravity = gravity;
+        self.frame_mut(f).size_hint_flags = window_prompting;
+        Ok(window_prompting)
+    }
+
+    fn bar_button_margin(&self, variable: Value) -> i64 {
+        let margin = self.find_symbol_value(variable);
+        let ranged = |v: Value| {
+            v.as_fixnum()
+                .filter(|&n| (1..=i64::from(i32::MAX)).contains(&n))
+        };
+        if let Some(n) = ranged(margin) {
+            n
+        } else if margin.is_cons() {
+            ranged(self.xcdr(margin)).unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    fn figure_size_arg(
+        &mut self,
+        f: Value,
+        arg: Value,
+        width_p: bool,
+        cache: &mut FrameFloatCache,
+        current: i64,
+    ) -> LispResult<i64> {
+        if arg.is_cons() && self.xcar(arg) == sym::TEXT_PIXELS {
+            let n = self.check_fixnum(self.xcdr(arg))?;
+            if !(0..=i64::from(i32::MAX)).contains(&n) {
+                let data = self.list(&[self.xcdr(arg)]);
+                return Err(self.signal(sym::ARGS_OUT_OF_RANGE, data));
+            }
+            return Ok(n);
+        }
+        if arg.is_float() {
+            let d = self.heap.float_value(arg);
+            if !(0.0..=1.0).contains(&d) {
+                let data = self.list(&[arg]);
+                return Err(self.signal(sym::ARGS_OUT_OF_RANGE, data));
+            }
+            let what = if width_p {
+                FrameFloatType::Width
+            } else {
+                FrameFloatType::Height
+            };
+            let new = self.frame_float(f, arg, what, cache, -1)?;
+            return Ok(if new > -1 { new } else { current });
+        }
+        let n = self.check_fixnum(arg)?;
+        if !(0..=i64::from(i32::MAX)).contains(&n) {
+            let data = self.list(&[arg]);
+            return Err(self.signal(sym::ARGS_OUT_OF_RANGE, data));
+        }
+        let unit = if width_p {
+            self.frame(f).geometry.column_width
+        } else {
+            self.frame(f).geometry.line_height
+        };
+        Ok(n * unit)
+    }
+
+    fn figure_position_arg(
+        &mut self,
+        f: Value,
+        arg: Value,
+        left_p: bool,
+        cache: &mut FrameFloatCache,
+    ) -> LispResult<(i64, bool)> {
+        let int_range = |v: Value, lo: i64| {
+            v.as_fixnum()
+                .filter(|&n| (lo..=i64::from(i32::MAX)).contains(&n))
+        };
+        if arg == sym::MINUS {
+            return Ok((0, true));
+        }
+        if arg.is_cons()
+            && self.xcar(arg) == sym::MINUS
+            && self.xcdr(arg).is_cons()
+            && let Some(n) = int_range(self.xcar(self.xcdr(arg)), -i64::from(i32::MAX))
+        {
+            return Ok((-n, true));
+        }
+        if arg.is_cons()
+            && self.xcar(arg) == sym::PLUS
+            && self.xcdr(arg).is_cons()
+            && let Some(n) = int_range(self.xcar(self.xcdr(arg)), i64::from(i32::MIN))
+        {
+            return Ok((n, false));
+        }
+        if arg.is_float() {
+            let what = if left_p {
+                FrameFloatType::Left
+            } else {
+                FrameFloatType::Top
+            };
+            return Ok((self.frame_float(f, arg, what, cache, 0)?, false));
+        }
+        if arg == sym::UNBOUND {
+            return Ok((0, false));
+        }
+        let n = self.check_integer_range(arg, i64::from(i32::MIN), i64::from(i32::MAX))?;
+        Ok((n, n < 0))
     }
 
     pub fn frame_set_id(&mut self, f: Value, id: i64) -> LispResult<i64> {

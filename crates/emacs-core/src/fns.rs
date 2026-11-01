@@ -2436,7 +2436,7 @@ fn f_string_to_unibyte(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.unibyte_string(&bytes))
 }
 
-pub(crate) fn f_copy_alist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_copy_alist(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let alist = lisp.check_list(args[0])?;
     let items = lisp.list_to_vec(alist)?;
     let mut copied = Vec::with_capacity(items.len());
