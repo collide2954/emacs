@@ -11,6 +11,7 @@ use crate::timefns::{Timespec, current_timespec, timespec_sub};
 use crate::value::Value;
 
 pub mod events;
+pub mod keyseq;
 pub mod reader;
 
 pub const UP_MODIFIER: i64 = 1;
@@ -401,6 +402,9 @@ pub struct Keyboard {
     pub last_non_minibuf_size: i64,
     pub timer_last_idleness_start_time: Option<Timespec>,
     pub help_form_saved_window_configs: Value,
+    pub raw_keybuf: Vec<Value>,
+    pub read_key_sequence_cmd: Value,
+    pub read_key_sequence_remapped: Value,
 }
 
 impl Default for Keyboard {
@@ -441,6 +445,9 @@ impl Default for Keyboard {
             last_non_minibuf_size: 0,
             timer_last_idleness_start_time: None,
             help_form_saved_window_configs: Value::NIL,
+            raw_keybuf: Vec::new(),
+            read_key_sequence_cmd: Value::NIL,
+            read_key_sequence_remapped: Value::NIL,
         }
     }
 }
@@ -460,7 +467,10 @@ impl Keyboard {
             self.recent_keys,
             self.unread_switch_frame,
             self.help_form_saved_window_configs,
+            self.read_key_sequence_cmd,
+            self.read_key_sequence_remapped,
         ]);
+        out.extend_from_slice(&self.raw_keybuf);
         for event in &self.kbd_buffer {
             event.trace(out);
         }

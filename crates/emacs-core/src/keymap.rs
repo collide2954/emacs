@@ -2361,7 +2361,7 @@ impl Lisp {
         Ok(())
     }
 
-    fn bound_value(&self, symbol: Value) -> Value {
+    pub(crate) fn bound_value(&self, symbol: Value) -> Value {
         let v = self.find_symbol_value(symbol);
         if v == sym::UNBOUND { Value::NIL } else { v }
     }

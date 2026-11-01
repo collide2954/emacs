@@ -40,11 +40,11 @@ fn arg(args: &[Value], i: usize) -> Value {
 }
 
 impl Lisp {
-    fn interactive(&self) -> bool {
+    pub(crate) fn interactive(&self) -> bool {
         self.plain_value(sym::EXECUTING_KBD_MACRO).is_nil() && !self.noninteractive
     }
 
-    fn event_head_kind(&self, event: Value) -> Value {
+    pub(crate) fn event_head_kind(&self, event: Value) -> Value {
         let head = self.event_head(event);
         self.get(head, sym::EVENT_KIND)
     }
@@ -106,7 +106,7 @@ impl Lisp {
         Ok(())
     }
 
-    fn echo_dash(&mut self) -> LispResult<()> {
+    pub(crate) fn echo_dash(&mut self) -> LispResult<()> {
         let echo_string = self.kvar(Kvar::EchoString);
         if echo_string.is_nil() {
             return Ok(());
@@ -148,7 +148,7 @@ impl Lisp {
         self.echo_now()
     }
 
-    fn echo_update(&mut self) -> LispResult<()> {
+    pub(crate) fn echo_update(&mut self) -> LispResult<()> {
         let kb = self.current_kboard;
         if !self.kboards[kb].immediate_echo {
             return Ok(());
@@ -174,7 +174,7 @@ impl Lisp {
         self.echo_now()
     }
 
-    fn echo_now(&mut self) -> LispResult<()> {
+    pub(crate) fn echo_now(&mut self) -> LispResult<()> {
         let kb = self.current_kboard;
         if !self.kboards[kb].immediate_echo {
             self.kboards[kb].immediate_echo = true;
@@ -247,7 +247,7 @@ impl Lisp {
         self.keyboard.timer_idleness_start_time = None;
     }
 
-    fn timer_resume_idle(&mut self) {
+    pub(crate) fn timer_resume_idle(&mut self) {
         if self.keyboard.timer_idleness_start_time.is_some() {
             return;
         }

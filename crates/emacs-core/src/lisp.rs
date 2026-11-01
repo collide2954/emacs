@@ -191,6 +191,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::keyboard::SUBRS,
     crate::keyboard::events::SUBRS,
     crate::keyboard::reader::SUBRS,
+    crate::keyboard::keyseq::SUBRS,
     crate::macros::SUBRS,
     crate::keymap::SUBRS,
     crate::syntax::SUBRS,
