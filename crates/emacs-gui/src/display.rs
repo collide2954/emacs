@@ -13,6 +13,7 @@ pub struct Disconnected;
 pub struct Display {
     commands: UnboundedSender<Command>,
     notices: Receiver<Notice>,
+    pending: Vec<Notice>,
     surfaces: HashMap<u64, Surface>,
     shown: HashSet<u64>,
 }
@@ -22,8 +23,23 @@ impl Display {
         Display {
             commands,
             notices,
+            pending: Vec::new(),
             surfaces: HashMap::new(),
             shown: HashSet::new(),
+        }
+    }
+
+    pub fn wait(&mut self, timeout: Duration) -> Result<bool, Disconnected> {
+        if !self.pending.is_empty() {
+            return Ok(true);
+        }
+        match self.notices.recv_timeout(timeout) {
+            Ok(notice) => {
+                self.pending.push(notice);
+                Ok(true)
+            }
+            Err(RecvTimeoutError::Timeout) => Ok(false),
+            Err(RecvTimeoutError::Disconnected) => Err(Disconnected),
         }
     }
 
@@ -118,8 +134,10 @@ impl Display {
     }
 
     pub fn read_notices(&mut self, timeout: Option<Duration>) -> Result<Vec<Notice>, Disconnected> {
-        let mut out = Vec::new();
-        if let Some(timeout) = timeout {
+        let mut out = std::mem::take(&mut self.pending);
+        if out.is_empty()
+            && let Some(timeout) = timeout
+        {
             match self.notices.recv_timeout(timeout) {
                 Ok(notice) => out.push(notice),
                 Err(RecvTimeoutError::Timeout) => return Ok(out),

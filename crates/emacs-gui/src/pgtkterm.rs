@@ -10,9 +10,12 @@ use emacs_core::keyboard::f_set_input_interrupt_mode;
 use emacs_core::lisp::Lisp;
 use emacs_core::object::Weakness;
 use emacs_core::symbols as sym;
+use emacs_core::termhooks::{EventKind, InputEvent, KbdEvent};
 use emacs_core::terminal::{DisplayInfo, OutputMethod};
 use emacs_core::value::Value;
 use emacs_core::xfaces::EmacsColor;
+
+use crate::protocol::Notice;
 
 pub struct PgtkDisplayInfo {
     pub terminal: Value,
@@ -22,7 +25,13 @@ pub struct PgtkDisplayInfo {
     pub scroll_x_per_char: i32,
     pub scroll_y_per_line: i32,
     pub connection: i32,
+    pub last_user_time: u64,
+    pub x_focus_frame: Value,
+    pub x_focus_event_frame: Value,
+    pub highlight_frame: Value,
 }
+
+const FOCUS_EXPLICIT: i32 = 2;
 
 #[derive(Default)]
 struct Pgtk {
@@ -30,6 +39,7 @@ struct Pgtk {
     display_id: u32,
     initial_display: Option<Vec<u8>>,
     displays: Vec<PgtkDisplayInfo>,
+    evq: Vec<KbdEvent>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -50,6 +60,7 @@ pub struct PgtkOutput {
     pub preferred_height: i64,
     pub widget: bool,
     pub drag_dest_targets: Option<Vec<Vec<u8>>>,
+    pub focus_state: i32,
 }
 
 thread_local! {
@@ -135,6 +146,29 @@ pub fn pgtk_make_frame_visible_invisible(lisp: &mut Lisp, f: Value, visible: boo
 
 pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) {
     lisp.free_frame_faces(f);
+    let terminal = lisp.frame(f).terminal;
+    if with_dpyinfo(lisp, f, |d| d.x_focus_frame) == f {
+        let new_focus = lisp.frame_parent_frame(f);
+        with_dpyinfo(lisp, f, |d| {
+            if d.highlight_frame == f {
+                d.highlight_frame = Value::NIL;
+            }
+        });
+        if !new_focus.is_nil() && lisp.frame_live_p(new_focus) && has_output(lisp, new_focus) {
+            pgtk_new_focus_frame(lisp, terminal, new_focus);
+        } else {
+            with_dpyinfo(lisp, f, |d| d.x_focus_frame = Value::NIL);
+            pgtk_frame_rehighlight(lisp, terminal);
+        }
+    }
+    with_dpyinfo(lisp, f, |d| {
+        if d.highlight_frame == f {
+            d.highlight_frame = Value::NIL;
+        }
+        if d.x_focus_event_frame == f {
+            d.x_focus_event_frame = Value::NIL;
+        }
+    });
     let key = frame_key(lisp, f) as u64;
     crate::with_display(|display| display.close_frame(key));
     free_output(lisp, f);
@@ -177,11 +211,268 @@ pub fn with_display_list<T>(f: impl FnOnce(&mut Vec<PgtkDisplayInfo>) -> T) -> T
 }
 
 pub fn mark_pgtkterm(roots: &mut Vec<Value>) {
-    with_display_list(|displays| {
-        for dpyinfo in displays.iter() {
-            roots.push(dpyinfo.terminal);
+    PGTK.with(|p| {
+        let p = p.borrow();
+        for event in &p.evq {
+            event.trace(roots);
+        }
+        for dpyinfo in &p.displays {
+            roots.extend_from_slice(&[
+                dpyinfo.terminal,
+                dpyinfo.x_focus_frame,
+                dpyinfo.x_focus_event_frame,
+                dpyinfo.highlight_frame,
+            ]);
         }
     });
+}
+
+fn with_dpyinfo<T>(lisp: &Lisp, f: Value, g: impl FnOnce(&mut PgtkDisplayInfo) -> T) -> T {
+    let terminal = lisp.frame(f).terminal;
+    with_display_list(|displays| {
+        let dpyinfo = displays
+            .iter_mut()
+            .find(|d| d.terminal == terminal)
+            .expect("frame display info");
+        g(dpyinfo)
+    })
+}
+
+pub fn focus_frame(lisp: &Lisp, f: Value) -> Option<Value> {
+    let focus = with_dpyinfo(lisp, f, |d| d.x_focus_frame);
+    (!focus.is_nil()).then_some(focus)
+}
+
+fn pgtk_any_window_to_frame(lisp: &Lisp, id: u64) -> Option<Value> {
+    lisp.frames.list.iter().copied().find(|&f| {
+        lisp.frame(f).output_method == OutputMethod::Pgtk
+            && lisp.frame_live_p(f)
+            && frame_key(lisp, f) as u64 == id
+    })
+}
+
+fn evq_enqueue(lisp: &Lisp, ev: KbdEvent) {
+    let mut frame = Value::NIL;
+    if !matches!(
+        ev.kind,
+        EventKind::SelectionRequest | EventKind::SelectionClear
+    ) {
+        if lisp.is_window(ev.frame_or_window) {
+            frame = lisp.window(ev.frame_or_window).frame;
+        }
+        if lisp.is_frame(ev.frame_or_window) {
+            frame = ev.frame_or_window;
+        }
+    }
+    PGTK.with(|p| p.borrow_mut().evq.push(ev));
+    if !frame.is_nil() {
+        with_dpyinfo(lisp, frame, |dpyinfo| {
+            if dpyinfo.last_user_time < ev.timestamp {
+                dpyinfo.last_user_time = ev.timestamp;
+            }
+        });
+    }
+}
+
+fn evq_flush(lisp: &mut Lisp, hold_quit: &mut KbdEvent) -> LispResult<i32> {
+    let mut n = 0;
+    loop {
+        let ev = PGTK.with(|p| {
+            let mut p = p.borrow_mut();
+            (!p.evq.is_empty()).then(|| p.evq.remove(0))
+        });
+        let Some(ev) = ev else {
+            break;
+        };
+        lisp.kbd_buffer_store_buffered_event(ev, Some(hold_quit))?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+fn key_press_event(lisp: &mut Lisp, input: InputEvent) {
+    let Some(f) = pgtk_any_window_to_frame(lisp, input.frame) else {
+        return;
+    };
+    with_dpyinfo(lisp, f, |dpyinfo| dpyinfo.last_user_time = input.timestamp);
+    let extra = lisp
+        .plain_value(sym::EXTRA_KEYBOARD_MODIFIERS)
+        .as_fixnum()
+        .unwrap_or(0);
+    let modifiers = input.modifiers
+        | (extra
+            & (emacs_core::keyboard::CTRL_MODIFIER
+                | emacs_core::keyboard::META_MODIFIER
+                | emacs_core::keyboard::SHIFT_MODIFIER
+                | emacs_core::keyboard::SUPER_MODIFIER
+                | emacs_core::keyboard::HYPER_MODIFIER
+                | emacs_core::keyboard::ALT_MODIFIER));
+    let arg = match &input.arg {
+        Some(text) => lisp.unibyte_string(text.as_bytes()),
+        None => Value::NIL,
+    };
+    evq_enqueue(
+        lisp,
+        KbdEvent {
+            kind: input.kind,
+            code: input.code,
+            modifiers,
+            timestamp: input.timestamp,
+            frame_or_window: f,
+            arg,
+            ..KbdEvent::default()
+        },
+    );
+}
+
+fn delete_event(lisp: &mut Lisp, input: InputEvent) {
+    if let Some(f) = pgtk_any_window_to_frame(lisp, input.frame) {
+        evq_enqueue(
+            lisp,
+            KbdEvent {
+                kind: EventKind::DeleteWindow,
+                frame_or_window: f,
+                ..KbdEvent::default()
+            },
+        );
+    }
+}
+
+fn frame_highlight(lisp: &mut Lisp, f: Value) {
+    lisp.gui_update_cursor(f, true);
+}
+
+fn frame_unhighlight(lisp: &mut Lisp, f: Value) {
+    lisp.gui_update_cursor(f, true);
+}
+
+fn pgtk_frame_rehighlight(lisp: &mut Lisp, terminal: Value) {
+    let (old_highlight, focus) = with_display_list(|displays| {
+        let d = displays
+            .iter()
+            .find(|d| d.terminal == terminal)
+            .expect("display info");
+        (d.highlight_frame, d.x_focus_frame)
+    });
+    let mut highlight = Value::NIL;
+    if !focus.is_nil() {
+        let redirect = lisp.frame(focus).focus_frame;
+        highlight = if lisp.is_frame(redirect) {
+            redirect
+        } else {
+            focus
+        };
+        if !lisp.frame_live_p(highlight) {
+            lisp.frame_mut(focus).focus_frame = Value::NIL;
+            highlight = focus;
+        }
+    }
+    with_display_list(|displays| {
+        if let Some(d) = displays.iter_mut().find(|d| d.terminal == terminal) {
+            d.highlight_frame = highlight;
+        }
+    });
+    if !old_highlight.is_nil() {
+        frame_unhighlight(lisp, old_highlight);
+    }
+    if !highlight.is_nil() {
+        frame_highlight(lisp, highlight);
+    }
+}
+
+fn pgtk_new_focus_frame(lisp: &mut Lisp, terminal: Value, frame: Value) {
+    with_display_list(|displays| {
+        if let Some(d) = displays.iter_mut().find(|d| d.terminal == terminal)
+            && frame != d.x_focus_frame
+        {
+            d.x_focus_frame = frame;
+        }
+    });
+    pgtk_frame_rehighlight(lisp, terminal);
+}
+
+fn pgtk_focus_changed(lisp: &mut Lisp, is_enter: bool, state: i32, frame: Value) -> KbdEvent {
+    let terminal = lisp.frame(frame).terminal;
+    let mut event = KbdEvent::default();
+    if is_enter {
+        if with_dpyinfo(lisp, frame, |d| d.x_focus_event_frame) != frame {
+            pgtk_new_focus_frame(lisp, terminal, frame);
+            with_dpyinfo(lisp, frame, |d| d.x_focus_event_frame = frame);
+            let terminal_frame = lisp.plain_value(sym::TERMINAL_FRAME_2);
+            let pgtk_terminal_frame = lisp.is_frame(terminal_frame)
+                && lisp.frame(terminal_frame).output_method == OutputMethod::Pgtk;
+            event.arg = lisp.bool(
+                (terminal_frame.is_nil() || !pgtk_terminal_frame) && lisp.frames.list.len() > 1,
+            );
+            event.kind = EventKind::FocusIn;
+            event.frame_or_window = frame;
+        }
+        with_output(lisp, frame, |output| output.focus_state |= state);
+    } else {
+        with_output(lisp, frame, |output| output.focus_state &= !state);
+        if with_dpyinfo(lisp, frame, |d| d.x_focus_event_frame) == frame {
+            with_dpyinfo(lisp, frame, |d| d.x_focus_event_frame = Value::NIL);
+            pgtk_new_focus_frame(lisp, terminal, Value::NIL);
+            event.kind = EventKind::FocusOut;
+            event.frame_or_window = frame;
+        }
+        if lisp.frame(frame).flags.pointer_invisible {
+            lisp.frame_mut(frame).flags.pointer_invisible = false;
+        }
+    }
+    event
+}
+
+fn focus_event(lisp: &mut Lisp, input: InputEvent, is_enter: bool) {
+    let Some(frame) = pgtk_any_window_to_frame(lisp, input.frame) else {
+        return;
+    };
+    let event = pgtk_focus_changed(lisp, is_enter, FOCUS_EXPLICIT, frame);
+    if event.kind != EventKind::NoEvent {
+        evq_enqueue(lisp, event);
+    }
+}
+
+fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) {
+    if let Notice::Input(input) = notice {
+        match input.kind {
+            EventKind::AsciiKeystroke
+            | EventKind::MultibyteCharKeystroke
+            | EventKind::NonAsciiKeystroke => key_press_event(lisp, input),
+            EventKind::DeleteWindow => delete_event(lisp, input),
+            EventKind::FocusIn => focus_event(lisp, input, true),
+            EventKind::FocusOut => focus_event(lisp, input, false),
+            _ => {}
+        }
+    }
+}
+
+pub fn pgtk_read_socket(
+    lisp: &mut Lisp,
+    _terminal: Value,
+    hold_quit: &mut KbdEvent,
+) -> LispResult<i32> {
+    let count = evq_flush(lisp, hold_quit)?;
+    if count > 0 {
+        return Ok(count);
+    }
+    let notices = crate::with_display(|display| display.read_notices(None))
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    for notice in notices {
+        pgtk_handle_notice(lisp, notice);
+    }
+    evq_flush(lisp, hold_quit)
+}
+
+pub fn pgtk_wait_for_input(_lisp: &mut Lisp, timeout: std::time::Duration) -> bool {
+    match crate::with_display(|display| display.wait(timeout)) {
+        Some(Ok(ready)) => ready,
+        _ => {
+            std::thread::sleep(timeout);
+            false
+        }
+    }
 }
 
 fn initialize_display_info(terminal: Value) -> (PgtkDisplayInfo, DisplayInfo) {
@@ -201,6 +492,10 @@ fn initialize_display_info(terminal: Value) -> (PgtkDisplayInfo, DisplayInfo) {
         scroll_x_per_char: 0,
         scroll_y_per_line: 0,
         connection: 0,
+        last_user_time: 0,
+        x_focus_frame: Value::NIL,
+        x_focus_event_frame: Value::NIL,
+        highlight_frame: Value::NIL,
     };
     (pgtk, common)
 }
@@ -298,6 +593,7 @@ pub fn pgtk_term_init(
     hooks.frame_parm_handlers = Some(crate::pgtkfns::PGTK_FRAME_PARM_HANDLERS);
     hooks.delete_frame = Some(pgtk_destroy_window);
     hooks.delete_terminal = Some(pgtk_delete_terminal);
+    hooks.read_socket = Some(pgtk_read_socket);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =
         with_display_list(|displays| displays.iter().map(|d| d.terminal).collect::<Vec<_>>())

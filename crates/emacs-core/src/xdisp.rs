@@ -65,6 +65,32 @@ impl Lisp {
     }
 }
 
+impl Lisp {
+    pub fn gui_update_cursor(&mut self, f: Value, on_p: bool) {
+        let root = self.frame(f).root_window;
+        self.update_cursor_in_window_tree(root, on_p);
+    }
+
+    fn update_cursor_in_window_tree(&mut self, mut w: Value, on_p: bool) {
+        while !w.is_nil() {
+            let contents = self.window(w).contents;
+            if self.is_window(contents) {
+                self.update_cursor_in_window_tree(contents, on_p);
+            } else {
+                self.update_window_cursor(w, on_p);
+            }
+            w = self.window(w).next;
+        }
+    }
+
+    fn update_window_cursor(&mut self, w: Value, on: bool) {
+        let f = self.window(w).frame;
+        if self.frame(f).flags.glyphs_initialized_p {
+            unreachable!("display_and_set_cursor (on = {on}) needs glyph matrices");
+        }
+    }
+}
+
 fn f_tab_bar_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_any_frame(args.first().copied().unwrap_or(Value::NIL))?;
     let w = lisp.frame(f).tab_bar_window;
@@ -140,14 +166,6 @@ impl Lisp {
             self.message_dolog(b"", true, false)?;
         }
         Ok(())
-    }
-
-    pub fn cancel_echoing(&mut self) {
-        let kb = self.current_kboard;
-        if let Some(kboard) = self.kboards.get_mut(kb) {
-            kboard.vars[crate::keyboard::Kvar::EchoString as usize] = Value::NIL;
-            kboard.vars[crate::keyboard::Kvar::EchoPrompt as usize] = Value::NIL;
-        }
     }
 
     pub fn clear_message(&mut self, current_p: bool) -> LispResult<()> {

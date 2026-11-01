@@ -1131,6 +1131,17 @@ impl Lisp {
         }
     }
 
+    pub fn frame_make_pointer_visible(&mut self, f: Value) {
+        if self.frame_live_p(f)
+            && self.frame(f).flags.pointer_invisible
+            && self.frame(f).flags.mouse_moved
+            && let Some(hook) = self.frame_terminal_hooks(f).toggle_invisible_pointer
+        {
+            hook(self, f, false);
+            self.frame_mut(f).flags.pointer_invisible = false;
+        }
+    }
+
     pub fn get_frame_param(&self, f: Value, prop: Value) -> Value {
         let cell = self.assq(prop, self.frame(f).param_alist);
         self.cdr_safe(cell)

@@ -2370,7 +2370,7 @@ fn f_run_hooks(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_run_hook_with_args(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_run_hook_with_args(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.run_hook_with_args(args, funcall_nil)
 }
 

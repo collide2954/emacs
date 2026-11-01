@@ -189,6 +189,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::filelock::SUBRS,
     crate::emacs::SUBRS,
     crate::keyboard::SUBRS,
+    crate::keyboard::events::SUBRS,
     crate::macros::SUBRS,
     crate::keymap::SUBRS,
     crate::syntax::SUBRS,
@@ -1132,6 +1133,7 @@ impl Lisp {
         roots.push(self.pending_funcalls);
         roots.push(self.xdisp.message_stack);
         roots.push(self.xdisp.echo_area_window);
+        self.keyboard.roots(&mut roots);
         roots.push(self.fileio.annotation_buffers);
         for kboard in &self.kboards {
             roots.extend_from_slice(&kboard.vars);

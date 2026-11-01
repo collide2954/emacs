@@ -42,12 +42,17 @@ pub struct TerminalHooks {
     pub frame_visible_invisible: Option<fn(&mut Lisp, Value, bool)>,
     pub delete_frame: Option<fn(&mut Lisp, Value)>,
     pub delete_terminal: Option<fn(&mut Lisp, Value) -> LispResult<()>>,
+    pub read_socket: Option<ReadSocketHook>,
 }
+
+pub type ReadSocketHook = fn(&mut Lisp, Value, &mut crate::termhooks::KbdEvent) -> LispResult<i32>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct WindowSystem {
     pub mark: fn(&mut Vec<Value>),
     pub check_x_display_info: fn(&mut Lisp, Value) -> LispResult<Value>,
+    pub get_keysym_name: fn(u32) -> Option<&'static str>,
+    pub wait_for_input: fn(&mut Lisp, std::time::Duration) -> bool,
 }
 
 #[derive(Clone, Debug)]

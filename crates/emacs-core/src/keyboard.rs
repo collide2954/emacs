@@ -10,6 +10,8 @@ use crate::terminal::OutputMethod;
 use crate::timefns::{Timespec, current_timespec, timespec_sub};
 use crate::value::Value;
 
+pub mod events;
+
 pub const UP_MODIFIER: i64 = 1;
 pub const DOWN_MODIFIER: i64 = 2;
 pub const DRAG_MODIFIER: i64 = 4;
@@ -365,10 +367,26 @@ pub const READABLE_EVENTS_DO_TIMERS_NOW: i32 = 1 << 0;
 pub struct Keyboard {
     pub input_pending: bool,
     pub interrupt_input: bool,
+    pub interrupts_deferred: bool,
     pub quit_char: i64,
     pub timers_run: u32,
     pub timer_idleness_start_time: Option<Timespec>,
     pub last_auto_save: i64,
+    pub kbd_buffer: std::collections::VecDeque<crate::termhooks::KbdEvent>,
+    pub internal_last_event_frame: Value,
+    pub accent_key_syms: Value,
+    pub func_key_syms: Value,
+    pub virtual_core_keyboard_name: Value,
+    pub virtual_core_pointer_name: Value,
+    pub force_quit_count: i32,
+    pub waiting_for_input: bool,
+    pub echoing: bool,
+    pub ok_to_echo_at_next_pause: Option<usize>,
+    pub echo_kboard: Option<usize>,
+    pub echo_message_buffer: Value,
+    pub button_down_time: i64,
+    pub ignore_mouse_drag_p: bool,
+    pub getcjmp: Value,
 }
 
 impl Default for Keyboard {
@@ -376,10 +394,43 @@ impl Default for Keyboard {
         Keyboard {
             input_pending: false,
             interrupt_input: false,
+            interrupts_deferred: false,
             quit_char: i64::from(b'g' & 0o37),
             timers_run: 0,
             timer_idleness_start_time: None,
             last_auto_save: 0,
+            kbd_buffer: std::collections::VecDeque::new(),
+            internal_last_event_frame: Value::NIL,
+            accent_key_syms: Value::NIL,
+            func_key_syms: Value::NIL,
+            virtual_core_keyboard_name: Value::NIL,
+            virtual_core_pointer_name: Value::NIL,
+            force_quit_count: 0,
+            waiting_for_input: false,
+            echoing: false,
+            ok_to_echo_at_next_pause: None,
+            echo_kboard: None,
+            echo_message_buffer: Value::NIL,
+            button_down_time: 0,
+            ignore_mouse_drag_p: false,
+            getcjmp: Value::NIL,
+        }
+    }
+}
+
+impl Keyboard {
+    pub fn roots(&self, out: &mut Vec<Value>) {
+        out.extend_from_slice(&[
+            self.internal_last_event_frame,
+            self.accent_key_syms,
+            self.func_key_syms,
+            self.virtual_core_keyboard_name,
+            self.virtual_core_pointer_name,
+            self.echo_message_buffer,
+            self.getcjmp,
+        ]);
+        for event in &self.kbd_buffer {
+            event.trace(out);
         }
     }
 }
@@ -631,30 +682,6 @@ impl Lisp {
         nexttime
     }
 
-    fn readable_events(&mut self, flags: i32) -> LispResult<bool> {
-        if flags & READABLE_EVENTS_DO_TIMERS_NOW != 0 {
-            self.timer_check()?;
-        }
-        if self.single_kboard {
-            if self.kboards[self.current_kboard].kbd_queue_has_data {
-                return Ok(true);
-            }
-        } else if self.kboards.iter().any(|kb| kb.kbd_queue_has_data) {
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    fn get_input_pending(&mut self, flags: i32) -> LispResult<bool> {
-        self.keyboard.input_pending =
-            self.var_true(sym::QUIT_FLAG) || self.readable_events(flags)?;
-        if !self.keyboard.input_pending {
-            self.keyboard.input_pending =
-                self.var_true(sym::QUIT_FLAG) || self.readable_events(flags)?;
-        }
-        Ok(self.keyboard.input_pending)
-    }
-
     pub fn detect_input_pending(&mut self) -> LispResult<bool> {
         Ok(self.keyboard.input_pending || self.get_input_pending(0)?)
     }
@@ -664,11 +691,6 @@ impl Lisp {
             self.get_input_pending(READABLE_EVENTS_DO_TIMERS_NOW)?;
         }
         Ok(self.keyboard.input_pending)
-    }
-
-    pub fn swallow_events(&mut self) -> LispResult<()> {
-        self.get_input_pending(READABLE_EVENTS_DO_TIMERS_NOW)?;
-        Ok(())
     }
 
     pub fn requeued_command_events_pending_p(&self) -> bool {
@@ -848,6 +870,8 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar_bool(sym::MULTIPLE_TERMINALS_MERGE_KEYBOARDS, false);
     lisp.initial_kboard = lisp.allocate_kboard(sym::T);
     lisp.current_kboard = lisp.initial_kboard;
+    lisp.keyboard.virtual_core_pointer_name = lisp.string("Virtual core pointer");
+    lisp.keyboard.virtual_core_keyboard_name = lisp.string("Virtual core keyboard");
 }
 
 pub fn parse_modifiers_uncached(name: &[u8]) -> (i64, usize) {

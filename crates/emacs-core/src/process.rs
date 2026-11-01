@@ -287,7 +287,12 @@ impl Lisp {
                 }
             }
             if !(read_kbd != 0 && self.detect_input_pending()?) {
-                std::thread::sleep(timeout);
+                match self.window_system {
+                    Some(window_system) if read_kbd != 0 || !wait_for_cell.is_nil() => {
+                        (window_system.wait_for_input)(self, timeout);
+                    }
+                    _ => std::thread::sleep(timeout),
+                }
             }
             if wait < Wait::Forever && !timeout_reduced_for_timers {
                 break;

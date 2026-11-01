@@ -38,6 +38,8 @@ pub fn install(lisp: &mut Lisp, display: Display) {
     lisp.window_system = Some(WindowSystem {
         mark,
         check_x_display_info: pgtkfns::check_pgtk_display_info,
+        get_keysym_name: keysym::keysym_name,
+        wait_for_input: pgtkterm::pgtk_wait_for_input,
     });
 }
 
