@@ -155,6 +155,8 @@ pub struct Frame {
     pub face_cache: Option<Box<crate::xfaces::FaceCache>>,
     pub font_driver_list: Vec<crate::font::FontDriverList>,
     pub fonts_changed: bool,
+    pub font: Value,
+    pub fontset: i64,
 }
 
 impl Frame {
@@ -211,6 +213,8 @@ impl Frame {
             face_cache: None,
             font_driver_list: Vec::new(),
             fonts_changed: false,
+            font: Value::NIL,
+            fontset: -1,
         }
     }
 
@@ -247,6 +251,7 @@ impl Frame {
             self.tab_bar_items,
             self.tool_bar_items,
             self.terminal,
+            self.font,
         ]);
         if let Some(cache) = &self.face_cache {
             cache.trace(out);

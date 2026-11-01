@@ -155,6 +155,21 @@ impl Charset {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum CharsetMapFunction {
+    Lisp(Value),
+    Rust(fn(&mut Lisp, Value, Value) -> LispResult<()>),
+}
+
+impl CharsetMapFunction {
+    fn call(self, lisp: &mut Lisp, range: Value, arg: Value) -> LispResult<()> {
+        match self {
+            CharsetMapFunction::Lisp(function) => lisp.funcall(function, &[range, arg]).map(|_| ()),
+            CharsetMapFunction::Rust(function) => function(lisp, range, arg),
+        }
+    }
+}
+
 pub struct Charsets {
     pub hash_table: Value,
     pub table: Vec<Charset>,
@@ -1114,7 +1129,7 @@ impl Lisp {
 
     fn map_char_table_for_charset(
         &mut self,
-        function: Value,
+        function: CharsetMapFunction,
         table: Value,
         arg: Value,
         partial: Option<(i32, u32, u32)>,
@@ -1125,8 +1140,7 @@ impl Lisp {
         let mut pending: Option<(u32, u32)> = None;
         let emit = |lisp: &mut Lisp, from: u32, to: u32| -> LispResult<()> {
             let range = lisp.cons(Value::fixnum(from as i64), Value::fixnum(to as i64));
-            lisp.funcall(function, &[range, arg])?;
-            Ok(())
+            function.call(lisp, range, arg)
         };
         let mut result = Ok(());
         'outer: for (from, to, val) in ranges {
@@ -1189,9 +1203,9 @@ impl Lisp {
         result
     }
 
-    fn map_charset_chars(
+    pub(crate) fn map_charset_chars(
         &mut self,
-        function: Value,
+        function: CharsetMapFunction,
         arg: Value,
         id: i32,
         from: u32,
@@ -1214,7 +1228,7 @@ impl Lisp {
                     }
                 }
                 let range = self.cons(Value::fixnum(from_c as i64), Value::fixnum(to_c as i64));
-                self.funcall(function, &[range, arg])?;
+                function.call(self, range, arg)?;
             }
             Method::Map => {
                 if !self.is_char_table(self.charset_attr(id, ATTR_ENCODER)) {
@@ -1366,7 +1380,7 @@ fn f_map_charset_chars(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     } else {
         (lisp.check_fixnat(to_code)? as u32).min(max_code)
     };
-    lisp.map_charset_chars(function, arg, id, from, to)?;
+    lisp.map_charset_chars(CharsetMapFunction::Lisp(function), arg, id, from, to)?;
     Ok(Value::NIL)
 }
 

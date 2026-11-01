@@ -339,6 +339,54 @@ fn listing_and_opening_fonts_through_a_driver() {
     });
 }
 
+#[test]
+fn fontsets_made_from_font_objects() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        setup(&mut lisp);
+        eval(
+            &mut lisp,
+            "(setq font-encoding-alist '((\"iso10646-1$\" . unicode)))",
+        );
+        let f = lisp.frames.selected_frame;
+        let driver = mock_driver(&mut lisp);
+        lisp.register_font_driver(driver, Some(f)).unwrap();
+        lisp.font_update_drivers(f, sym::T).unwrap();
+        eval(
+            &mut lisp,
+            "(setq beta (open-font (find-font (font-spec :family \"beta\")) 10))",
+        );
+        let beta = var(&mut lisp, "beta");
+        assert_eq!(lisp.fontset_from_font(beta).unwrap(), 1);
+        assert_eq!(lisp.fontset_from_font(beta).unwrap(), 1);
+        for (source, expected) in [
+            (
+                "(fontset-list)",
+                "(\"-*-Beta-normal-normal-normal-*-10-*-*-*-p-*-fontset-startup\" \"-*-*-*-*-*-*-*-*-*-*-*-*-fontset-default\")",
+            ),
+            (
+                "(car (rassoc \"fontset-startup\" fontset-alias-alist))",
+                "\"-*-Beta-normal-normal-normal-*-10-*-*-*-p-*-fontset-startup\"",
+            ),
+            (
+                "(car (rassoc \"-*-beta-normal-normal-normal-*-10-*-*-*-p-*-iso10646-1\" fontset-alias-alist))",
+                "\"-*-Beta-normal-normal-normal-*-10-*-*-*-p-*-fontset-startup\"",
+            ),
+            (
+                "(fontset-font \"fontset-startup\" #x3042)",
+                "(nil . \"iso10646-1\")",
+            ),
+            ("(fontset-font \"fontset-startup\" #x110000)", "nil"),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+        assert_eq!(
+            lisp.prin1_to_string(lisp.fontset_ascii(1)),
+            "\"-*-Beta-normal-normal-normal-*-10-*-*-*-p-*-iso10646-1\""
+        );
+    });
+}
+
 fn window_frame(lisp: &mut Lisp) -> (Value, Value) {
     let terminal = lisp.create_terminal(OutputMethod::Pgtk).unwrap();
     lisp.stack.push(terminal);

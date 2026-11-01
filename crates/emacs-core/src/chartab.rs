@@ -995,7 +995,7 @@ fn f_char_table_range(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Err(lisp.error("Invalid RANGE argument to `char-table-range'"))
 }
 
-fn f_set_char_table_range(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_set_char_table_range(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (table, range, value) = (args[0], args[1], args[2]);
     lisp.check_char_table(table)?;
     if range == sym::T {

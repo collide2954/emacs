@@ -1938,7 +1938,7 @@ pub fn f_font_put(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(val)
 }
 
-fn f_font_xlfd_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_font_xlfd_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let font = lisp.check_font(args[0])?;
     let fold_wildcards = args.get(1).copied().unwrap_or(Value::NIL);
     let long_xlfds = args.get(2).copied().unwrap_or(Value::NIL);
@@ -2016,7 +2016,7 @@ impl Lisp {
         false
     }
 
-    fn font_assoc(&mut self, key: Value, mut list: Value) -> LispResult {
+    pub(crate) fn font_assoc(&mut self, key: Value, mut list: Value) -> LispResult {
         while list.is_cons() {
             let elt = self.xcar(list);
             if elt.is_cons() {
@@ -3152,7 +3152,7 @@ impl Lisp {
                                     .frame(f)
                                     .face_cache
                                     .as_ref()
-                                    .map_or(0, |cache| cache.faces_by_id.len());
+                                    .map_or(0, |cache| cache.used());
                                 if used == 0 {
                                     self.recompute_basic_faces(f)?;
                                 }
