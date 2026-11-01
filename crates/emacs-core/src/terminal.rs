@@ -18,6 +18,8 @@ pub type FrameHook = fn(&mut Lisp, Value) -> LispResult<()>;
 pub type FrameOffsetHook = fn(&mut Lisp, Value, i64, i64, i64) -> LispResult<()>;
 pub type DefinedColorHook =
     fn(&mut Lisp, Value, &[u8]) -> LispResult<(bool, crate::xfaces::EmacsColor)>;
+pub type SetNewFontHook = fn(&mut Lisp, Value, Value, i64) -> LispResult<Value>;
+pub type DefaultFontParameterHook = fn(&mut Lisp, Value, Value) -> LispResult<()>;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TerminalHooks {
@@ -33,6 +35,8 @@ pub struct TerminalHooks {
     pub set_frame_alpha: Option<FrameHook>,
     pub set_scroll_bar_default_width: Option<FrameHook>,
     pub set_scroll_bar_default_height: Option<FrameHook>,
+    pub set_new_font: Option<SetNewFontHook>,
+    pub default_font_parameter: Option<DefaultFontParameterHook>,
 }
 
 #[derive(Clone, Copy, Debug)]

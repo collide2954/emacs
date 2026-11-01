@@ -62,6 +62,7 @@ pub struct FrameFlags {
     pub native_window: bool,
     pub was_invisible: bool,
     pub horizontal_scroll_bars: bool,
+    pub inhibit_clear_image_cache: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -157,6 +158,9 @@ pub struct Frame {
     pub fonts_changed: bool,
     pub font: Value,
     pub fontset: i64,
+    pub baseline_offset: i64,
+    pub n_tab_bar_rows: i64,
+    pub n_tool_bar_rows: i64,
 }
 
 impl Frame {
@@ -215,6 +219,9 @@ impl Frame {
             fonts_changed: false,
             font: Value::NIL,
             fontset: -1,
+            baseline_offset: 0,
+            n_tab_bar_rows: 0,
+            n_tool_bar_rows: 0,
         }
     }
 
@@ -2089,6 +2096,10 @@ fn f_frame_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 pub(crate) fn f_modify_frame_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(args[0])?;
+    if lisp.frame_window_p(f) {
+        lisp.gui_set_frame_parameters(f, args[1])?;
+        return Ok(Value::NIL);
+    }
     let mut parms = Vec::new();
     let mut tail = args[1];
     while tail.is_cons() {
@@ -3222,4 +3233,161 @@ impl Lisp {
         }
         Ok(())
     }
+
+    pub fn gui_set_font(&mut self, f: Value, arg: Value, oldval: Value) -> LispResult<()> {
+        let base = self.stack.len();
+        self.stack.extend([arg, oldval]);
+        let r = self.gui_set_font_1(f, arg, oldval);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn gui_set_font_1(&mut self, f: Value, arg: Value, oldval: Value) -> LispResult<()> {
+        use crate::font::FONT_NAME_INDEX;
+        let mut arg = arg;
+        self.store_frame_param(f, sym::FONT, oldval)?;
+        let font_object;
+        let mut fontset;
+        if arg.is_string() {
+            fontset = self.fs_query_fontset(arg, 0)?;
+            if fontset < 0 {
+                font_object = self.font_open_by_name(f, arg)?;
+                if font_object.is_nil() {
+                    let name = self.string_bytes(arg).to_vec();
+                    return Err(self.verror("Font `%s' is not defined", &[Arg::Str(&name)]));
+                }
+                arg = self.font_aref(font_object, FONT_NAME_INDEX);
+            } else if fontset > 0 {
+                let ascii = self.fontset_ascii(fontset as usize);
+                font_object = self.font_open_by_name(f, ascii)?;
+                if font_object.is_nil() {
+                    let name = self.string_bytes(arg).to_vec();
+                    return Err(self.verror("Font `%s' is not defined", &[Arg::Str(&name)]));
+                }
+                arg = self.font_aref(font_object, FONT_NAME_INDEX);
+            } else {
+                return Err(self.error("The default fontset can't be used for a frame font"));
+            }
+        } else if arg.is_cons() && self.xcar(arg).is_string() && self.font_object_p(self.xcdr(arg))
+        {
+            let name = self.xcar(arg);
+            fontset = self.fs_query_fontset(name, 0)?;
+            if fontset < 0 {
+                let name = self.string_bytes(name).to_vec();
+                return Err(self.verror("Unknown fontset: %s", &[Arg::Str(&name)]));
+            }
+            font_object = self.xcdr(arg);
+            arg = self.font_aref(font_object, FONT_NAME_INDEX);
+        } else if self.font_object_p(arg) {
+            font_object = arg;
+            arg = self.font_aref(font_object, FONT_NAME_INDEX);
+            fontset = self.frame(f).fontset;
+            if fontset >= 0 {
+                let ascii_font = self.fontset_ascii(fontset as usize);
+                let spec = self.font_spec_from_name(ascii_font)?;
+                if spec.is_nil() || !self.font_match_p(spec, font_object)? {
+                    fontset = -1;
+                }
+            }
+        } else {
+            return Err(self.signal_error("Invalid font", arg));
+        }
+        self.stack.extend([font_object, arg]);
+        if self.equal(font_object, oldval)? {
+            return Ok(());
+        }
+        if let Some(set_new_font) = self.frame_terminal_hooks(f).set_new_font {
+            set_new_font(self, f, font_object, fontset)?;
+        }
+        self.store_frame_param(f, sym::FONT, arg)?;
+        self.frame_mut(f).n_tab_bar_rows = 0;
+        self.frame_mut(f).n_tool_bar_rows = 0;
+        self.set_frame_garbaged(f);
+        self.frame_mut(f).fonts_changed = true;
+        Ok(())
+    }
+
+    pub fn gui_set_font_backend(
+        &mut self,
+        f: Value,
+        new_value: Value,
+        old_value: Value,
+    ) -> LispResult<()> {
+        let base = self.stack.len();
+        self.stack.extend([new_value, old_value]);
+        let r = self.gui_set_font_backend_1(f, new_value, old_value);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn gui_set_font_backend_1(
+        &mut self,
+        f: Value,
+        new_value: Value,
+        old_value: Value,
+    ) -> LispResult<()> {
+        let mut new_value = new_value;
+        if !new_value.is_nil() && !new_value.is_cons() {
+            self.check_string(new_value)?;
+            let bytes = crate::fontset::c_bytes(self.string_bytes(new_value)).to_vec();
+            let mut names = Vec::new();
+            let mut p0 = 0;
+            while p0 < bytes.len() {
+                let mut p1 = p0;
+                while p1 < bytes.len() && !c_isspace(bytes[p1]) && bytes[p1] != b',' {
+                    p1 += 1;
+                }
+                if p0 < p1 {
+                    let name = self.make_string(&bytes[p0..p1]);
+                    let symbol = crate::lread::f_intern(self, &[name, Value::NIL])?;
+                    names.push(symbol);
+                }
+                if p1 < bytes.len() {
+                    p1 += 1;
+                    while p1 < bytes.len() && c_isspace(bytes[p1]) {
+                        p1 += 1;
+                    }
+                }
+                p0 = p1;
+            }
+            new_value = self.list(&names);
+            self.stack.push(new_value);
+        }
+        if !old_value.is_nil() && self.equal(old_value, new_value)? {
+            return Ok(());
+        }
+        let has_font = !self.frame(f).font.is_nil();
+        if has_font {
+            self.free_all_realized_faces(f);
+        }
+        let requested = if new_value.is_nil() {
+            sym::T
+        } else {
+            new_value
+        };
+        let new_value = self.font_update_drivers(f, requested)?;
+        if new_value.is_nil() {
+            if old_value.is_nil() {
+                return Err(self.error("No font backend available"));
+            }
+            self.font_update_drivers(f, old_value)?;
+            return Err(self.error("None of specified font backends are available"));
+        }
+        self.stack.push(new_value);
+        self.store_frame_param(f, sym::FONT_BACKEND, new_value)?;
+        if has_font {
+            if let Some(default_font_parameter) =
+                self.frame_terminal_hooks(f).default_font_parameter
+            {
+                default_font_parameter(self, f, Value::NIL)?;
+            }
+            self.faces.face_change = true;
+            self.windows.windows_or_buffers_changed = 18;
+        }
+        Ok(())
+    }
+}
+
+fn c_isspace(c: u8) -> bool {
+    c == b' ' || (b'\t'..=b'\r').contains(&c)
 }

@@ -9,6 +9,7 @@ const FONTSET_NAME: usize = 1;
 const FONTSET_ASCII: usize = 2;
 const FONTSET_BASE: usize = 3;
 const FONTSET_FRAME: usize = 4;
+const FONTSET_DEFAULT: usize = 6;
 const FONTSET_FALLBACK: usize = 7;
 
 pub struct Fontsets {
@@ -348,6 +349,26 @@ impl Lisp {
         };
         let fontset = self.make_fontset(f, Value::NIL, base_fontset)?;
         Ok(self.fontset_id_of(fontset))
+    }
+
+    pub fn free_face_fontset(&mut self, face_fontset: i32) {
+        let id = face_fontset as usize;
+        let fontset = self.fontsets.table[id];
+        if fontset.is_nil() {
+            return;
+        }
+        self.fontsets.table[id] = Value::NIL;
+        if id < self.fontsets.next_fontset_id {
+            self.fontsets.next_fontset_id = id;
+        }
+        let default = self.fontset_extra(fontset, FONTSET_DEFAULT);
+        if !default.is_nil() {
+            let default_id = self.fontset_id_of(default) as usize;
+            self.fontsets.table[default_id] = Value::NIL;
+            if default_id < self.fontsets.next_fontset_id {
+                self.fontsets.next_fontset_id = id;
+            }
+        }
     }
 
     fn free_realized_fontsets(&mut self, base: Value) -> LispResult<()> {

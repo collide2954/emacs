@@ -151,8 +151,12 @@ pub fn pgtk_term_init(
     let lisp_dpy_name = lisp.make_string(&dpy_name);
     lisp.stack.push(lisp_dpy_name);
     let terminal = lisp.create_terminal(OutputMethod::Pgtk)?;
-    lisp.terminal_mut(terminal).hooks.get_string_resource =
-        Some(crate::pgtkfns::pgtk_get_string_resource);
+    let hooks = &mut lisp.terminal_mut(terminal).hooks;
+    hooks.get_string_resource = Some(crate::pgtkfns::pgtk_get_string_resource);
+    hooks.defined_color = Some(pgtk_defined_color);
+    hooks.set_new_font = Some(pgtk_new_font);
+    hooks.default_font_parameter = Some(crate::pgtkfns::pgtk_default_font_parameter);
+    hooks.frame_parm_handlers = Some(crate::pgtkfns::PGTK_FRAME_PARM_HANDLERS);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =
         with_display_list(|displays| displays.iter().map(|d| d.terminal).collect::<Vec<_>>())
@@ -278,4 +282,48 @@ pub fn pgtk_defined_color(
         Some(color) => (true, color),
         None => (false, EmacsColor::default()),
     })
+}
+
+pub fn pgtk_new_font(lisp: &mut Lisp, f: Value, font_object: Value, fontset: i64) -> LispResult {
+    let fontset = if fontset < 0 {
+        lisp.fontset_from_font(font_object)?
+    } else {
+        fontset
+    };
+    lisp.frame_mut(f).fontset = fontset;
+    if lisp.frame(f).font == font_object {
+        return Ok(font_object);
+    }
+    lisp.frame_mut(f).font = font_object;
+    let font = lisp.font_object(font_object);
+    let (baseline_offset, average_width) = (font.baseline_offset, font.average_width);
+    let (font_ascent, font_descent) = lisp.get_font_ascent_descent(font_object);
+    let fr = lisp.frame_mut(f);
+    fr.baseline_offset = i64::from(baseline_offset);
+    let geometry = &mut fr.geometry;
+    geometry.column_width = i64::from(average_width);
+    geometry.line_height = i64::from(font_ascent + font_descent);
+    geometry.tab_bar_height = geometry.tab_bar_lines * geometry.line_height;
+    let wid = geometry.column_width;
+    geometry.config_scroll_bar_cols = if geometry.config_scroll_bar_width > 0 {
+        (geometry.config_scroll_bar_width + wid - 1) / wid
+    } else {
+        (14 + wid - 1) / wid
+    };
+    let height = geometry.line_height;
+    geometry.config_scroll_bar_lines = if geometry.config_scroll_bar_height > 0 {
+        (geometry.config_scroll_bar_height + height - 1) / height
+    } else {
+        (14 + height - 1) / height
+    };
+    let frame_id = lisp.frame(f).id as u64;
+    let has_widget =
+        crate::with_display(|display| display.surface(frame_id).is_some()) == Some(true);
+    if has_widget {
+        let geometry = &lisp.frame(f).geometry;
+        let width = geometry.text_cols * geometry.column_width;
+        let height = geometry.text_lines * geometry.line_height;
+        lisp.adjust_frame_size(f, width, height, 3, sym::FONT)?;
+    }
+    Ok(font_object)
 }

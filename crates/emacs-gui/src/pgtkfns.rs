@@ -1,10 +1,11 @@
 use emacs_core::doprnt::Arg;
 use emacs_core::error::LispResult;
 use emacs_core::fns::f_provide;
+use emacs_core::frame::ResourceType;
 use emacs_core::lisp::Lisp;
 use emacs_core::subr::Subr;
 use emacs_core::symbols as sym;
-use emacs_core::terminal::OutputMethod;
+use emacs_core::terminal::{FrameParmHandler, OutputMethod};
 use emacs_core::value::Value;
 
 use crate::pgtkterm::{fatal, pgtk_defined_color, pgtk_term_init, with_display_list};
@@ -267,4 +268,119 @@ fn f_xw_display_color_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_x_display_grayscale_p(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(sym::T)
+}
+
+pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
+    Some(Lisp::gui_set_autoraise),
+    Some(Lisp::gui_set_autolower),
+    None,
+    None,
+    Some(Lisp::gui_set_border_width),
+    None,
+    None,
+    Some(Lisp::gui_set_font),
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    Some(Lisp::gui_set_scroll_bar_height),
+    None,
+    Some(Lisp::gui_set_unsplittable),
+    Some(Lisp::gui_set_vertical_scroll_bars),
+    Some(Lisp::gui_set_horizontal_scroll_bars),
+    Some(Lisp::gui_set_visibility),
+    None,
+    None,
+    None,
+    None,
+    Some(Lisp::gui_set_screen_gamma),
+    Some(Lisp::gui_set_line_spacing),
+    Some(Lisp::gui_set_left_fringe),
+    Some(Lisp::gui_set_right_fringe),
+    None,
+    Some(Lisp::gui_set_fullscreen),
+    Some(Lisp::gui_set_font_backend),
+    Some(Lisp::gui_set_alpha),
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    None,
+    Some(Lisp::gui_set_no_special_glyphs),
+    None,
+    Some(Lisp::gui_set_borders_respect_alpha_background),
+];
+
+const DEFAULT_FONT_NAMES: &[&str] = &[
+    "monospace-10",
+    "-adobe-courier-medium-r-*-*-*-120-*-*-*-*-iso8859-1",
+    "-misc-fixed-medium-r-normal-*-*-140-*-*-c-*-iso8859-1",
+    "-*-*-medium-r-normal-*-*-140-*-*-c-*-iso8859-1",
+    "-*-*-medium-r-*-*-*-*-*-*-c-*-iso8859-1",
+    "-*-fixed-*-*-*-*-*-140-*-*-c-*-iso8859-1",
+    "fixed",
+];
+
+pub fn pgtk_default_font_parameter(lisp: &mut Lisp, f: Value, parms: Value) -> LispResult<()> {
+    let dpyinfo = lisp.frame_display_info(f);
+    let mut font_param =
+        lisp.gui_display_get_arg(dpyinfo, parms, sym::FONT, None, None, ResourceType::String)?;
+    if font_param == sym::UNBOUND {
+        font_param = Value::NIL;
+    }
+    let base = lisp.stack.len();
+    lisp.stack.push(font_param);
+    let r = (|| -> LispResult<()> {
+        let mut font = if font_param.is_nil() {
+            lisp.gui_display_get_arg(
+                dpyinfo,
+                parms,
+                sym::FONT,
+                Some("font"),
+                Some("Font"),
+                ResourceType::String,
+            )?
+        } else {
+            font_param
+        };
+        lisp.stack.push(font);
+        if !lisp.is_font(font) && !font.is_string() {
+            font = Value::NIL;
+            for name in DEFAULT_FONT_NAMES {
+                let name = lisp.unibyte_string(name.as_bytes());
+                font = lisp.font_open_by_name(f, name)?;
+                if !font.is_nil() {
+                    break;
+                }
+            }
+            if font.is_nil() {
+                return Err(lisp.error("No suitable font was found"));
+            }
+            lisp.stack.push(font);
+        }
+        lisp.gui_default_parameter(
+            f,
+            parms,
+            sym::FONT,
+            font,
+            Some("font"),
+            Some("Font"),
+            ResourceType::String,
+        )?;
+        Ok(())
+    })();
+    lisp.stack.truncate(base);
+    r
 }

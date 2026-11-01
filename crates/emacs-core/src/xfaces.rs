@@ -64,6 +64,7 @@ const XLFD_POINT_SIZE: i32 = 7;
 
 const FACE_TTY_DEFAULT_COLOR: i64 = -1;
 const CLEAR_FONT_TABLE_COUNT: i32 = 100;
+const CLEAR_FONT_TABLE_NFONTS: i32 = 10;
 
 pub const DEFAULT_FACE_ID: usize = 0;
 pub const MODE_LINE_ACTIVE_FACE_ID: usize = 1;
@@ -177,6 +178,13 @@ pub struct Face {
     pub overstrike: bool,
     pub hash: u64,
     pub ascii_face: usize,
+    pub gc: Option<FaceGc>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FaceGc {
+    pub foreground: u64,
+    pub background: u64,
 }
 
 impl Face {
@@ -216,6 +224,7 @@ impl Face {
             overstrike: false,
             hash: 0,
             ascii_face: usize::MAX,
+            gc: None,
         }
     }
 
@@ -1590,10 +1599,17 @@ impl Lisp {
         &mut self,
         f: Value,
         color_name: &[u8],
-        _background_p: bool,
+        background_p: bool,
     ) -> LispResult<bool> {
         if self.frame(f).window_p() {
-            unreachable!("window-system color support needs xw-display-color-p");
+            let color_p = self.intern("xw-display-color-p");
+            let grayscale_p = self.intern("x-display-grayscale-p");
+            return Ok(!self.funcall(color_p, &[f])?.is_nil()
+                || color_name.eq_ignore_ascii_case(b"black")
+                || color_name.eq_ignore_ascii_case(b"white")
+                || (background_p && self.face_color_gray_p(f, color_name)?)
+                || (!self.funcall(grayscale_p, &[f])?.is_nil()
+                    && self.face_color_gray_p(f, color_name)?));
         }
         Ok(self.tty_defined_color(f, color_name)?.0)
     }
@@ -1636,10 +1652,28 @@ impl Lisp {
         Ok(())
     }
 
-    fn set_font_frame_param(&mut self, frame: Value, lface: Value) {
-        if self.frame(frame).window_p() && !unspecifiedp(self.lface_aref(lface, LFACE_FONT_INDEX)) {
-            unreachable!("window-system frames need font_load_for_lface");
+    fn set_font_frame_param(&mut self, frame: Value, lface: Value) -> LispResult<()> {
+        let mut font = self.lface_aref(lface, LFACE_FONT_INDEX);
+        if !self.frame(frame).window_p() || unspecifiedp(font) {
+            return Ok(());
         }
+        if self.font_spec_p(font) {
+            let attrs = self.lface_contents(lface);
+            font = self.font_load_for_lface(frame, &attrs, font)?;
+            if font.is_nil() {
+                return Ok(());
+            }
+            self.lface_aset(lface, LFACE_FONT_INDEX, font);
+        }
+        self.frame_mut(frame).flags.default_face_done_p = false;
+        let font_pair = self.cons(sym::FONT, font);
+        let parameter_pair = self.cons(sym::FONT_PARAMETER, Value::NIL);
+        let arg = self.list(&[font_pair, parameter_pair]);
+        let base = self.stack.len();
+        self.stack.push(arg);
+        let r = self.gui_set_frame_parameters_1(frame, arg, true);
+        self.stack.truncate(base);
+        r
     }
 
     fn make_face_cache(&self) -> crate::xfaces::FaceCache {
@@ -1697,6 +1731,9 @@ impl Lisp {
         if used == 0 {
             return;
         }
+        for id in 0..used {
+            self.free_realized_face(f, id);
+        }
         let cache = self.face_cache_mut(f);
         cache.faces_by_id.clear();
         for bucket in &mut cache.buckets {
@@ -1712,19 +1749,458 @@ impl Lisp {
         f: Value,
         attrs: [Value; N],
         former_face_id: Option<usize>,
-    ) -> usize {
+    ) -> LispResult<usize> {
         if let Some(former) = former_face_id
             && self.face_cache_mut(f).used() > former
         {
+            self.free_realized_face(f, former);
             self.face_cache_mut(f).uncache_face(former);
             self.set_frame_garbaged(f);
         }
+        let base = self.stack.len();
+        self.stack.extend_from_slice(&attrs);
         let face = match self.frame(f).output_method {
-            crate::terminal::OutputMethod::Initial => Face::make_realized(attrs),
-            crate::terminal::OutputMethod::Pgtk => unreachable!(),
+            crate::terminal::OutputMethod::Initial => Ok(Face::make_realized(attrs)),
+            crate::terminal::OutputMethod::Pgtk => self.realize_gui_face(f, attrs),
         };
+        self.stack.truncate(base);
+        let face = face?;
         let hash = lface_hash(self, &attrs);
-        self.face_cache_mut(f).cache_face(face, hash)
+        Ok(self.face_cache_mut(f).cache_face(face, hash))
+    }
+
+    fn free_realized_face(&mut self, f: Value, id: usize) {
+        if !self.frame(f).window_p() {
+            return;
+        }
+        let Some(face) = self.face_from_id(f, id) else {
+            return;
+        };
+        let (fontset, ascii, gc, font) = (face.fontset, face.ascii_face == id, face.gc, face.font);
+        if fontset >= 0 && ascii {
+            self.free_face_fontset(fontset);
+            self.face_mut(f, id).fontset = -1;
+        }
+        if gc.is_some() {
+            if !font.is_nil() {
+                self.font_done_for_face(f, id);
+            }
+            self.face_mut(f, id).gc = None;
+        }
+    }
+
+    fn face_mut(&mut self, f: Value, id: usize) -> &mut Face {
+        self.face_cache_mut(f).faces_by_id[id]
+            .as_deref_mut()
+            .expect("realized face")
+    }
+
+    pub fn prepare_face_for_display(&mut self, f: Value, id: usize) {
+        let face = self.face_from_id(f, id).expect("realized face");
+        if face.gc.is_some() {
+            return;
+        }
+        let gc = FaceGc {
+            foreground: face.foreground,
+            background: face.background,
+        };
+        let font = face.font;
+        self.face_mut(f, id).gc = Some(gc);
+        if !font.is_nil() {
+            self.font_prepare_for_face(f, id);
+        }
+    }
+
+    fn clear_face_gcs(&mut self, f: Value) {
+        if !self.frame(f).window_p() {
+            return;
+        }
+        let used = self.frame(f).face_cache.as_ref().map_or(0, |c| c.used());
+        for id in BASIC_FACE_ID_SENTINEL..used {
+            let Some(face) = self.face_from_id(f, id) else {
+                continue;
+            };
+            if face.gc.is_some() {
+                if !face.font.is_nil() {
+                    self.font_done_for_face(f, id);
+                }
+                self.face_mut(f, id).gc = None;
+            }
+        }
+    }
+
+    fn set_lface_from_font(
+        &mut self,
+        f: Value,
+        lface: Value,
+        font_object: Value,
+        force_p: bool,
+    ) -> LispResult<()> {
+        use crate::font::{
+            FONT_FAMILY_INDEX, FONT_FOUNDRY_INDEX, FONT_SLANT_INDEX, FONT_WEIGHT_INDEX,
+            FONT_WIDTH_INDEX, PT_PER_INCH,
+        };
+        if force_p || unspecifiedp(self.lface_aref(lface, LFACE_FAMILY_INDEX)) {
+            let family = self.font_aref(font_object, FONT_FAMILY_INDEX);
+            let name = self.symbol_name(family);
+            self.lface_aset(lface, LFACE_FAMILY_INDEX, name);
+        }
+        if force_p || unspecifiedp(self.lface_aref(lface, LFACE_FOUNDRY_INDEX)) {
+            let foundry = self.font_aref(font_object, FONT_FOUNDRY_INDEX);
+            let name = self.symbol_name(foundry);
+            self.lface_aset(lface, LFACE_FOUNDRY_INDEX, name);
+        }
+        if force_p || unspecifiedp(self.lface_aref(lface, LFACE_HEIGHT_INDEX)) {
+            let pixel_size = f64::from(self.font_object(font_object).pixel_size);
+            let pt = (pixel_size * 10.0 * PT_PER_INCH / self.frame_res(f) + 0.5) as i64;
+            self.lface_aset(lface, LFACE_HEIGHT_INDEX, Value::fixnum(pt));
+        }
+        for (lface_index, font_index) in [
+            (LFACE_WEIGHT_INDEX, FONT_WEIGHT_INDEX),
+            (LFACE_SLANT_INDEX, FONT_SLANT_INDEX),
+            (LFACE_SWIDTH_INDEX, FONT_WIDTH_INDEX),
+        ] {
+            if force_p || unspecifiedp(self.lface_aref(lface, lface_index)) {
+                let val = self.font_style_symbolic(font_object, font_index, true);
+                let val = if val.is_nil() { sym::NORMAL } else { val };
+                self.lface_aset(lface, lface_index, val);
+            }
+        }
+        self.lface_aset(lface, LFACE_FONT_INDEX, font_object);
+        Ok(())
+    }
+
+    fn face_fontset(&mut self, attrs: &[Value; N]) -> LispResult<i64> {
+        let name = attrs[LFACE_FONTSET_INDEX];
+        if !name.is_string() {
+            return Ok(-1);
+        }
+        self.fs_query_fontset(name, 0)
+    }
+
+    fn load_color2(
+        &mut self,
+        f: Value,
+        face: &mut Face,
+        name: Value,
+        target_index: usize,
+    ) -> LispResult<EmacsColor> {
+        let bytes = self.string_bytes(name).to_vec();
+        let (ok, mut color) = self.defined_color(f, &bytes)?;
+        if !ok {
+            self.add_to_log("Unable to load color \"%s\"", &[name])?;
+            let foreground = self.frame(f).foreground_pixel;
+            let background = self.frame(f).background_pixel;
+            match target_index {
+                LFACE_FOREGROUND_INDEX => {
+                    face.foreground_defaulted_p = true;
+                    color.pixel = foreground;
+                }
+                LFACE_BACKGROUND_INDEX => {
+                    face.background_defaulted_p = true;
+                    color.pixel = background;
+                }
+                LFACE_UNDERLINE_INDEX => {
+                    face.underline_defaulted_p = true;
+                    color.pixel = foreground;
+                }
+                LFACE_OVERLINE_INDEX => {
+                    face.overline_color_defaulted_p = true;
+                    color.pixel = foreground;
+                }
+                LFACE_STRIKE_THROUGH_INDEX => {
+                    face.strike_through_color_defaulted_p = true;
+                    color.pixel = foreground;
+                }
+                LFACE_BOX_INDEX => {
+                    face.box_color_defaulted_p = true;
+                    color.pixel = foreground;
+                }
+                _ => panic!("load_color2: bad target index"),
+            }
+        }
+        Ok(color)
+    }
+
+    fn load_color(
+        &mut self,
+        f: Value,
+        face: &mut Face,
+        name: Value,
+        target_index: usize,
+    ) -> LispResult<u64> {
+        Ok(self.load_color2(f, face, name, target_index)?.pixel as u64)
+    }
+
+    fn load_face_colors(
+        &mut self,
+        f: Value,
+        face: &mut Face,
+        attrs: &[Value; N],
+    ) -> LispResult<()> {
+        let mut bg = attrs[LFACE_BACKGROUND_INDEX];
+        let mut fg = attrs[LFACE_FOREGROUND_INDEX];
+        if attrs[LFACE_INVERSE_INDEX] == sym::T {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        let xbg = self.load_color2(f, face, bg, LFACE_BACKGROUND_INDEX)?;
+        face.background = xbg.pixel as u64;
+        let xfg = self.load_color2(f, face, fg, LFACE_FOREGROUND_INDEX)?;
+        face.foreground = xfg.pixel as u64;
+        let dfg = attrs[LFACE_DISTANT_FOREGROUND_INDEX];
+        let threshold = self
+            .find_symbol_value(sym::FACE_NEAR_SAME_COLOR_THRESHOLD)
+            .as_fixnum()
+            .unwrap_or(0);
+        if !dfg.is_nil() && !unspecifiedp(dfg) && color_distance(&xbg, &xfg) < threshold {
+            if attrs[LFACE_INVERSE_INDEX] == sym::T {
+                face.background = self.load_color(f, face, dfg, LFACE_BACKGROUND_INDEX)?;
+            } else {
+                face.foreground = self.load_color(f, face, dfg, LFACE_FOREGROUND_INDEX)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn font_maybe_unset_attribute(&mut self, font_object: Value, index: usize, symbol: Value) {
+        let mut tail = self.find_symbol_value(sym::FACE_FONT_LAX_MATCHED_ATTRIBUTES);
+        while tail.is_cons() {
+            if self.xcar(tail) == symbol {
+                self.font_aset(font_object, index, Value::NIL);
+            }
+            tail = self.xcdr(tail);
+        }
+    }
+
+    fn realize_gui_face(&mut self, f: Value, mut attrs: [Value; N]) -> LispResult<Face> {
+        use crate::font::{
+            FONT_ADSTYLE_INDEX, FONT_AVGWIDTH_INDEX, FONT_DPI_INDEX, FONT_FAMILY_INDEX,
+            FONT_FOUNDRY_INDEX, FONT_REGISTRY_INDEX, FONT_SIZE_INDEX, FONT_SLANT_INDEX,
+            FONT_SPACING_INDEX, FONT_WEIGHT_INDEX, FONT_WIDTH_INDEX,
+        };
+        let mut face = Face::make_realized(attrs);
+        let default_face = self
+            .face_from_id(f, DEFAULT_FACE_ID)
+            .map(|face| (face.lface, face.font, face.fontset));
+        let same_font = match &default_face {
+            Some((lface, _, _)) => lface_same_font_attributes_p(self, lface, &attrs),
+            None => false,
+        };
+        if let (true, Some((_, font, fontset))) = (same_font, default_face) {
+            face.font = font;
+            face.fontset = self.make_fontset_for_ascii_face(f, i64::from(fontset))? as i32;
+        } else {
+            let mut fontset = self.face_fontset(&attrs)?;
+            if fontset == -1 {
+                if let Some((_, _, default_fontset)) = default_face {
+                    fontset = i64::from(default_fontset);
+                }
+                if fontset == -1 {
+                    panic!("realize_gui_face: no fontset for a non-default face");
+                }
+            }
+            if !self.font_object_p(attrs[LFACE_FONT_INDEX]) {
+                let spec = self.copy_font_spec(attrs[LFACE_FONT_INDEX])?;
+                self.stack.push(spec);
+                let lax = self.find_symbol_value(sym::FACE_FONT_LAX_MATCHED_ATTRIBUTES);
+                if lax == sym::T {
+                    self.font_aset(spec, FONT_WEIGHT_INDEX, Value::NIL);
+                    self.font_aset(spec, FONT_SLANT_INDEX, Value::NIL);
+                    self.font_aset(spec, FONT_WIDTH_INDEX, Value::NIL);
+                } else if !lax.is_nil() {
+                    for (index, symbol) in [
+                        (FONT_WEIGHT_INDEX, sym::K_WEIGHT),
+                        (FONT_SLANT_INDEX, sym::K_SLANT),
+                        (FONT_WIDTH_INDEX, sym::K_WIDTH),
+                        (FONT_FAMILY_INDEX, sym::K_FAMILY),
+                        (FONT_FOUNDRY_INDEX, sym::K_FOUNDRY),
+                        (FONT_REGISTRY_INDEX, sym::K_REGISTRY),
+                        (FONT_ADSTYLE_INDEX, sym::K_ADSTYLE),
+                        (FONT_SIZE_INDEX, sym::K_SIZE),
+                        (FONT_DPI_INDEX, sym::K_DPI),
+                        (FONT_SPACING_INDEX, sym::K_SPACING),
+                        (FONT_AVGWIDTH_INDEX, sym::K_AVGWIDTH),
+                    ] {
+                        self.font_maybe_unset_attribute(spec, index, symbol);
+                    }
+                }
+                attrs[LFACE_FONT_INDEX] = self.font_load_for_lface(f, &attrs, spec)?;
+                self.stack.push(attrs[LFACE_FONT_INDEX]);
+            }
+            if self.font_object_p(attrs[LFACE_FONT_INDEX]) {
+                face.font = attrs[LFACE_FONT_INDEX];
+                face.fontset = self.make_fontset_for_ascii_face(f, fontset)? as i32;
+            } else {
+                face.font = Value::NIL;
+                face.fontset = -1;
+            }
+        }
+        if !face.font.is_nil()
+            && self.font_weight_name_numeric(attrs[LFACE_WEIGHT_INDEX])? > 100
+            && self
+                .font_aref(attrs[LFACE_FONT_INDEX], FONT_WEIGHT_INDEX)
+                .as_fixnum()
+                .map_or(-1, |w| w >> 8)
+                <= 100
+        {
+            face.overstrike = true;
+        }
+        self.load_face_colors(f, &mut face, &attrs)?;
+        let mut box_ = attrs[LFACE_BOX_INDEX];
+        if box_.is_string() {
+            face.box_color = self.load_color(f, &mut face, box_, LFACE_BOX_INDEX)?;
+            face.box_type = FaceBoxType::SimpleBox;
+            face.box_vertical_line_width = 1;
+            face.box_horizontal_line_width = 1;
+        } else if let Some(width) = box_.as_fixnum() {
+            face.box_type = FaceBoxType::SimpleBox;
+            face.box_vertical_line_width = width.abs() as i32;
+            face.box_horizontal_line_width = width as i32;
+            face.box_color = face.foreground;
+            face.box_color_defaulted_p = true;
+        } else if box_.is_cons() && self.xcar(box_).is_fixnum() && self.xcdr(box_).is_fixnum() {
+            face.box_type = FaceBoxType::SimpleBox;
+            face.box_color = face.foreground;
+            face.box_color_defaulted_p = true;
+            face.box_vertical_line_width = self.xcar(box_).as_fixnum().unwrap_or(0) as i32;
+            face.box_horizontal_line_width = self.xcdr(box_).as_fixnum().unwrap_or(0) as i32;
+        } else if box_.is_cons() {
+            let mut set_color = false;
+            face.box_type = FaceBoxType::SimpleBox;
+            face.box_color = face.foreground;
+            face.box_color_defaulted_p = true;
+            face.box_vertical_line_width = 1;
+            face.box_horizontal_line_width = 1;
+            while box_.is_cons() {
+                let keyword = self.xcar(box_);
+                box_ = self.xcdr(box_);
+                if !box_.is_cons() {
+                    break;
+                }
+                let value = self.xcar(box_);
+                box_ = self.xcdr(box_);
+                if keyword == sym::K_LINE_WIDTH {
+                    if value.is_cons()
+                        && self.xcar(value).is_fixnum()
+                        && self.xcdr(value).is_fixnum()
+                    {
+                        face.box_vertical_line_width =
+                            self.xcar(value).as_fixnum().unwrap_or(0) as i32;
+                        face.box_horizontal_line_width =
+                            self.xcdr(value).as_fixnum().unwrap_or(0) as i32;
+                    } else if let Some(width) = value.as_fixnum()
+                        && width != 0
+                    {
+                        face.box_vertical_line_width = width.abs() as i32;
+                        face.box_horizontal_line_width = width as i32;
+                    }
+                } else if keyword == sym::K_COLOR {
+                    if value.is_string() {
+                        face.box_color = self.load_color(f, &mut face, value, LFACE_BOX_INDEX)?;
+                        face.use_box_color_for_shadows_p = true;
+                        set_color = true;
+                    }
+                } else if keyword == sym::K_STYLE {
+                    if value == sym::RELEASED_BUTTON {
+                        face.box_type = FaceBoxType::RaisedBox;
+                    } else if value == sym::PRESSED_BUTTON {
+                        face.box_type = FaceBoxType::SunkenBox;
+                    } else if value == sym::FLAT_BUTTON {
+                        face.box_type = FaceBoxType::SimpleBox;
+                        if !set_color {
+                            face.box_color = face.background;
+                        }
+                    }
+                }
+            }
+        }
+        let mut underline = attrs[LFACE_UNDERLINE_INDEX];
+        if underline == sym::T {
+            face.underline = FaceUnderlineType::Single;
+            face.underline_defaulted_p = true;
+            face.underline_color = 0;
+            face.underline_at_descent_line_p = false;
+            face.underline_pixels_above_descent_line = 0;
+        } else if underline.is_string() {
+            face.underline = FaceUnderlineType::Single;
+            face.underline_defaulted_p = false;
+            face.underline_color =
+                self.load_color(f, &mut face, underline, LFACE_UNDERLINE_INDEX)?;
+            face.underline_at_descent_line_p = false;
+            face.underline_pixels_above_descent_line = 0;
+        } else if underline.is_nil() {
+            face.underline = FaceUnderlineType::NoUnderline;
+            face.underline_defaulted_p = false;
+            face.underline_color = 0;
+            face.underline_at_descent_line_p = false;
+            face.underline_pixels_above_descent_line = 0;
+        } else if underline.is_cons() {
+            face.underline = FaceUnderlineType::Single;
+            face.underline_color = 0;
+            face.underline_defaulted_p = true;
+            face.underline_at_descent_line_p = false;
+            face.underline_pixels_above_descent_line = 0;
+            while underline.is_cons() {
+                let keyword = self.xcar(underline);
+                underline = self.xcdr(underline);
+                if !underline.is_cons() {
+                    break;
+                }
+                let value = self.xcar(underline);
+                underline = self.xcdr(underline);
+                if keyword == sym::K_COLOR {
+                    if value == sym::FOREGROUND_COLOR {
+                        face.underline_defaulted_p = true;
+                        face.underline_color = 0;
+                    } else if value.is_string() {
+                        face.underline_defaulted_p = false;
+                        face.underline_color =
+                            self.load_color(f, &mut face, value, LFACE_UNDERLINE_INDEX)?;
+                    }
+                } else if keyword == sym::K_STYLE {
+                    face.underline = if value == sym::LINE {
+                        FaceUnderlineType::Single
+                    } else if value == sym::DOUBLE_LINE {
+                        FaceUnderlineType::DoubleLine
+                    } else if value == sym::WAVE {
+                        FaceUnderlineType::Wave
+                    } else if value == sym::DOTS {
+                        FaceUnderlineType::Dots
+                    } else if value == sym::DASHES {
+                        FaceUnderlineType::Dashes
+                    } else {
+                        FaceUnderlineType::Single
+                    };
+                } else if keyword == sym::K_POSITION {
+                    face.underline_at_descent_line_p = !value.is_nil();
+                    if let Some(pixels) = value.as_fixnum()
+                        && pixels >= 0
+                    {
+                        face.underline_pixels_above_descent_line = pixels as i32;
+                    }
+                }
+            }
+        }
+        let overline = attrs[LFACE_OVERLINE_INDEX];
+        if overline.is_string() {
+            face.overline_color = self.load_color(f, &mut face, overline, LFACE_OVERLINE_INDEX)?;
+            face.overline_p = true;
+        } else if overline == sym::T {
+            face.overline_color = face.foreground;
+            face.overline_color_defaulted_p = true;
+            face.overline_p = true;
+        }
+        let strike_through = attrs[LFACE_STRIKE_THROUGH_INDEX];
+        if strike_through.is_string() {
+            face.strike_through_color =
+                self.load_color(f, &mut face, strike_through, LFACE_STRIKE_THROUGH_INDEX)?;
+            face.strike_through_p = true;
+        } else if strike_through == sym::T {
+            face.strike_through_color = face.foreground;
+            face.strike_through_color_defaulted_p = true;
+            face.strike_through_p = true;
+        }
+        Ok(face)
     }
 
     fn lookup_face(&mut self, f: Value, attrs: &[Value; N]) -> LispResult<usize> {
@@ -1743,7 +2219,7 @@ impl Lisp {
                 return Ok(id);
             }
         }
-        Ok(self.realize_face(f, *attrs, None))
+        self.realize_face(f, *attrs, None)
     }
 
     pub fn lookup_named_face(
@@ -1986,18 +2462,33 @@ impl Lisp {
         if lface.is_nil() {
             lface = f_internal_make_lisp_face(self, &[sym::DEFAULT, f])?;
         }
-        if self.frame(f).window_p() {
-            unreachable!("window-system frames need set_lface_from_font");
+        let window_p = self.frame(f).window_p();
+        if window_p {
+            let font_object = self.frame(f).font;
+            let force = self.frame(f).flags.default_face_done_p;
+            self.set_lface_from_font(f, lface, font_object, force)?;
+            let fontset = self.frame(f).fontset;
+            let name = self.fontset_name(fontset as usize);
+            self.lface_aset(lface, LFACE_FONTSET_INDEX, name);
+            self.frame_mut(f).flags.default_face_done_p = true;
         }
-        let family = self.string("default");
-        self.lface_aset(lface, LFACE_FAMILY_INDEX, family);
-        self.lface_aset(lface, LFACE_FOUNDRY_INDEX, family);
-        self.lface_aset(lface, LFACE_SWIDTH_INDEX, sym::NORMAL);
-        self.lface_aset(lface, LFACE_HEIGHT_INDEX, Value::fixnum(1));
+        if !window_p {
+            let family = self.string("default");
+            self.lface_aset(lface, LFACE_FAMILY_INDEX, family);
+            self.lface_aset(lface, LFACE_FOUNDRY_INDEX, family);
+            self.lface_aset(lface, LFACE_SWIDTH_INDEX, sym::NORMAL);
+            self.lface_aset(lface, LFACE_HEIGHT_INDEX, Value::fixnum(1));
+            for (i, value) in [
+                (LFACE_WEIGHT_INDEX, sym::NORMAL),
+                (LFACE_SLANT_INDEX, sym::NORMAL),
+                (LFACE_FONTSET_INDEX, Value::NIL),
+            ] {
+                if unspecifiedp(self.lface_aref(lface, i)) {
+                    self.lface_aset(lface, i, value);
+                }
+            }
+        }
         for (i, value) in [
-            (LFACE_WEIGHT_INDEX, sym::NORMAL),
-            (LFACE_SLANT_INDEX, sym::NORMAL),
-            (LFACE_FONTSET_INDEX, Value::NIL),
             (LFACE_EXTEND_INDEX, Value::NIL),
             (LFACE_UNDERLINE_INDEX, Value::NIL),
             (LFACE_OVERLINE_INDEX, Value::NIL),
@@ -2041,8 +2532,9 @@ impl Lisp {
         let attrs = self.lface_contents(lface);
         let count = self.specpdl.len();
         self.specbind(sym::INHIBIT_REDISPLAY, sym::T)?;
-        self.realize_face(f, attrs, Some(DEFAULT_FACE_ID));
+        let r = self.realize_face(f, attrs, Some(DEFAULT_FACE_ID));
         self.unbind_to(count)?;
+        r?;
         Ok(true)
     }
 
@@ -2071,7 +2563,7 @@ impl Lisp {
         let mut points = MergePoints::new();
         self.merge_face_vectors(None, Some(f), symbol_attrs, attrs, &mut points)?;
         let merged = self.attrs_snapshot(attrs);
-        self.realize_face(f, merged, Some(id));
+        self.realize_face(f, merged, Some(id))?;
         Ok(())
     }
 
@@ -2133,7 +2625,39 @@ impl Lisp {
             if font == def_font || font.is_nil() {
                 return Ok(false);
             }
-            unreachable!("faces with fonts exist only on window-system frames");
+            let case_sensitive = self
+                .font_object(font)
+                .driver
+                .is_some_and(|driver| driver.case_sensitive);
+            for i in crate::font::FONT_TYPE_INDEX..=crate::font::FONT_SIZE_INDEX {
+                let (p1, p2) = (self.font_aref(font, i), self.font_aref(def_font, i));
+                if p1 != p2 {
+                    if !(crate::font::FONT_FOUNDRY_INDEX..=crate::font::FONT_REGISTRY_INDEX)
+                        .contains(&i)
+                        || case_sensitive
+                    {
+                        return Ok(true);
+                    }
+                    let s1 = self.symbol_name(p1);
+                    let s2 = self.symbol_name(p2);
+                    let cmp = crate::fns::f_compare_strings(
+                        self,
+                        &[
+                            s1,
+                            Value::fixnum(0),
+                            Value::NIL,
+                            s2,
+                            Value::fixnum(0),
+                            Value::NIL,
+                            sym::T,
+                        ],
+                    )?;
+                    if cmp != sym::T {
+                        return Ok(true);
+                    }
+                }
+            }
+            return Ok(false);
         }
         let val = attrs[LFACE_UNDERLINE_INDEX];
         if !unspecifiedp(val) && self.car_safe(val) == sym::K_STYLE {
@@ -2154,13 +2678,24 @@ impl Lisp {
             self.faces.clear_font_table_count = 0;
         }
         for frame in self.frame_list_vec() {
-            if self.frame(frame).window_p() {
-                unreachable!("window-system frames need clear_font_cache and clear_face_gcs");
+            if !self.frame(frame).window_p() {
+                continue;
+            }
+            if thorough {
+                let terminal = self.frame(frame).terminal;
+                if self.display_info(terminal).n_fonts > CLEAR_FONT_TABLE_NFONTS
+                    && !self.frame(frame).flags.inhibit_clear_image_cache
+                {
+                    self.clear_font_cache(frame);
+                    self.free_all_realized_faces(frame);
+                }
+            } else {
+                self.clear_face_gcs(frame);
             }
         }
     }
 
-    fn free_all_realized_faces(&mut self, frame: Value) {
+    pub(crate) fn free_all_realized_faces(&mut self, frame: Value) {
         if frame.is_nil() {
             for f in self.frame_list_vec() {
                 self.free_realized_faces(f);
@@ -2581,7 +3116,17 @@ fn internal_set_lisp_face_attribute(
                     frame
                 };
                 if lisp.frame(f1).window_p() {
-                    unreachable!("window-system frames need font_load_for_lface");
+                    if !lisp.font_object_p(value) {
+                        let attrs = lisp.lface_contents(lface);
+                        let font_object = lisp.font_load_for_lface(f1, &attrs, value)?;
+                        if font_object.is_nil() {
+                            return Err(lisp.signal_error("Font not available", value));
+                        }
+                        value = font_object;
+                        lisp.stack.push(value);
+                    }
+                    lisp.set_lface_from_font(f1, lface, value, true)?;
+                    lisp.frame_mut(f1).flags.face_change = true;
                 }
             } else {
                 lisp.lface_aset(lface, LFACE_FONT_INDEX, value);
@@ -2654,7 +3199,7 @@ fn internal_set_lisp_face_attribute(
                 && (prop_index != 0 || attr == sym::K_FONT)
                 && lface_fully_specified_p(&contents)
             {
-                lisp.set_font_frame_param(frame, lface);
+                lisp.set_font_frame_param(frame, lface)?;
             } else if attr == sym::K_FOREGROUND {
                 param = sym::FOREGROUND_COLOR;
             } else if attr == sym::K_BACKGROUND {
@@ -3238,4 +3783,22 @@ fn f_x_load_color_file(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         lisp.stack.truncate(base);
     }
     Ok(cmap)
+}
+
+fn lface_same_font_attributes_p(lisp: &Lisp, lface1: &[Value; N], lface2: &[Value; N]) -> bool {
+    let same_string = |a: Value, b: Value| {
+        crate::fontset::c_bytes(lisp.string_bytes(a))
+            .eq_ignore_ascii_case(crate::fontset::c_bytes(lisp.string_bytes(b)))
+    };
+    same_string(lface1[LFACE_FAMILY_INDEX], lface2[LFACE_FAMILY_INDEX])
+        && same_string(lface1[LFACE_FOUNDRY_INDEX], lface2[LFACE_FOUNDRY_INDEX])
+        && lface1[LFACE_HEIGHT_INDEX] == lface2[LFACE_HEIGHT_INDEX]
+        && lface1[LFACE_SWIDTH_INDEX] == lface2[LFACE_SWIDTH_INDEX]
+        && lface1[LFACE_WEIGHT_INDEX] == lface2[LFACE_WEIGHT_INDEX]
+        && lface1[LFACE_SLANT_INDEX] == lface2[LFACE_SLANT_INDEX]
+        && lface1[LFACE_FONT_INDEX] == lface2[LFACE_FONT_INDEX]
+        && (lface1[LFACE_FONTSET_INDEX] == lface2[LFACE_FONTSET_INDEX]
+            || (lface1[LFACE_FONTSET_INDEX].is_string()
+                && lface2[LFACE_FONTSET_INDEX].is_string()
+                && same_string(lface1[LFACE_FONTSET_INDEX], lface2[LFACE_FONTSET_INDEX])))
 }
