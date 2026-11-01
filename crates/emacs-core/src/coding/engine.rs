@@ -156,19 +156,7 @@ impl Emit {
     }
 }
 
-pub fn bytes_by_char_head(byte: u8) -> usize {
-    if byte & 0x80 == 0 {
-        1
-    } else if byte & 0x20 == 0 {
-        2
-    } else if byte & 0x10 == 0 {
-        3
-    } else if byte & 0x08 == 0 {
-        4
-    } else {
-        5
-    }
-}
+pub use crate::character::bytes_by_char_head;
 
 fn merge_eol(eol_seen: &mut u32, this_eol: u32) -> bool {
     if *eol_seen == EOL_SEEN_NONE {

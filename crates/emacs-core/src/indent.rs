@@ -1,3 +1,4 @@
+use crate::character::bytes_by_char_head;
 use crate::charfns::f_string_width;
 use crate::composite::CompositionIt;
 use crate::editfns::f_insert_char;
@@ -41,20 +42,6 @@ fn sanitize_char_width(width: i64) -> i64 {
 
 fn leading_code_p(byte: u8) -> bool {
     byte & 0xC0 == 0xC0
-}
-
-fn bytes_by_char_head(byte: u8) -> usize {
-    if byte & 0x80 == 0 {
-        1
-    } else if byte & 0x20 == 0 {
-        2
-    } else if byte & 0x10 == 0 {
-        3
-    } else if byte & 0x08 == 0 {
-        4
-    } else {
-        5
-    }
 }
 
 pub struct ColumnScan {

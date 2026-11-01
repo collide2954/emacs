@@ -1554,7 +1554,7 @@ fn f_variable_binding_locus(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_indirect_function(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_indirect_function(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.indirect_function(args[0]))
 }
 

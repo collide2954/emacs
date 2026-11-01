@@ -116,6 +116,8 @@ pub struct Lisp {
     pub buffers: Vec<Value>,
     pub point_before_last_command_or_undo: usize,
     pub buffer_before_last_command_or_undo: Value,
+    pub callint_point_marker: Value,
+    pub callint_message: Value,
     pub prin1_to_string_buffer: Value,
     pub pending_boundary: Value,
     pub current_global_map: Value,
@@ -335,6 +337,8 @@ impl Lisp {
             buffers: Vec::new(),
             point_before_last_command_or_undo: 1,
             buffer_before_last_command_or_undo: Value::NIL,
+            callint_point_marker: Value::NIL,
+            callint_message: Value::NIL,
             prin1_to_string_buffer: Value::NIL,
             pending_boundary: Value::NIL,
             current_global_map: Value::NIL,
@@ -1112,6 +1116,8 @@ impl Lisp {
         roots.push(self.current_buffer);
         roots.extend_from_slice(&self.buffers);
         roots.push(self.buffer_before_last_command_or_undo);
+        roots.push(self.callint_point_marker);
+        roots.push(self.callint_message);
         roots.push(self.prin1_to_string_buffer);
         roots.push(self.pending_boundary);
         roots.push(self.current_global_map);

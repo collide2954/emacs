@@ -1348,7 +1348,7 @@ fn read_char_help_form_unwind(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
     Ok(())
 }
 
-fn f_read_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.read_char_prompt(arg(args, 0))?;
     let val = lisp.read_filtered_event(true, true, true, !arg(args, 1).is_nil(), arg(args, 2))?;
     Ok(match val.as_fixnum() {
@@ -1357,7 +1357,7 @@ fn f_read_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-fn f_read_event(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_event(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.read_char_prompt(arg(args, 0))?;
     lisp.read_filtered_event(false, false, false, !arg(args, 1).is_nil(), arg(args, 2))
 }

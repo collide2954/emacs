@@ -2340,7 +2340,7 @@ fn f_eval(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.eval_with_lexical(args[0], args[1])
 }
 
-fn f_apply(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_apply(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = args.len();
     let spread = args[n - 1];
     if n == 1 {
@@ -2414,7 +2414,7 @@ fn f_funcall(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.funcall(args[0], &args[1..])
 }
 
-fn f_func_arity(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_func_arity(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let function = args[0];
     let original = function;
     let mut function = function;

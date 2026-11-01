@@ -1680,7 +1680,7 @@ fn f_rename_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(newname)
 }
 
-fn f_other_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_other_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = args[0];
     let buffers = lisp.buffers.clone();
     for b in buffers {
@@ -1767,7 +1767,7 @@ pub(crate) fn f_set_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(buffer)
 }
 
-fn f_barf_if_buffer_read_only(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_barf_if_buffer_read_only(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let pos = if args[0].is_nil() {
         lisp.cur().pt
     } else {

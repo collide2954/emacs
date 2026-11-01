@@ -1,4 +1,4 @@
-use crate::character::{self, MAX_CHAR};
+use crate::character::{self, MAX_CHAR, bytes_by_char_head};
 use crate::lisp::Lisp;
 use crate::syntax::{S_SYMBOL, S_WHITESPACE, S_WORD, syntax_spec_code};
 use crate::value::Value;
@@ -448,20 +448,6 @@ impl<'a> Text<'a> {
 
 fn char_head_p(b: u8) -> bool {
     b & 0xC0 != 0x80
-}
-
-fn bytes_by_char_head(b: u8) -> usize {
-    if b & 0x80 == 0 {
-        1
-    } else if b & 0x20 == 0 {
-        2
-    } else if b & 0x10 == 0 {
-        3
-    } else if b & 0x08 == 0 {
-        4
-    } else {
-        5
-    }
 }
 
 fn unibyte_to_char(c: u32) -> u32 {

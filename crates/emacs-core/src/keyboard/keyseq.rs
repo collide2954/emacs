@@ -866,11 +866,11 @@ impl Lisp {
     }
 }
 
-fn f_read_key_sequence(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_key_sequence(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.read_key_sequence_vs(args, true)
 }
 
-fn f_read_key_sequence_vector(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_key_sequence_vector(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.read_key_sequence_vs(args, false)
 }
 

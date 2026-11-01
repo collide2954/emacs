@@ -1098,7 +1098,7 @@ fn f_coding_system_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.bool(v))
 }
 
-fn f_read_non_nil_coding_system(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_non_nil_coding_system(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let prompt = args[0];
     loop {
         let alist = lisp.bound_var(sym::CODING_SYSTEM_ALIST);
@@ -1121,7 +1121,7 @@ fn f_read_non_nil_coding_system(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     }
 }
 
-fn f_read_coding_system(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_coding_system(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let prompt = args[0];
     let default = arg(args, 1);
     let default = if default.is_symbol() && !default.is_nil() {

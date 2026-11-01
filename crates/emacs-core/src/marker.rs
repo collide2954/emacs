@@ -209,7 +209,7 @@ impl Lisp {
     }
 }
 
-fn f_make_marker(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_make_marker(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.make_marker_object())
 }
 
@@ -223,7 +223,7 @@ pub(crate) fn f_marker_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     }
 }
 
-fn f_marker_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_marker_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let m = lisp.check_marker(args[0])?;
     let mk = *lisp.marker(m);
     if mk.buffer.is_nil() {
@@ -232,7 +232,7 @@ fn f_marker_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(mk.charpos as i64))
 }
 
-fn f_set_marker(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_set_marker(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.set_marker(args[0], args[1], args[2], false)
 }
 

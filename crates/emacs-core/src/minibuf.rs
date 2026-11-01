@@ -12,6 +12,7 @@ pub struct Minibuf {
     pub minibuf_save_list: Value,
     pub command_loop_level: i64,
     pub mb_frame: Value,
+    pub last_minibuf_string: Value,
 }
 
 impl Default for Minibuf {
@@ -24,6 +25,7 @@ impl Default for Minibuf {
             minibuf_save_list: Value::NIL,
             command_loop_level: 0,
             mb_frame: Value::NIL,
+            last_minibuf_string: Value::NIL,
         }
     }
 }
@@ -36,6 +38,7 @@ impl Minibuf {
             self.minibuf_prompt,
             self.minibuf_save_list,
             self.mb_frame,
+            self.last_minibuf_string,
         ]);
     }
 }
@@ -715,7 +718,7 @@ fn f_read_from_minibuffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     )
 }
 
-fn f_read_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (prompt, initial_input, history, default_value, inherit_input_method) =
         (args[0], args[1], args[2], args[3], args[4]);
     let count = lisp.specpdl.len();
@@ -777,7 +780,7 @@ fn f_read_command(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     crate::lread::f_intern(lisp, &[name, Value::NIL])
 }
 
-fn f_read_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let default_string = default_string(lisp, args[1]);
     let obarray = lisp.plain_value(sym::OBARRAY);
     let name = f_completing_read(
@@ -799,7 +802,7 @@ fn f_read_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     crate::lread::f_intern(lisp, &[name, Value::NIL])
 }
 
-fn f_read_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (mut prompt, mut def, require_match, predicate) = (args[0], args[1], args[2], args[3]);
     if lisp.is_buffer(def) {
         def = lisp.buffer(def).name;
@@ -1417,7 +1420,7 @@ pub(crate) fn f_assoc_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_completing_read(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_completing_read(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let function = lisp.find_symbol_value(sym::COMPLETING_READ_FUNCTION);
     if function == sym::UNBOUND {
         return Err(lisp.signal_list(sym::VOID_VARIABLE, &[sym::COMPLETING_READ_FUNCTION]));

@@ -111,6 +111,20 @@ pub fn multibyte_length(bytes: &[u8]) -> Option<usize> {
     }
 }
 
+pub fn bytes_by_char_head(byte: u8) -> usize {
+    if byte & 0x80 == 0 {
+        1
+    } else if byte & 0x20 == 0 {
+        2
+    } else if byte & 0x10 == 0 {
+        3
+    } else if byte & 0x08 == 0 {
+        4
+    } else {
+        5
+    }
+}
+
 pub fn string_char(bytes: &[u8]) -> (u32, usize) {
     let first = bytes[0];
     if first < 0x80 {

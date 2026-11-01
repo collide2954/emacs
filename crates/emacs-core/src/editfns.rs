@@ -371,7 +371,7 @@ fn restore_restriction(lisp: &mut Lisp, data: Value) -> LispResult<()> {
     lisp.unbind_to(count)
 }
 
-fn f_char_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_char_to_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let c = lisp.check_character(args[0])?;
     if c < 0x80 {
         return Ok(lisp.unibyte_string(&[c as u8]));
