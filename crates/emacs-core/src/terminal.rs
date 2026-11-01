@@ -13,6 +13,9 @@ pub enum OutputMethod {
 }
 
 pub type StringResourceHook = fn(&mut Lisp, &[u8], &[u8]) -> LispResult<Option<Vec<u8>>>;
+pub type FrameParmHandler = fn(&mut Lisp, Value, Value, Value) -> LispResult<()>;
+pub type FrameHook = fn(&mut Lisp, Value) -> LispResult<()>;
+pub type FrameOffsetHook = fn(&mut Lisp, Value, i64, i64, i64) -> LispResult<()>;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TerminalHooks {
@@ -21,6 +24,12 @@ pub struct TerminalHooks {
     pub frame_raise_lower: Option<fn(&mut Lisp, Value, bool)>,
     pub iconify_frame: Option<fn(&mut Lisp, Value)>,
     pub get_string_resource: Option<StringResourceHook>,
+    pub frame_parm_handlers: Option<&'static [Option<FrameParmHandler>]>,
+    pub fullscreen: Option<FrameHook>,
+    pub set_frame_offset: Option<FrameOffsetHook>,
+    pub set_frame_alpha: Option<FrameHook>,
+    pub set_scroll_bar_default_width: Option<FrameHook>,
+    pub set_scroll_bar_default_height: Option<FrameHook>,
 }
 
 #[derive(Clone, Copy, Debug)]

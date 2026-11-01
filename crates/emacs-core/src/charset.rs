@@ -1074,7 +1074,7 @@ impl Lisp {
         Ok(n as u32)
     }
 
-    fn check_integer_range(&mut self, v: Value, lo: i64, hi: i64) -> LispResult<i64> {
+    pub(crate) fn check_integer_range(&mut self, v: Value, lo: i64, hi: i64) -> LispResult<i64> {
         let n = self.check_fixnum(v)?;
         if n < lo || n > hi {
             let l = Value::fixnum(lo);

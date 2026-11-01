@@ -18,6 +18,20 @@ pub enum VerticalScrollBarType {
     Right,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Fullscreen {
+    #[default]
+    None,
+    Width,
+    Height,
+    Both,
+    Maximized,
+}
+
+pub const X_NEGATIVE: i64 = 0x0010;
+pub const Y_NEGATIVE: i64 = 0x0020;
+pub const NORTH_WEST_GRAVITY: i64 = 1;
+
 #[derive(Clone, Debug, Default)]
 pub struct FrameFlags {
     pub visible: bool,
@@ -44,6 +58,8 @@ pub struct FrameFlags {
     pub default_face_done_p: bool,
     pub pointer_invisible: bool,
     pub mouse_moved: bool,
+    pub borders_respect_alpha_background: bool,
+    pub native_window: bool,
     pub was_invisible: bool,
     pub horizontal_scroll_bars: bool,
 }
@@ -82,6 +98,8 @@ pub struct FrameGeometry {
     pub config_scroll_bar_height: i64,
     pub config_scroll_bar_lines: i64,
     pub extra_line_spacing: i64,
+    pub extra_line_spacing_above: i64,
+    pub fringe_cols: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +147,10 @@ pub struct Frame {
     pub background_pixel: i64,
     pub foreground_pixel: i64,
     pub alpha: [f64; 2],
+    pub want_fullscreen: Fullscreen,
+    pub size_hint_flags: i64,
+    pub win_gravity: i64,
+    pub gamma: f64,
     pub alpha_background: f64,
     pub face_cache: Option<Box<crate::xfaces::FaceCache>>,
 }
@@ -179,6 +201,10 @@ impl Frame {
             background_pixel: 0,
             foreground_pixel: 0,
             alpha: [0.0; 2],
+            want_fullscreen: Fullscreen::None,
+            size_hint_flags: 0,
+            win_gravity: 0,
+            gamma: 0.0,
             alpha_background: 0.0,
             face_cache: None,
         }
@@ -2116,4 +2142,976 @@ fn f_set_frame_window_state_change(lisp: &mut Lisp, args: &[Value]) -> LispResul
 fn f_frame_scale_factor(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.decode_live_frame(arg(args, 0))?;
     Ok(lisp.float(1.0))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ResourceType {
+    Number,
+    BooleanNumber,
+    Float,
+    Boolean,
+    String,
+    Symbol,
+}
+
+#[derive(Clone, Copy)]
+enum FrameFloatType {
+    Width,
+    Height,
+    Left,
+    Top,
+}
+
+#[derive(Default)]
+struct FrameFloatCache {
+    parent_done: i32,
+    outer_done: i32,
+    parent_width: i64,
+    parent_height: i64,
+    parent_left: i64,
+    parent_top: i64,
+    outer_minus_text_width: i64,
+    outer_minus_text_height: i64,
+}
+
+pub fn c_atoi(s: &[u8]) -> i64 {
+    let mut i = 0;
+    while i < s.len() && (s[i] == b' ' || (b'\t'..=b'\r').contains(&s[i])) {
+        i += 1;
+    }
+    let negative = s.get(i) == Some(&b'-');
+    if matches!(s.get(i), Some(b'-' | b'+')) {
+        i += 1;
+    }
+    let mut n: i64 = 0;
+    while let Some(&c @ b'0'..=b'9') = s.get(i) {
+        n = n.saturating_mul(10).saturating_add(i64::from(c - b'0'));
+        i += 1;
+    }
+    let n = if negative { n.saturating_neg() } else { n };
+    i64::from(n as i32)
+}
+
+pub fn c_atof(s: &[u8]) -> f64 {
+    let mut i = 0;
+    while i < s.len() && (s[i] == b' ' || (b'\t'..=b'\r').contains(&s[i])) {
+        i += 1;
+    }
+    let start = i;
+    if matches!(s.get(i), Some(b'-' | b'+')) {
+        i += 1;
+    }
+    let mut digits = 0;
+    while s.get(i).is_some_and(u8::is_ascii_digit) {
+        i += 1;
+        digits += 1;
+    }
+    if s.get(i) == Some(&b'.') {
+        i += 1;
+        while s.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return 0.0;
+    }
+    let mantissa_end = i;
+    if matches!(s.get(i), Some(b'e' | b'E')) {
+        let mut j = i + 1;
+        if matches!(s.get(j), Some(b'-' | b'+')) {
+            j += 1;
+        }
+        if s.get(j).is_some_and(u8::is_ascii_digit) {
+            while s.get(j).is_some_and(u8::is_ascii_digit) {
+                j += 1;
+            }
+            i = j;
+        }
+    }
+    let end = if i > mantissa_end { i } else { mantissa_end };
+    std::str::from_utf8(&s[start..end])
+        .ok()
+        .and_then(|t| t.parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+impl Lisp {
+    fn xfloatint(&self, v: Value) -> f64 {
+        if v.is_float() {
+            self.heap.float_value(v)
+        } else {
+            v.as_fixnum().unwrap_or(0) as f64
+        }
+    }
+
+    pub fn gui_display_get_arg(
+        &mut self,
+        dpyinfo: Option<Value>,
+        alist: Value,
+        param: Value,
+        attribute: Option<&str>,
+        class: Option<&str>,
+        kind: ResourceType,
+    ) -> LispResult {
+        let mut tem = self.assq(param, alist);
+        if !tem.is_nil() {
+            self.heap.set_car(tem, Value::NIL);
+            let mut tail = alist;
+            while tail.is_cons() {
+                let elt = self.xcar(tail);
+                if elt.is_cons() && self.eq(self.xcar(elt), param) {
+                    self.heap.set_car(elt, Value::NIL);
+                }
+                tail = self.xcdr(tail);
+            }
+        } else {
+            let defaults = self.plain_value(sym::DEFAULT_FRAME_ALIST);
+            tem = self.assq(param, defaults);
+        }
+        if tem.is_nil() {
+            let (Some(attribute), Some(dpyinfo)) = (attribute, dpyinfo) else {
+                return Ok(sym::UNBOUND);
+            };
+            let at = self.make_string(attribute.as_bytes());
+            self.stack.push(at);
+            let cl = self.make_string(class.unwrap_or("").as_bytes());
+            self.stack.push(cl);
+            let r = self.gui_display_get_resource(dpyinfo, at, cl, Value::NIL, Value::NIL);
+            self.stack.truncate(self.stack.len() - 2);
+            let tem = r?;
+            if tem.is_nil() {
+                return Ok(sym::UNBOUND);
+            }
+            let text = self.string_bytes(tem).to_vec();
+            return Ok(match kind {
+                ResourceType::Number => Value::fixnum(c_atoi(&text)),
+                ResourceType::BooleanNumber => {
+                    if text == b"on" || text == b"true" {
+                        Value::fixnum(1)
+                    } else {
+                        Value::fixnum(c_atoi(&text))
+                    }
+                }
+                ResourceType::Float => self.float(c_atof(&text)),
+                ResourceType::Boolean => {
+                    let lower = crate::casefiddle::f_downcase(self, &[tem])?;
+                    let lower = self.string_bytes(lower);
+                    self.bool(lower == b"on" || lower == b"true")
+                }
+                ResourceType::String => tem,
+                ResourceType::Symbol => {
+                    let lower = crate::casefiddle::f_downcase(self, &[tem])?;
+                    let lower = self.string_bytes(lower).to_vec();
+                    if lower == b"on" || lower == b"true" {
+                        sym::T
+                    } else if lower == b"off" || lower == b"false" {
+                        Value::NIL
+                    } else {
+                        crate::lread::f_intern(self, &[tem, Value::NIL])?
+                    }
+                }
+            });
+        }
+        self.cdr(tem)
+    }
+
+    pub fn frame_display_info(&self, f: Value) -> Option<Value> {
+        self.frame(f).window_p().then(|| self.frame(f).terminal)
+    }
+
+    pub fn gui_frame_get_arg(
+        &mut self,
+        f: Value,
+        alist: Value,
+        param: Value,
+        attribute: Option<&str>,
+        class: Option<&str>,
+        kind: ResourceType,
+    ) -> LispResult {
+        let dpyinfo = self.frame_display_info(f);
+        self.gui_display_get_arg(dpyinfo, alist, param, attribute, class, kind)
+    }
+
+    pub fn gui_frame_get_and_record_arg(
+        &mut self,
+        f: Value,
+        alist: Value,
+        param: Value,
+        attribute: Option<&str>,
+        class: Option<&str>,
+        kind: ResourceType,
+    ) -> LispResult {
+        let value = self.gui_frame_get_arg(f, alist, param, attribute, class, kind)?;
+        if !value.is_nil() && value != sym::UNBOUND {
+            self.store_frame_param(f, param, value)?;
+        }
+        Ok(value)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn gui_default_parameter(
+        &mut self,
+        f: Value,
+        alist: Value,
+        prop: Value,
+        deflt: Value,
+        xprop: Option<&str>,
+        xclass: Option<&str>,
+        kind: ResourceType,
+    ) -> LispResult {
+        let mut tem = self.gui_frame_get_arg(f, alist, prop, xprop, xclass, kind)?;
+        let was_unbound = tem == sym::UNBOUND;
+        if was_unbound {
+            tem = deflt;
+        }
+        let base = self.stack.len();
+        self.stack.push(tem);
+        let pair = self.cons(prop, tem);
+        let arg = self.list(&[pair]);
+        self.stack.push(arg);
+        let r = self.gui_set_frame_parameters_1(f, arg, was_unbound);
+        self.stack.truncate(base);
+        r?;
+        Ok(tem)
+    }
+
+    fn handle_frame_param(
+        &mut self,
+        f: Value,
+        prop: Value,
+        val: Value,
+        old_value: Value,
+    ) -> LispResult<()> {
+        let index = self.get(prop, sym::X_FRAME_PARAMETER);
+        let Some(index) = index
+            .as_fixnum()
+            .and_then(|i| usize::try_from(i).ok())
+            .filter(|&i| i < FRAME_PARMS.len())
+        else {
+            return Ok(());
+        };
+        if let Some(handlers) = self.frame_terminal_hooks(f).frame_parm_handlers
+            && let Some(Some(handler)) = handlers.get(index)
+        {
+            handler(self, f, val, old_value)?;
+        }
+        Ok(())
+    }
+
+    fn frame_float(
+        &mut self,
+        f: Value,
+        val: Value,
+        what: FrameFloatType,
+        cache: &mut FrameFloatCache,
+        default_value: i64,
+    ) -> LispResult<i64> {
+        let d_val = self.xfloatint(val);
+        if !(0.0..=1.0).contains(&d_val) {
+            return Ok(default_value);
+        }
+        let p = self.frame_parent_frame(f);
+        if cache.parent_done == 1 {
+        } else if !p.is_nil() {
+            cache.parent_width = self.frame(p).geometry.pixel_width;
+            cache.parent_height = self.frame(p).geometry.pixel_height;
+            cache.parent_done = 1;
+        } else if cache.parent_done == 0 {
+            return Ok(default_value);
+        } else if cache.parent_done == -1 {
+            let monitor_attributes = self.funcall(sym::FRAME_MONITOR_ATTRIBUTES, &[f])?;
+            if monitor_attributes.is_nil() {
+                cache.parent_done = 0;
+                return Ok(default_value);
+            }
+            let entry = self.assq(sym::WORKAREA, monitor_attributes);
+            let workarea = self.cdr(entry)?;
+            if workarea.is_nil() {
+                cache.parent_done = 0;
+                return Ok(default_value);
+            }
+            let fixnum = |lisp: &Lisp, n: usize| lisp.nth(n, workarea).as_fixnum().unwrap_or(0);
+            cache.parent_left = fixnum(self, 0);
+            cache.parent_top = fixnum(self, 1);
+            cache.parent_width = fixnum(self, 2);
+            cache.parent_height = fixnum(self, 3);
+            cache.parent_done = 1;
+        }
+        let g = self.frame(f).geometry.clone();
+        if cache.outer_done == 1 {
+        } else if self.frame(f).flags.undecorated {
+            cache.outer_minus_text_width = g.pixel_width - g.text_width;
+            cache.outer_minus_text_height = g.pixel_height - g.text_height;
+            cache.outer_done = 1;
+        } else if cache.outer_done == 0 {
+            return Ok(default_value);
+        } else if cache.outer_done == -1 {
+            let outer_edges = self.funcall(sym::FRAME_EDGES, &[f, sym::OUTER_EDGES])?;
+            if !outer_edges.is_nil() {
+                let fixnum =
+                    |lisp: &Lisp, n: usize| lisp.nth(n, outer_edges).as_fixnum().unwrap_or(0);
+                cache.outer_minus_text_width = fixnum(self, 2) - fixnum(self, 0) - g.text_width;
+                cache.outer_minus_text_height = fixnum(self, 3) - fixnum(self, 1) - g.text_height;
+            } else {
+                cache.outer_minus_text_width = g.pixel_width - g.text_width;
+                cache.outer_minus_text_height = g.pixel_height - g.text_height;
+            }
+            cache.outer_done = 1;
+        }
+        let parent_width = cache.parent_width as u32 as f64;
+        let parent_height = cache.parent_height as u32 as f64;
+        Ok(match what {
+            FrameFloatType::Width => {
+                (parent_width * d_val - cache.outer_minus_text_width as u32 as f64) as i32 as i64
+            }
+            FrameFloatType::Height => {
+                (parent_height * d_val - cache.outer_minus_text_height as u32 as f64) as i32 as i64
+            }
+            FrameFloatType::Left => {
+                let rest_width = (cache.parent_width as u32)
+                    .wrapping_sub(g.text_width as u32)
+                    .wrapping_sub(cache.outer_minus_text_width as u32)
+                    as i32;
+                if !p.is_nil() {
+                    if rest_width <= 0 {
+                        0
+                    } else {
+                        (d_val * f64::from(rest_width)) as i64
+                    }
+                } else if rest_width <= 0 {
+                    cache.parent_left
+                } else {
+                    (cache.parent_left as f64 + d_val * f64::from(rest_width)) as i64
+                }
+            }
+            FrameFloatType::Top => {
+                let rest_height = (cache.parent_height as u32)
+                    .wrapping_sub(g.text_height as u32)
+                    .wrapping_sub(cache.outer_minus_text_height as u32)
+                    as i32;
+                if !p.is_nil() {
+                    if rest_height <= 0 {
+                        0
+                    } else {
+                        (d_val * f64::from(rest_height)) as i64
+                    }
+                } else if rest_height <= 0 {
+                    cache.parent_top
+                } else {
+                    (cache.parent_top as f64 + d_val * f64::from(rest_height)) as i64
+                }
+            }
+        })
+    }
+
+    pub fn gui_set_frame_parameters(&mut self, f: Value, alist: Value) -> LispResult<()> {
+        self.gui_set_frame_parameters_1(f, alist, false)
+    }
+
+    pub fn gui_set_frame_parameters_1(
+        &mut self,
+        f: Value,
+        alist: Value,
+        default_parameter: bool,
+    ) -> LispResult<()> {
+        let mut size = 0;
+        let mut tail = alist;
+        while tail.is_cons() {
+            size += 1;
+            tail = self.xcdr(tail);
+        }
+        self.check_list_end(tail, alist)?;
+        let base = self.stack.len();
+        self.stack.resize(base + 2 * size, Value::NIL);
+        let (mut i, mut j) = (0, size);
+        let mut tail = alist;
+        while tail.is_cons() {
+            let elt = self.xcar(tail);
+            let prop = self.car(elt)?;
+            let val = self.cdr(elt)?;
+            if prop == sym::FOREGROUND_COLOR || prop == sym::BACKGROUND_COLOR || prop == sym::FONT {
+                j -= 1;
+                self.stack[base + j] = prop;
+                self.stack[base + size + j] = val;
+            } else {
+                self.stack[base + i] = prop;
+                self.stack[base + size + i] = val;
+                i += 1;
+            }
+            tail = self.xcdr(tail);
+        }
+        let r = self.gui_set_frame_parameters_2(f, base, size, default_parameter);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn gui_set_frame_parameters_2(
+        &mut self,
+        f: Value,
+        base: usize,
+        size: usize,
+        default_parameter: bool,
+    ) -> LispResult<()> {
+        let (mut width, mut height) = (-1, -1);
+        let (mut width_change, mut height_change) = (false, false);
+        let mut fullscreen = Value::NIL;
+        let mut fullscreen_change = false;
+        let mut cache = FrameFloatCache {
+            parent_done: -1,
+            outer_done: -1,
+            ..FrameFloatCache::default()
+        };
+        let (mut left, mut top) = (sym::UNBOUND, sym::UNBOUND);
+        let (mut icon_left, mut icon_top) = (sym::UNBOUND, sym::UNBOUND);
+        for i in (0..size).rev() {
+            let prop = self.stack[base + i];
+            let val = self.stack[base + size + i];
+            if prop == sym::WIDTH {
+                width_change = true;
+                let column_width = self.frame(f).geometry.column_width;
+                if let Some(n) = val
+                    .as_fixnum()
+                    .filter(|&n| (0..=i64::from(i32::MAX)).contains(&n))
+                {
+                    width = n * column_width;
+                } else if val.is_cons()
+                    && self.xcar(val) == sym::TEXT_PIXELS
+                    && let Some(n) = self
+                        .xcdr(val)
+                        .as_fixnum()
+                        .filter(|&n| (0..=i64::from(i32::MAX)).contains(&n))
+                {
+                    width = n;
+                } else if val.is_float() {
+                    width = self.frame_float(f, val, FrameFloatType::Width, &mut cache, -1)?;
+                } else {
+                    width_change = false;
+                }
+            } else if prop == sym::HEIGHT {
+                height_change = true;
+                let line_height = self.frame(f).geometry.line_height;
+                if let Some(n) = val
+                    .as_fixnum()
+                    .filter(|&n| (0..=i64::from(i32::MAX)).contains(&n))
+                {
+                    height = n * line_height;
+                } else if val.is_cons()
+                    && self.xcar(val) == sym::TEXT_PIXELS
+                    && let Some(n) = self
+                        .xcdr(val)
+                        .as_fixnum()
+                        .filter(|&n| (0..=i64::from(i32::MAX)).contains(&n))
+                {
+                    height = n;
+                } else if val.is_float() {
+                    height = self.frame_float(f, val, FrameFloatType::Height, &mut cache, -1)?;
+                } else {
+                    height_change = false;
+                }
+            } else if prop == sym::TOP {
+                top = val;
+            } else if prop == sym::LEFT {
+                left = val;
+            } else if prop == sym::ICON_TOP {
+                icon_top = val;
+            } else if prop == sym::ICON_LEFT {
+                icon_left = val;
+            } else if prop == sym::FULLSCREEN {
+                fullscreen = val;
+                fullscreen_change = true;
+            } else {
+                let old_value = self.get_frame_param(f, prop);
+                self.stack.push(old_value);
+                let r = self
+                    .store_frame_param(f, prop, val)
+                    .and_then(|()| self.handle_frame_param(f, prop, val, old_value));
+                self.stack.pop();
+                r?;
+                if !default_parameter && prop == sym::FONT {
+                    self.store_frame_param(f, sym::FONT_PARAMETER, val)?;
+                }
+            }
+        }
+        let mut left_no_change = false;
+        let mut top_no_change = false;
+        let g = self.frame(f).geometry.clone();
+        if left == sym::UNBOUND {
+            left_no_change = true;
+            left = if g.left_pos < 0 {
+                self.list(&[sym::PLUS, Value::fixnum(g.left_pos)])
+            } else {
+                Value::fixnum(g.left_pos)
+            };
+        }
+        self.stack.push(left);
+        if top == sym::UNBOUND {
+            top_no_change = true;
+            top = if g.top_pos < 0 {
+                self.list(&[sym::PLUS, Value::fixnum(g.top_pos)])
+            } else {
+                Value::fixnum(g.top_pos)
+            };
+        }
+        self.stack.push(top);
+        let int_p = |v: Value| v.as_fixnum().is_some_and(|n| i32::try_from(n).is_ok());
+        if !int_p(icon_left) {
+            let param_alist = self.frame(f).param_alist;
+            let entry = self.assq(sym::ICON_LEFT, param_alist);
+            icon_left = self.cdr(entry)?;
+            if icon_left.is_nil() {
+                icon_left = Value::fixnum(0);
+            }
+        }
+        if !int_p(icon_top) {
+            let param_alist = self.frame(f).param_alist;
+            let entry = self.assq(sym::ICON_TOP, param_alist);
+            icon_top = self.cdr(entry)?;
+            if icon_top.is_nil() {
+                icon_top = Value::fixnum(0);
+            }
+        }
+        let _ = (icon_left, icon_top);
+        if width_change || height_change {
+            let parameter = if width_change {
+                if height_change {
+                    sym::SIZE
+                } else {
+                    height = self.frame(f).geometry.text_height;
+                    sym::WIDTH
+                }
+            } else {
+                width = self.frame(f).geometry.text_width;
+                sym::HEIGHT
+            };
+            self.adjust_frame_size(f, width, height, 1, parameter)?;
+        }
+        let (left_pos, top_pos) = (
+            self.frame(f).geometry.left_pos,
+            self.frame(f).geometry.top_pos,
+        );
+        if (!left.is_nil() || !top.is_nil())
+            && !(left_no_change && top_no_change)
+            && !(left.as_fixnum() == Some(left_pos) && top.as_fixnum() == Some(top_pos))
+        {
+            let mut leftpos = 0;
+            let mut toppos = 0;
+            let mut flags = self.frame(f).size_hint_flags & !(X_NEGATIVE | Y_NEGATIVE);
+            for (value, is_left) in [(left, true), (top, false)] {
+                let negative_flag = if is_left { X_NEGATIVE } else { Y_NEGATIVE };
+                let mut pos = 0;
+                if value == sym::MINUS {
+                    flags |= negative_flag;
+                } else if int_p(value) {
+                    pos = value.as_fixnum().unwrap_or(0);
+                    if pos < 0 {
+                        flags |= negative_flag;
+                    }
+                } else if value.is_cons()
+                    && self.xcar(value) == sym::MINUS
+                    && self.xcdr(value).is_cons()
+                    && let Some(n) = self
+                        .xcar(self.xcdr(value))
+                        .as_fixnum()
+                        .filter(|&n| (-i64::from(i32::MAX)..=i64::from(i32::MAX)).contains(&n))
+                {
+                    pos = -n;
+                    flags |= negative_flag;
+                } else if value.is_cons()
+                    && self.xcar(value) == sym::PLUS
+                    && self.xcdr(value).is_cons()
+                    && int_p(self.xcar(self.xcdr(value)))
+                {
+                    pos = self.xcar(self.xcdr(value)).as_fixnum().unwrap_or(0);
+                } else if value.is_float() {
+                    let what = if is_left {
+                        FrameFloatType::Left
+                    } else {
+                        FrameFloatType::Top
+                    };
+                    pos = self.frame_float(f, value, what, &mut cache, 0)?;
+                }
+                if is_left {
+                    leftpos = pos;
+                } else {
+                    toppos = pos;
+                }
+            }
+            let fr = self.frame_mut(f);
+            fr.size_hint_flags = flags;
+            fr.geometry.top_pos = toppos;
+            fr.geometry.left_pos = leftpos;
+            fr.win_gravity = NORTH_WEST_GRAVITY;
+            if let Some(hook) = self.frame_terminal_hooks(f).set_frame_offset {
+                hook(self, f, leftpos, toppos, -1)?;
+            }
+        }
+        if fullscreen_change {
+            let old_value = self.get_frame_param(f, sym::FULLSCREEN);
+            self.store_frame_param(f, sym::FULLSCREEN, fullscreen)?;
+            if !self.eq(fullscreen, old_value) {
+                self.gui_set_fullscreen(f, fullscreen, old_value)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn gui_set_fullscreen(
+        &mut self,
+        f: Value,
+        new_value: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        let want = if new_value.is_nil() {
+            Some(Fullscreen::None)
+        } else if new_value == sym::FULLBOTH || new_value == sym::FULLSCREEN {
+            Some(Fullscreen::Both)
+        } else if new_value == sym::FULLWIDTH {
+            Some(Fullscreen::Width)
+        } else if new_value == sym::FULLHEIGHT {
+            Some(Fullscreen::Height)
+        } else if new_value == sym::MAXIMIZED {
+            Some(Fullscreen::Maximized)
+        } else {
+            None
+        };
+        if let Some(want) = want {
+            self.frame_mut(f).want_fullscreen = want;
+        }
+        if let Some(hook) = self.frame_terminal_hooks(f).fullscreen {
+            hook(self, f)?;
+        }
+        Ok(())
+    }
+
+    pub fn gui_set_line_spacing(
+        &mut self,
+        f: Value,
+        new_value: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        let line_height = self.frame(f).geometry.line_height;
+        let int_value = |v: Value| {
+            v.as_fixnum()
+                .filter(|&n| (0..=i64::from(i32::MAX)).contains(&n))
+        };
+        let (spacing, above) = if new_value.is_nil() {
+            (0, 0)
+        } else if let Some(n) = int_value(new_value) {
+            (n, 0)
+        } else if new_value.is_float() {
+            let new_spacing = (self.xfloatint(new_value) * line_height as f64) as i32 as i64;
+            if new_spacing >= 0 {
+                (new_spacing, 0)
+            } else {
+                return Err(self.signal_error("Invalid line-spacing", new_value));
+            }
+        } else if new_value.is_cons() {
+            let above = self.xcar(new_value);
+            let below = self.xcdr(new_value);
+            if let (Some(a), Some(b)) = (int_value(above), int_value(below)) {
+                (a + b, a)
+            } else if above.is_float() && below.is_float() {
+                let (a, b) = (self.xfloatint(above), self.xfloatint(below));
+                let new_spacing = ((a + b) * line_height as f64) as i32 as i64;
+                let spacing_above = (a * line_height as f64) as i32 as i64;
+                if new_spacing >= 0 && spacing_above >= 0 {
+                    (new_spacing, spacing_above)
+                } else {
+                    return Err(self.signal_error("Invalid line-spacing", new_value));
+                }
+            } else {
+                return Err(self.signal_error("Invalid line-spacing", new_value));
+            }
+        } else {
+            return Err(self.signal_error("Invalid line-spacing", new_value));
+        };
+        let g = &mut self.frame_mut(f).geometry;
+        g.extra_line_spacing = spacing;
+        g.extra_line_spacing_above = above;
+        if self.frame(f).flags.visible {
+            self.redraw_frame(f);
+        }
+        Ok(())
+    }
+
+    pub fn gui_set_screen_gamma(
+        &mut self,
+        f: Value,
+        new_value: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        if new_value.is_nil() {
+            self.frame_mut(f).gamma = 0.0;
+        } else if self.is_number(new_value) && self.xfloatint(new_value) > 0.0 {
+            let v = self.xfloatint(new_value);
+            self.frame_mut(f).gamma = 1.0 / (0.4545 * v);
+        } else {
+            return Err(self.signal_error("Invalid screen-gamma", new_value));
+        }
+        let param_alist = self.frame(f).param_alist;
+        let bgcolor = self.assq(sym::BACKGROUND_COLOR, param_alist);
+        if bgcolor.is_cons() {
+            let bgcolor = self.xcdr(bgcolor);
+            if self.is_string(bgcolor) {
+                self.handle_frame_param(f, sym::BACKGROUND_COLOR, bgcolor, Value::NIL)?;
+            }
+        }
+        self.clear_face_cache(true);
+        self.fset_redisplay(f);
+        Ok(())
+    }
+
+    pub fn gui_set_visibility(
+        &mut self,
+        f: Value,
+        value: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        if value.is_nil() {
+            f_make_frame_invisible(self, &[f, sym::T])?;
+        } else if value == sym::ICON {
+            f_iconify_frame(self, &[f])?;
+        } else {
+            f_make_frame_visible(self, &[f])?;
+        }
+        Ok(())
+    }
+
+    pub fn gui_set_autoraise(&mut self, f: Value, arg: Value, _old_value: Value) -> LispResult<()> {
+        self.frame_mut(f).flags.auto_raise = !arg.is_nil();
+        Ok(())
+    }
+
+    pub fn gui_set_autolower(&mut self, f: Value, arg: Value, _old_value: Value) -> LispResult<()> {
+        self.frame_mut(f).flags.auto_lower = !arg.is_nil();
+        Ok(())
+    }
+
+    pub fn gui_set_unsplittable(
+        &mut self,
+        f: Value,
+        arg: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        self.frame_mut(f).flags.no_split = !arg.is_nil();
+        Ok(())
+    }
+
+    pub fn gui_set_border_width(
+        &mut self,
+        f: Value,
+        arg: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        let border_width =
+            self.check_integer_range(arg, i64::from(i32::MIN), i64::from(i32::MAX))?;
+        if border_width == self.frame(f).geometry.border_width {
+            return Ok(());
+        }
+        if self.frame(f).flags.native_window {
+            return Err(self.error("Cannot change the border width of a frame"));
+        }
+        self.frame_mut(f).geometry.border_width = border_width;
+        Ok(())
+    }
+
+    fn gui_set_fringe(&mut self, f: Value, new_value: Value, left: bool) -> LispResult<()> {
+        let g = self.frame(f).geometry.clone();
+        let unit = g.column_width;
+        let old_width = if left {
+            g.left_fringe_width
+        } else {
+            g.right_fringe_width
+        };
+        let new_width = match new_value
+            .as_fixnum()
+            .filter(|&n| (-i64::from(i32::MAX)..=i64::from(i32::MAX)).contains(&n))
+        {
+            Some(n) => n.abs(),
+            None => 8,
+        };
+        if new_width != old_width {
+            let other = if left {
+                g.right_fringe_width
+            } else {
+                g.left_fringe_width
+            };
+            let geometry = &mut self.frame_mut(f).geometry;
+            if left {
+                geometry.left_fringe_width = new_width;
+            } else {
+                geometry.right_fringe_width = new_width;
+            }
+            geometry.fringe_cols = (new_width + other + unit - 1) / unit;
+            if self.frame(f).flags.native_window {
+                let parameter = if left {
+                    sym::LEFT_FRINGE
+                } else {
+                    sym::RIGHT_FRINGE
+                };
+                self.adjust_frame_size(f, -1, -1, 3, parameter)?;
+            }
+            self.set_frame_garbaged(f);
+        }
+        Ok(())
+    }
+
+    pub fn gui_set_left_fringe(
+        &mut self,
+        f: Value,
+        new_value: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        self.gui_set_fringe(f, new_value, true)
+    }
+
+    pub fn gui_set_right_fringe(
+        &mut self,
+        f: Value,
+        new_value: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        self.gui_set_fringe(f, new_value, false)
+    }
+
+    pub fn gui_set_vertical_scroll_bars(
+        &mut self,
+        f: Value,
+        arg: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        let current = self.frame(f).vertical_scroll_bar_type;
+        let has = current != VerticalScrollBarType::None;
+        if (arg == sym::LEFT && current == VerticalScrollBarType::Right)
+            || (arg == sym::RIGHT && current == VerticalScrollBarType::Left)
+            || (arg.is_nil() && has)
+            || (!arg.is_nil() && !has)
+        {
+            let default = self.plain_value(sym::DEFAULT_FRAME_SCROLL_BARS);
+            self.frame_mut(f).vertical_scroll_bar_type = if arg.is_nil() {
+                VerticalScrollBarType::None
+            } else if arg == sym::LEFT {
+                VerticalScrollBarType::Left
+            } else if arg == sym::RIGHT {
+                VerticalScrollBarType::Right
+            } else if default == sym::LEFT {
+                VerticalScrollBarType::Left
+            } else if default == sym::RIGHT {
+                VerticalScrollBarType::Right
+            } else {
+                VerticalScrollBarType::None
+            };
+            if self.frame(f).flags.native_window {
+                self.adjust_frame_size(f, -1, -1, 3, sym::VERTICAL_SCROLL_BARS)?;
+            }
+            self.set_frame_garbaged(f);
+        }
+        Ok(())
+    }
+
+    pub fn gui_set_horizontal_scroll_bars(
+        &mut self,
+        _f: Value,
+        _arg: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        Ok(())
+    }
+
+    pub fn gui_set_scroll_bar_height(
+        &mut self,
+        _f: Value,
+        _arg: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        Ok(())
+    }
+
+    pub fn gui_set_alpha(&mut self, f: Value, arg: Value, _old_value: Value) -> LispResult<()> {
+        let mut newval = [1.0; 2];
+        let mut arg = arg;
+        for slot in &mut newval {
+            let item = if arg.is_cons() {
+                let item = self.xcar(arg);
+                arg = self.xcdr(arg);
+                item
+            } else {
+                arg
+            };
+            *slot = if item.is_nil() {
+                -1.0
+            } else if item.is_float() {
+                let alpha = self.xfloatint(item);
+                if !(0.0..=1.0).contains(&alpha) {
+                    let (lo, hi) = (self.float(0.0), self.float(1.0));
+                    return Err(self.args_out_of_range(lo, hi));
+                }
+                alpha
+            } else if let Some(ialpha) = item.as_fixnum() {
+                if !(0..=100).contains(&ialpha) {
+                    return Err(self.args_out_of_range(Value::fixnum(0), Value::fixnum(100)));
+                }
+                ialpha as f64 / 100.0
+            } else {
+                return Err(self.wrong_type(sym::NUMBERP, item));
+            };
+        }
+        self.frame_mut(f).alpha = newval;
+        if let Some(hook) = self.frame_terminal_hooks(f).set_frame_alpha {
+            hook(self, f)?;
+        }
+        Ok(())
+    }
+
+    pub fn gui_set_alpha_background(
+        &mut self,
+        f: Value,
+        arg: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        let alpha = if arg.is_nil() {
+            1.0
+        } else if arg.is_float() {
+            let alpha = self.xfloatint(arg);
+            if !(0.0..=1.0).contains(&alpha) {
+                let (lo, hi) = (self.float(0.0), self.float(1.0));
+                return Err(self.args_out_of_range(lo, hi));
+            }
+            alpha
+        } else if let Some(ialpha) = arg.as_fixnum() {
+            if !(0..=100).contains(&ialpha) {
+                return Err(self.args_out_of_range(Value::fixnum(0), Value::fixnum(100)));
+            }
+            ialpha as f64 / 100.0
+        } else {
+            return Err(self.wrong_type(sym::NUMBERP, arg));
+        };
+        self.frame_mut(f).alpha_background = alpha;
+        self.recompute_basic_faces(f)?;
+        self.set_frame_garbaged(f);
+        Ok(())
+    }
+
+    pub fn gui_set_borders_respect_alpha_background(
+        &mut self,
+        f: Value,
+        arg: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        self.frame_mut(f).flags.borders_respect_alpha_background = !arg.is_nil();
+        Ok(())
+    }
+
+    pub fn gui_set_no_special_glyphs(
+        &mut self,
+        f: Value,
+        new_value: Value,
+        old_value: Value,
+    ) -> LispResult<()> {
+        if !self.eq(new_value, old_value) {
+            self.frame_mut(f).flags.no_special_glyphs = !new_value.is_nil();
+        }
+        Ok(())
+    }
 }
