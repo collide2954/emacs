@@ -5,6 +5,7 @@ use emacs_core::terminal::WindowSystem;
 
 pub mod display;
 pub mod font;
+pub mod ftcrfont;
 pub mod gdkrgba;
 pub mod keysym;
 pub mod pgtkfns;
@@ -33,8 +34,14 @@ pub fn install(lisp: &mut Lisp, display: Display) {
     pgtkfns::syms_of_pgtkfns(lisp);
     pgtkselect::syms_of_pgtkselect(lisp);
     pgtkim::syms_of_pgtkim(lisp);
+    ftcrfont::syms_of_ftcrfont(lisp);
     lisp.window_system = Some(WindowSystem {
-        mark: pgtkterm::mark_pgtkterm,
+        mark,
         check_x_display_info: pgtkfns::check_pgtk_display_info,
     });
+}
+
+fn mark(roots: &mut Vec<emacs_core::value::Value>) {
+    pgtkterm::mark_pgtkterm(roots);
+    ftcrfont::mark_ftfont(roots);
 }

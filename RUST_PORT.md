@@ -262,6 +262,15 @@ Done:
   fontconfig's numeric weight/slant/width/spacing and its generic family preferences, opens
   fonts with ftcrfont's metric rules, and provides glyph extents, rasterization (including
   color glyphs) and drawing onto a surface.
+- `ftcrfont.rs`: the `ftcr` font driver (`ftcrfont.c`, with the parts of `ftfont.c` it
+  uses), registered globally at startup. fontdb stands in for fontconfig. Listing filters faces
+  by family (generic `monospace`, `sans-serif` and `sans` resolved first, names compared
+  ignoring case and blanks), spacing, scalability and the uniquifier characters of the
+  registry's `fc_charset_table` entry, checked against each face's cmap. Matching takes the
+  best face for the family alone, as `ftfont_spec_pattern` leaves weight, slant and width out
+  of the pattern. Faces have no foundry, so a spec naming one lists nothing; `:lang` is not
+  checked; a spec with `:otf` lists nothing (there is no OpenType layout support yet); `draw`
+  does not clip yet.
 
 `cargo run -p emacs-gui --example shell` opens a frame from the Lisp thread, paints a test
 pattern and prints the events it receives.

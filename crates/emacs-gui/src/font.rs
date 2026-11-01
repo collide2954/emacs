@@ -76,6 +76,7 @@ pub fn width_from_stretch(stretch: fontdb::Stretch) -> i32 {
 pub struct FontEntity {
     pub id: fontdb::ID,
     pub family: String,
+    pub families: Vec<String>,
     pub weight: i32,
     pub slant: i32,
     pub width: i32,
@@ -119,6 +120,7 @@ pub struct OpenFont {
     pub ascent: i32,
     pub descent: i32,
     pub height: i32,
+    pub line_height: i32,
     pub min_width: i32,
     pub max_width: i32,
     pub average_width: i32,
@@ -169,6 +171,7 @@ fn entity_of(face: &fontdb::FaceInfo) -> FontEntity {
             .first()
             .map(|(name, _)| name.clone())
             .unwrap_or_default(),
+        families: face.families.iter().map(|(name, _)| name.clone()).collect(),
         weight: weight_from_opentype(face.weight.0),
         slant: slant_from_style(face.style),
         width: width_from_stretch(face.stretch),
@@ -327,6 +330,7 @@ impl FontBackend {
             ascent: 0,
             descent: 0,
             height: 0,
+            line_height: 0,
             min_width: 0,
             max_width: 0,
             average_width: 0,
@@ -358,9 +362,10 @@ impl FontBackend {
         if n > 0 {
             open.average_width = total / n;
         }
-        open.ascent = scaled.ascent.ceil() as i32;
-        open.descent = scaled.descent.ceil() as i32;
+        open.ascent = scaled.ascent.round() as i32;
+        open.descent = scaled.descent.round() as i32;
         open.height = open.ascent + open.descent;
+        open.line_height = (scaled.ascent + scaled.descent + scaled.leading).round() as i32;
         let upem = design.units_per_em as f32;
         if upem > 0.0 {
             open.underline_position = (-design.underline_offset * size / upem) as i32;
@@ -370,6 +375,27 @@ impl FontBackend {
             }
         }
         Some(open)
+    }
+
+    pub fn face_by_file(&self, path: &std::path::Path, index: u32) -> Option<FontEntity> {
+        self.system
+            .db()
+            .faces()
+            .find(|face| {
+                face.index == index
+                    && matches!(&face.source,
+                        fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) if p == path)
+            })
+            .map(entity_of)
+    }
+
+    pub fn face_has_char(&mut self, entity: &FontEntity, c: u32) -> bool {
+        let Some(ch) = char::from_u32(c) else {
+            return false;
+        };
+        self.system
+            .get_font(entity.id, entity.ot_weight)
+            .is_some_and(|font| font.as_swash().charmap().map(ch) != 0)
     }
 
     pub fn has_char(&self, font: &OpenFont, c: u32) -> bool {
