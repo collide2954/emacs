@@ -125,7 +125,7 @@ Ported but not yet complete (C kept):
 | `frame.c` | `frame.rs` | `delete-frame`, `x-create-frame`; of the window-system parameter code (`gui_display_get_arg`, `gui_default_parameter`, `gui_set_frame_parameters`, `frame_float` and the generic `gui_set_*` handlers, dispatched through the terminal's `frame_parm_handlers`), the `font`, `font-backend`, divider-width and `scroll-bar-width` handlers (they need font.c's drivers and glyph matrices); `adjust_frame_size` is ported but stops with `unreachable!` where it would call a window system's size hook or resize child frames, which don't exist yet |
 | `window.c` | `window.rs` | splitting, resizing (`resize_frame_windows` handles only a leaf root window, the only kind the port can make), `window-list`; window configurations (`current-window-configuration`, `set-window-configuration`, `window-configuration-equal-p` and the dead-windows table) follow C, as do the mode/header/tab line, divider and scroll bar size DEFUNs (without glyph matrices, line heights always come from `estimate_mode_line_height`; horizontal scroll bars don't exist, as in C without toolkit scroll bars) |
 | `minibuf.c` | `minibuf.rs` | interactive reading (needs the command loop; it signals an error) |
-| `font.c` | `font.rs` | font drivers, entities, `font_load_for_lface`; `internal-char-font` is ported |
+| `font.c` | `font.rs` | `font-face-attributes`, `font-shape-gstring`, `font-variation-glyphs`, `font-get-glyphs`, `font-at`, `font_range`, the OTF DEFUNs; `font_put_frame_data` (unused with cairo); the driver layer (`struct font_driver` as `FontDriver`, per-frame driver lists, font caches, listing, sorting, matching, opening, `font_load_for_lface`, `font_open_by_name`, the font log) and its DEFUNs are ported |
 | `fontset.c` | `fontset.rs` | `new-fontset`, `set-fontset-font`, `fontset-info`, `fontset-font` |
 | `xfaces.c` | `xfaces.rs` | GUI and tty face realization, `face-font`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource`; `face_at_buffer_position` is ported |
 | `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path, the message stack (`push_message`, `restore_message`) and `invisible-p` |
@@ -284,7 +284,13 @@ of `etc/rgb.txt` matched ignoring case and spaces), so `pgtk_parse_color`,
 `pgtk_defined_color`, `x_decode_color` and the `xw-color-*` primitives behave as under GTK;
 `gtk_selection_bg_color` and `gtk_selection_fg_color` are undefined, as there is no GTK style
 context. Terminals carry C's hook table (`TerminalHooks`); pgtk fills in
-`get_string_resource` and `defined_color` so far. An interactive start now runs
+`get_string_resource` and `defined_color` so far. The fields of C's display info that
+generic code reads through `FRAME_DISPLAY_INFO` (resolution, font counts and the smallest
+character size, the font-cache list) are `terminal::DisplayInfo` on the core terminal; the
+pgtk-only fields stay in the GUI crate's `PgtkDisplayInfo`. Font drivers are `FontDriver`
+tables of function pointers, as C's `struct font_driver`; a font object keeps C's
+`struct font` metrics in `FontObject` and its driver's private data behind an `Rc<dyn Any>`,
+dropped with the object as C's GC calls `close_font`. An interactive start now runs
 window-system initialization and stops at `x-create-frame`.
 
 Next: showing a real Emacs frame needs `x-create-frame` (frame parameters, colors, the default

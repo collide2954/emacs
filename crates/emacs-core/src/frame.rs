@@ -153,6 +153,8 @@ pub struct Frame {
     pub gamma: f64,
     pub alpha_background: f64,
     pub face_cache: Option<Box<crate::xfaces::FaceCache>>,
+    pub font_driver_list: Vec<crate::font::FontDriverList>,
+    pub fonts_changed: bool,
 }
 
 impl Frame {
@@ -207,6 +209,8 @@ impl Frame {
             gamma: 0.0,
             alpha_background: 0.0,
             face_cache: None,
+            font_driver_list: Vec::new(),
+            fonts_changed: false,
         }
     }
 
@@ -247,6 +251,7 @@ impl Frame {
         if let Some(cache) = &self.face_cache {
             cache.trace(out);
         }
+        out.extend(self.font_driver_list.iter().map(|list| list.driver.type_));
     }
 
     pub fn window_p(&self) -> bool {
@@ -2412,6 +2417,10 @@ impl Lisp {
 
     pub fn frame_display_info(&self, f: Value) -> Option<Value> {
         self.frame(f).window_p().then(|| self.frame(f).terminal)
+    }
+
+    pub fn frame_res(&self, f: Value) -> f64 {
+        self.display_info(self.frame(f).terminal).resy
     }
 
     pub fn gui_frame_get_arg(

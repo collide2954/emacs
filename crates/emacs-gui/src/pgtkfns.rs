@@ -61,12 +61,11 @@ fn is_wayland_display(name: &[u8]) -> bool {
 
 fn pgtk_display_info_for_name(lisp: &mut Lisp, name: Value) -> LispResult<Value> {
     lisp.check_string(name)?;
-    let entries: Vec<(Value, Value)> = with_display_list(|displays| {
-        displays
-            .iter()
-            .map(|d| (d.terminal, d.name_list_element))
-            .collect()
-    });
+    let entries: Vec<(Value, Value)> =
+        with_display_list(|displays| displays.iter().map(|d| d.terminal).collect::<Vec<_>>())
+            .into_iter()
+            .map(|t| (t, lisp.display_info(t).name_list_element))
+            .collect();
     let wayland = is_wayland_display(lisp.string_bytes(name));
     for (terminal, element) in entries {
         let display = lisp.xcar(element);
@@ -174,7 +173,10 @@ fn f_x_open_connection(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_x_display_list(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let elements: Vec<Value> =
-        with_display_list(|displays| displays.iter().map(|d| d.name_list_element).collect());
+        with_display_list(|displays| displays.iter().map(|d| d.terminal).collect::<Vec<_>>())
+            .into_iter()
+            .map(|t| lisp.display_info(t).name_list_element)
+            .collect();
     let mut result = Value::NIL;
     for element in elements {
         let name = lisp.xcar(element);
@@ -219,12 +221,11 @@ pub fn x_decode_color(
 ) -> LispResult<i64> {
     lisp.check_string(color_name)?;
     let terminal = lisp.frame(f).terminal;
-    let n_planes = with_display_list(|displays| {
-        displays
-            .iter()
-            .find(|d| d.terminal == terminal)
-            .map_or(0, |d| d.n_planes)
-    });
+    let n_planes = lisp
+        .terminal(terminal)
+        .display_info
+        .as_ref()
+        .map_or(0, |info| info.n_planes);
     if n_planes == 1 {
         return Ok(mono_color);
     }

@@ -778,3 +778,56 @@ impl Lisp {
         0
     }
 }
+
+impl Lisp {
+    pub fn get_char_glyph_code(&mut self, c: u32, font: Value) -> Option<u32> {
+        let code = if character::char_byte8_p(c) {
+            u32::from(character::char_to_byte8(c))
+        } else {
+            let encode_char = self
+                .font_object(font)
+                .driver
+                .expect("font driver")
+                .encode_char;
+            encode_char(self, font, c as i32)
+        };
+        (code != crate::font::FONT_INVALID_CODE).then_some(code & 0xFFFF)
+    }
+
+    pub fn get_per_char_metric(
+        &mut self,
+        font: Value,
+        char2b: u32,
+    ) -> Option<crate::font::FontMetrics> {
+        if char2b == crate::font::FONT_INVALID_CODE {
+            return None;
+        }
+        let text_extents = self
+            .font_object(font)
+            .driver
+            .expect("font driver")
+            .text_extents;
+        Some(text_extents(self, font, &[char2b]))
+    }
+
+    fn normal_char_ascent_descent(&mut self, font: Value, c: i32) -> (i32, i32) {
+        let f = self.font_object(font);
+        let mut ascent = f.ascent;
+        let mut descent = f.descent;
+        if f.pixel_size > 0 && f.ascent + f.descent > 3 * f.pixel_size {
+            let c = if c >= 0 { c as u32 } else { u32::from(b'{') };
+            if let Some(char2b) = self.get_char_glyph_code(c, font)
+                && let Some(pcm) = self.get_per_char_metric(font, char2b)
+                && !(pcm.width == 0 && pcm.rbearing == 0 && pcm.lbearing == 0)
+            {
+                ascent = pcm.ascent + 1;
+                descent = pcm.descent + 1;
+            }
+        }
+        (ascent, descent)
+    }
+
+    pub fn get_font_ascent_descent(&mut self, font: Value) -> (i32, i32) {
+        self.normal_char_ascent_descent(font, -1)
+    }
+}

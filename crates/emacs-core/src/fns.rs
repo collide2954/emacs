@@ -391,6 +391,12 @@ impl Lisp {
                         }
                         (x.clone(), y.clone())
                     }
+                    (Vectorlike::Font(x), Vectorlike::Font(y)) => {
+                        if x.props.len() != y.props.len() {
+                            return Ok(false);
+                        }
+                        (x.props.clone(), y.props.clone())
+                    }
                     (Vectorlike::Bignum(x), Vectorlike::Bignum(y)) => return Ok(x == y),
                     (Vectorlike::BoolVector(x), Vectorlike::BoolVector(y)) => {
                         return Ok(x.bits == y.bits);

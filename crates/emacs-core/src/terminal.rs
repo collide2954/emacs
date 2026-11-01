@@ -42,6 +42,37 @@ pub struct WindowSystem {
 }
 
 #[derive(Clone, Debug)]
+pub struct DisplayInfo {
+    pub name_list_element: Value,
+    pub resx: f64,
+    pub resy: f64,
+    pub color_p: bool,
+    pub n_planes: i32,
+    pub root_window: i64,
+    pub n_fonts: i32,
+    pub smallest_font_height: i32,
+    pub smallest_char_width: i32,
+    pub reference_count: i32,
+}
+
+impl DisplayInfo {
+    pub fn new(name_list_element: Value) -> DisplayInfo {
+        DisplayInfo {
+            name_list_element,
+            resx: 0.0,
+            resy: 0.0,
+            color_p: false,
+            n_planes: 0,
+            root_window: 0,
+            n_fonts: 0,
+            smallest_font_height: 0,
+            smallest_char_width: 0,
+            reference_count: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Terminal {
     pub param_alist: Value,
     pub charset_list: Value,
@@ -55,6 +86,7 @@ pub struct Terminal {
     pub terminal_coding: Box<CodingSystem>,
     pub keyboard_coding: Box<CodingSystem>,
     pub hooks: TerminalHooks,
+    pub display_info: Option<Box<DisplayInfo>>,
 }
 
 impl Terminal {
@@ -66,6 +98,9 @@ impl Terminal {
         for c in [&self.terminal_coding, &self.keyboard_coding] {
             out.push(c.name);
             out.push(c.eol_type);
+        }
+        if let Some(info) = &self.display_info {
+            out.push(info.name_list_element);
         }
     }
 }
@@ -187,6 +222,7 @@ impl Lisp {
                 terminal_coding: Box::new(terminal_coding),
                 keyboard_coding: Box::new(keyboard_coding),
                 hooks: TerminalHooks::default(),
+                display_info: None,
             })));
         self.terminals.list.insert(0, terminal);
         Ok(terminal)
@@ -215,6 +251,20 @@ impl Lisp {
             self.heap.set_cdr(old, value);
             result
         }
+    }
+
+    pub fn display_info(&self, t: Value) -> &DisplayInfo {
+        self.terminal(t)
+            .display_info
+            .as_deref()
+            .expect("terminal without display info")
+    }
+
+    pub fn display_info_mut(&mut self, t: Value) -> &mut DisplayInfo {
+        self.terminal_mut(t)
+            .display_info
+            .as_deref_mut()
+            .expect("terminal without display info")
     }
 
     pub fn terminal_glyph_code(&self, t: Value, _ch: u32) -> Value {

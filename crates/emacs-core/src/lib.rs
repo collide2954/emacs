@@ -16,6 +16,7 @@ pub mod coding;
 pub mod composite;
 pub mod data;
 pub mod dired;
+pub mod dispextern;
 pub mod dispnew;
 pub mod doc;
 pub mod doprnt;

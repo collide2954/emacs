@@ -9,22 +9,12 @@ use emacs_core::keyboard::f_set_input_interrupt_mode;
 use emacs_core::lisp::Lisp;
 use emacs_core::object::Weakness;
 use emacs_core::symbols as sym;
-use emacs_core::terminal::OutputMethod;
+use emacs_core::terminal::{DisplayInfo, OutputMethod};
 use emacs_core::value::Value;
 use emacs_core::xfaces::EmacsColor;
 
-pub struct DisplayInfo {
+pub struct PgtkDisplayInfo {
     pub terminal: Value,
-    pub name_list_element: Value,
-    pub resx: f64,
-    pub resy: f64,
-    pub color_p: bool,
-    pub n_planes: i32,
-    pub root_window: i64,
-    pub n_fonts: i32,
-    pub smallest_font_height: i32,
-    pub smallest_char_width: i32,
-    pub reference_count: i32,
     pub x_id: u32,
     pub x_id_name: Vec<u8>,
     pub icon_bitmap_id: i32,
@@ -38,14 +28,14 @@ struct Pgtk {
     initialized: bool,
     display_id: u32,
     initial_display: Option<Vec<u8>>,
-    displays: Vec<DisplayInfo>,
+    displays: Vec<PgtkDisplayInfo>,
 }
 
 thread_local! {
     static PGTK: RefCell<Pgtk> = RefCell::new(Pgtk::default());
 }
 
-pub fn with_display_list<T>(f: impl FnOnce(&mut Vec<DisplayInfo>) -> T) -> T {
+pub fn with_display_list<T>(f: impl FnOnce(&mut Vec<PgtkDisplayInfo>) -> T) -> T {
     PGTK.with(|p| f(&mut p.borrow_mut().displays))
 }
 
@@ -53,31 +43,29 @@ pub fn mark_pgtkterm(roots: &mut Vec<Value>) {
     with_display_list(|displays| {
         for dpyinfo in displays.iter() {
             roots.push(dpyinfo.terminal);
-            roots.push(dpyinfo.name_list_element);
         }
     });
 }
 
-fn initialize_display_info(terminal: Value) -> DisplayInfo {
-    DisplayInfo {
+fn initialize_display_info(terminal: Value) -> (PgtkDisplayInfo, DisplayInfo) {
+    let mut common = DisplayInfo::new(Value::NIL);
+    common.resx = 96.0;
+    common.resy = 96.0;
+    common.color_p = true;
+    common.n_planes = 32;
+    common.root_window = 42;
+    common.smallest_font_height = 1;
+    common.smallest_char_width = 1;
+    let pgtk = PgtkDisplayInfo {
         terminal,
-        name_list_element: Value::NIL,
-        resx: 96.0,
-        resy: 96.0,
-        color_p: true,
-        n_planes: 32,
-        root_window: 42,
-        n_fonts: 0,
-        smallest_font_height: 1,
-        smallest_char_width: 1,
-        reference_count: 0,
         x_id: 0,
         x_id_name: Vec::new(),
         icon_bitmap_id: 0,
         scroll_x_per_char: 0,
         scroll_y_per_line: 0,
         connection: 0,
-    }
+    };
+    (pgtk, common)
 }
 
 fn default_display_name() -> Vec<u8> {
@@ -165,16 +153,15 @@ pub fn pgtk_term_init(
     let terminal = lisp.create_terminal(OutputMethod::Pgtk)?;
     lisp.terminal_mut(terminal).hooks.get_string_resource =
         Some(crate::pgtkfns::pgtk_get_string_resource);
-    let mut dpyinfo = initialize_display_info(terminal);
-    let names: Vec<(Value, Vec<u8>)> = with_display_list(|displays| {
-        displays
-            .iter()
-            .map(|d| (d.terminal, d.name_list_element))
-            .collect::<Vec<_>>()
-    })
-    .into_iter()
-    .map(|(t, element)| (t, lisp.string_bytes(lisp.xcar(element)).to_vec()))
-    .collect();
+    let (mut dpyinfo, mut common) = initialize_display_info(terminal);
+    let names: Vec<(Value, Vec<u8>)> =
+        with_display_list(|displays| displays.iter().map(|d| d.terminal).collect::<Vec<_>>())
+            .into_iter()
+            .map(|t| {
+                let element = lisp.display_info(t).name_list_element;
+                (t, lisp.string_bytes(lisp.xcar(element)).to_vec())
+            })
+            .collect();
     let mut share = None;
     for (t, name) in names {
         if same_x_server(lisp, &name, &dpy_name)? {
@@ -194,10 +181,10 @@ pub fn pgtk_term_init(
     };
     lisp.terminal_mut(terminal).kboard = Some(kboard);
     lisp.kboards[kboard].reference_count += 1;
-    dpyinfo.name_list_element = lisp.cons(lisp_dpy_name, Value::NIL);
+    common.name_list_element = lisp.cons(lisp_dpy_name, Value::NIL);
     lisp.stack.pop();
-    dpyinfo.smallest_font_height = 1;
-    dpyinfo.smallest_char_width = 1;
+    common.smallest_font_height = 1;
+    common.smallest_char_width = 1;
     lisp.terminal_mut(terminal).name = Some(String::from_utf8_lossy(&dpy_name).into_owned());
     let system_name = f_system_name(lisp, &[])?;
     let invocation_name = lisp.plain_value(sym::INVOCATION_NAME);
@@ -211,8 +198,9 @@ pub fn pgtk_term_init(
     });
     dpyinfo.x_id_name = x_id_name;
     dpyinfo.icon_bitmap_id = -1;
-    dpyinfo.resx = 96.0;
-    dpyinfo.resy = 96.0;
+    common.resx = 96.0;
+    common.resy = 96.0;
+    lisp.terminal_mut(terminal).display_info = Some(Box::new(common));
     dpyinfo.scroll_x_per_char = 1;
     dpyinfo.scroll_y_per_line = 1;
     dpyinfo.connection = -1;
