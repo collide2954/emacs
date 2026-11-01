@@ -3161,7 +3161,7 @@ fn f_window_configuration_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.window(window).frame)
 }
 
-fn f_set_window_configuration(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_set_window_configuration(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (configuration, dont_set_frame, dont_set_miniwindow) =
         (args[0], arg(args, 1), arg(args, 2));
     let data = lisp.check_window_configuration(configuration)?;
@@ -3172,7 +3172,7 @@ fn f_set_window_configuration(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     r
 }
 
-fn f_current_window_configuration(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_current_window_configuration(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(arg(args, 0))?;
     let root = lisp.frame(f).root_window;
     let n_windows = lisp.count_windows(root);

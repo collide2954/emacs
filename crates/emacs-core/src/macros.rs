@@ -21,6 +21,32 @@ pub fn init_vars(lisp: &mut Lisp) {
 }
 
 impl Lisp {
+    pub fn at_end_of_macro_p(&mut self) -> LispResult<bool> {
+        let kbd_macro = self.plain_value(sym::EXECUTING_KBD_MACRO);
+        if kbd_macro.is_nil() {
+            return Ok(false);
+        }
+        let length = crate::fns::f_length(self, &[kbd_macro])?;
+        let index = self
+            .plain_value(sym::EXECUTING_KBD_MACRO_INDEX)
+            .as_fixnum()
+            .unwrap_or(0);
+        Ok(index >= length.as_fixnum().unwrap_or(0))
+    }
+
+    pub fn store_kbd_macro_char(&mut self, c: Value) {
+        if self.kvar(Kvar::DefiningKbdMacro).is_nil() {
+            return;
+        }
+        let kb = &mut self.kboards[self.current_kboard];
+        if kb.kbd_macro_ptr == kb.kbd_macro_buffer.len() {
+            kb.kbd_macro_buffer.push(c);
+        } else {
+            kb.kbd_macro_buffer[kb.kbd_macro_ptr] = c;
+        }
+        kb.kbd_macro_ptr += 1;
+    }
+
     pub fn end_kbd_macro(&mut self) {
         self.set_kvar(Kvar::DefiningKbdMacro, Value::NIL);
         self.windows.update_mode_lines = 20;

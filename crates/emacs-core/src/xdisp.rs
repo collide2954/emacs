@@ -66,6 +66,56 @@ impl Lisp {
 }
 
 impl Lisp {
+    pub fn redisplay(&mut self) -> LispResult<()> {
+        self.redisplay_internal()
+    }
+
+    fn redisplay_internal(&mut self) -> LispResult<()> {
+        if self.xdisp.redisplaying_p {
+            return Ok(());
+        }
+        let sf = self.frames.selected_frame;
+        if (self.frame(sf).output_method == crate::terminal::OutputMethod::Initial
+            && !self.plain_value(sym::REDISPLAY_SKIP_INITIAL_FRAME).is_nil())
+            || !self.plain_value(sym::INHIBIT_REDISPLAY).is_nil()
+        {
+            return Ok(());
+        }
+        let w = self.windows.selected_window;
+        let fr = self.window(w).frame;
+        if !self.frame(fr).flags.glyphs_initialized_p {
+            return Ok(());
+        }
+        unreachable!("redisplay_internal needs glyph matrices")
+    }
+
+    pub fn redisplay_preserve_echo_area(&mut self, _from_where: i32) -> LispResult<()> {
+        self.redisplay_internal()?;
+        let sf = self.frames.selected_frame;
+        self.flush_frame(sf);
+        Ok(())
+    }
+
+    pub fn flush_frame(&mut self, f: Value) {
+        if self.frame(f).flags.glyphs_initialized_p {
+            unreachable!("flush_frame needs the redisplay interface");
+        }
+    }
+
+    pub fn truncate_echo_area(&mut self, nchars: usize) {
+        if nchars == 0 {
+            self.xdisp.echo_area_buffer[0] = Value::NIL;
+        } else if !self.noninteractive
+            && self.plain_value(sym::EXECUTING_KBD_MACRO).is_nil()
+            && !self.xdisp.echo_area_buffer[0].is_nil()
+        {
+            let sf = self.frames.selected_frame;
+            if self.frame(sf).flags.glyphs_initialized_p {
+                unreachable!("truncating the echo area needs with_echo_area_buffer");
+            }
+        }
+    }
+
     pub fn gui_update_cursor(&mut self, f: Value, on_p: bool) {
         let root = self.frame(f).root_window;
         self.update_cursor_in_window_tree(root, on_p);
@@ -130,6 +180,8 @@ pub struct Xdisp {
     pub redisplaying_p: bool,
     pub message_stack: Value,
     pub echo_area_window: Value,
+    pub echo_area_buffer: [Value; 2],
+    pub help_echo_showing_p: bool,
 }
 
 pub fn pop_message_unwind(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {

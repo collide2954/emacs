@@ -745,7 +745,7 @@ impl Lisp {
         if tag.is_nil() {
             panic!("emacs_abort: quit_throw_to_read_char outside read_char");
         }
-        Err(self.throw(tag, Value::NIL))
+        Err(self.throw(tag, tag))
     }
 
     fn process_special_events(&mut self) {

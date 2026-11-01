@@ -11,6 +11,7 @@ use crate::timefns::{Timespec, current_timespec, timespec_sub};
 use crate::value::Value;
 
 pub mod events;
+pub mod reader;
 
 pub const UP_MODIFIER: i64 = 1;
 pub const DOWN_MODIFIER: i64 = 2;
@@ -387,6 +388,19 @@ pub struct Keyboard {
     pub button_down_time: i64,
     pub ignore_mouse_drag_p: bool,
     pub getcjmp: Value,
+    pub getcjmp_tag: Value,
+    pub this_command_keys: Value,
+    pub this_command_key_count: usize,
+    pub this_single_command_key_start: usize,
+    pub recent_keys: Value,
+    pub recent_keys_index: usize,
+    pub total_keys: usize,
+    pub lossage_limit: usize,
+    pub unread_switch_frame: Value,
+    pub input_was_pending: bool,
+    pub last_non_minibuf_size: i64,
+    pub timer_last_idleness_start_time: Option<Timespec>,
+    pub help_form_saved_window_configs: Value,
 }
 
 impl Default for Keyboard {
@@ -414,6 +428,19 @@ impl Default for Keyboard {
             button_down_time: 0,
             ignore_mouse_drag_p: false,
             getcjmp: Value::NIL,
+            getcjmp_tag: Value::NIL,
+            this_command_keys: Value::NIL,
+            this_command_key_count: 0,
+            this_single_command_key_start: 0,
+            recent_keys: Value::NIL,
+            recent_keys_index: 0,
+            total_keys: 0,
+            lossage_limit: 3 * reader::MIN_NUM_RECENT_KEYS,
+            unread_switch_frame: Value::NIL,
+            input_was_pending: false,
+            last_non_minibuf_size: 0,
+            timer_last_idleness_start_time: None,
+            help_form_saved_window_configs: Value::NIL,
         }
     }
 }
@@ -428,6 +455,11 @@ impl Keyboard {
             self.virtual_core_pointer_name,
             self.echo_message_buffer,
             self.getcjmp,
+            self.getcjmp_tag,
+            self.this_command_keys,
+            self.recent_keys,
+            self.unread_switch_frame,
+            self.help_form_saved_window_configs,
         ]);
         for event in &self.kbd_buffer {
             event.trace(out);
@@ -872,6 +904,11 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.current_kboard = lisp.initial_kboard;
     lisp.keyboard.virtual_core_pointer_name = lisp.string("Virtual core pointer");
     lisp.keyboard.virtual_core_keyboard_name = lisp.string("Virtual core keyboard");
+    let limit = lisp.keyboard.lossage_limit;
+    lisp.keyboard.recent_keys = lisp.vector(vec![Value::NIL; limit]);
+    lisp.keyboard.this_command_keys = lisp.vector(vec![Value::NIL; 40]);
+    let name = lisp.string("read-char-getcjmp");
+    lisp.keyboard.getcjmp_tag = lisp.make_symbol(name);
 }
 
 pub fn parse_modifiers_uncached(name: &[u8]) -> (i64, usize) {

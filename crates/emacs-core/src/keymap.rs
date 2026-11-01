@@ -2481,7 +2481,7 @@ fn keymap_prompt(lisp: &mut Lisp, map: Value) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_keymap_prompt(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_keymap_prompt(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     keymap_prompt(lisp, args[0])
 }
 
