@@ -7,6 +7,8 @@ use crate::value::Value;
 
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("invisible-p", 1, 1, f_invisible_p),
+    Subr::fixed("tab-bar-height", 0, 2, f_tab_bar_height),
+    Subr::fixed("tool-bar-height", 0, 2, f_tool_bar_height),
     Subr::fixed("set-buffer-redisplay", 4, 4, f_set_buffer_redisplay),
 ];
 
@@ -61,6 +63,24 @@ impl Lisp {
             self.invisible_prop(prop, spec)
         }
     }
+}
+
+fn f_tab_bar_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_any_frame(args.first().copied().unwrap_or(Value::NIL))?;
+    let w = lisp.frame(f).tab_bar_window;
+    if lisp.is_window(w) && lisp.window(w).pixel_height > 0 {
+        unreachable!("tab-bar-height needs update_tab_bar and the display iterator");
+    }
+    Ok(Value::fixnum(0))
+}
+
+fn f_tool_bar_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_any_frame(args.first().copied().unwrap_or(Value::NIL))?;
+    let w = lisp.frame(f).tool_bar_window;
+    if lisp.is_window(w) && lisp.window(w).pixel_height > 0 {
+        unreachable!("tool-bar-height needs update_tool_bar and the display iterator");
+    }
+    Ok(Value::fixnum(0))
 }
 
 fn f_invisible_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
