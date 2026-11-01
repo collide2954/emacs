@@ -179,10 +179,15 @@ impl Lisp {
 
     pub fn message3_nolog(&mut self, m: Value) -> LispResult<()> {
         let sf = self.frames.selected_frame;
-        match self.frame(sf).output_method {
-            crate::terminal::OutputMethod::Initial => self.message_to_stderr(m),
-            crate::terminal::OutputMethod::Pgtk => unreachable!(),
+        if self.frame(sf).output_method == crate::terminal::OutputMethod::Initial {
+            return self.message_to_stderr(m);
         }
+        let interactive =
+            self.plain_value(sym::EXECUTING_KBD_MACRO).is_nil() && !self.noninteractive;
+        if interactive && self.frame(sf).flags.glyphs_initialized_p {
+            unreachable!("showing a message needs echo_area_display");
+        }
+        Ok(())
     }
 
     fn errwrite(&mut self, bytes: &[u8]) {

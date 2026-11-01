@@ -36,6 +36,21 @@ fn keyboard_variables() {
 }
 
 #[test]
+fn discarding_input_ends_a_keyboard_macro() {
+    check(&[
+        ("(cancel-kbd-macro-events)", "nil"),
+        (
+            "(progn (setq unread-command-events '(1 2)) (list (discard-input) unread-command-events))",
+            "(nil nil)",
+        ),
+        (
+            "(progn (setq defining-kbd-macro t last-kbd-macro nil) (discard-input) (list defining-kbd-macro last-kbd-macro))",
+            "(nil [])",
+        ),
+    ]);
+}
+
+#[test]
 fn event_heads() {
     check(&[
         ("(get 'focus-in 'event-kind)", "focus-in"),

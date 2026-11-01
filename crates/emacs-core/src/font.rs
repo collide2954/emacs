@@ -1617,18 +1617,21 @@ fn f_internal_char_font(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (position, ch) = (args[0], args[1]);
     let c: i64;
     let f: Value;
+    let face_id: usize;
+    let pos: i64;
     if position.is_nil() {
         c = lisp.check_character(ch)? as i64;
         f = lisp.frames.selected_frame;
-        lisp.lookup_basic_face(None, f, crate::xfaces::DEFAULT_FACE_ID)?;
+        face_id = lisp.lookup_basic_face(None, f, crate::xfaces::DEFAULT_FACE_ID)?;
+        pos = -1;
     } else {
         let fixed_pos = lisp.fix_position(position)?;
         let (begv, zv) = (lisp.cur().begv as i64, lisp.cur().zv as i64);
         if !(begv..zv).contains(&fixed_pos) {
             return Err(lisp.args_out_of_range3(position, Value::fixnum(begv), Value::fixnum(zv)));
         }
-        let pos = fixed_pos as usize;
-        let pos_byte = lisp.cur().text.char_to_byte(pos);
+        pos = fixed_pos;
+        let pos_byte = lisp.cur().text.char_to_byte(pos as usize);
         c = if ch.is_nil() {
             lisp.cur().text.char_at_byte(pos_byte) as i64
         } else {
@@ -1640,18 +1643,35 @@ fn f_internal_char_font(lisp: &mut Lisp, args: &[Value]) -> LispResult {
             return Ok(Value::NIL);
         }
         f = lisp.window(window).frame;
-        lisp.face_at_buffer_position(window, pos, pos + 100, false, None, 0)?;
+        face_id = lisp
+            .face_at_buffer_position(window, pos as usize, pos as usize + 100, false, None, 0)?
+            .0;
     }
     if !(0..=crate::character::MAX_CHAR as i64).contains(&c) {
         return Ok(Value::NIL);
     }
-    match lisp.frame(f).output_method {
-        crate::terminal::OutputMethod::Initial => {
-            let t = lisp.frame(f).terminal;
-            Ok(lisp.terminal_glyph_code(t, c as u32))
-        }
-        crate::terminal::OutputMethod::Pgtk => unreachable!(),
+    if !lisp.frame_window_p(f) {
+        let t = lisp.frame(f).terminal;
+        return Ok(lisp.terminal_glyph_code(t, c as u32));
     }
+    if lisp
+        .frame(f)
+        .face_cache
+        .as_ref()
+        .is_none_or(|cache| cache.used() == 0)
+    {
+        lisp.recompute_basic_faces(f)?;
+    }
+    let face_id = lisp.face_for_char(f, face_id, c as u32, pos, Value::NIL)?;
+    let font = lisp.face_from_id(f, face_id).expect("realized face").font;
+    if font.is_nil() {
+        return Ok(Value::NIL);
+    }
+    let code = lisp.font_encode_char(font, c as i32);
+    if code == FONT_INVALID_CODE {
+        return Ok(Value::NIL);
+    }
+    Ok(lisp.cons(font, Value::fixnum(i64::from(code))))
 }
 
 fn build_style_table(lisp: &mut Lisp, entries: &[(i64, &[&str])]) -> Value {

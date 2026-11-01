@@ -75,6 +75,7 @@ pub struct FrameFlags {
     pub was_invisible: bool,
     pub horizontal_scroll_bars: bool,
     pub inhibit_clear_image_cache: bool,
+    pub glyphs_initialized_p: bool,
 }
 
 #[derive(Clone, Debug, Default)]

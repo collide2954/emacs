@@ -189,6 +189,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::filelock::SUBRS,
     crate::emacs::SUBRS,
     crate::keyboard::SUBRS,
+    crate::macros::SUBRS,
     crate::keymap::SUBRS,
     crate::syntax::SUBRS,
     crate::category::SUBRS,

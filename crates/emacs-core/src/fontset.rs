@@ -9,6 +9,7 @@ const FONTSET_NAME: usize = 1;
 const FONTSET_ASCII: usize = 2;
 const FONTSET_BASE: usize = 3;
 const FONTSET_FRAME: usize = 4;
+const FONTSET_NOFONT_FACE: usize = 5;
 const FONTSET_DEFAULT: usize = 6;
 const FONTSET_FALLBACK: usize = 7;
 
@@ -330,6 +331,426 @@ impl Lisp {
         self.fontsets.table[id] = fontset;
         self.fontsets.next_fontset_id = id + 1;
         Ok(fontset)
+    }
+
+    fn fontset_vector_set(&mut self, v: Value, i: usize, x: Value) {
+        if let crate::object::Vectorlike::Vector(items) = self.heap.vectorlike_mut(v) {
+            items[i] = x;
+        }
+    }
+
+    fn rfont_def_score(&self, rfont_def: Value) -> i64 {
+        self.vector_items(rfont_def)[3].as_fixnum().unwrap_or(0)
+    }
+
+    fn fontset_set(&mut self, fontset: Value, c: u32, elt: Value) -> LispResult<()> {
+        let c = Value::fixnum(i64::from(c));
+        crate::chartab::f_set_char_table_range(self, &[fontset, c, elt])?;
+        Ok(())
+    }
+
+    fn reorder_font_vector(&mut self, font_group: Value, font_object: Value) -> LispResult<()> {
+        let vec = self.xcdr(font_group);
+        let mut size = self.vector_items(vec).len();
+        if self.vector_items(vec)[size - 1].is_nil() {
+            size -= 1;
+        }
+        let mut score_changed = false;
+        for i in 0..size {
+            let rfont_def = self.vector_items(vec)[i];
+            if rfont_def.is_nil() {
+                continue;
+            }
+            let font_def = self.vector_items(rfont_def)[1];
+            let font_spec = self.vector_items(font_def)[0];
+            let mut score = self.rfont_def_score(rfont_def) & 0xFF;
+            let otf_spec = crate::font::f_font_get(self, &[font_spec, sym::K_OTF])?;
+            if !otf_spec.is_nil() {
+            } else if !self.font_match_p(font_spec, font_object)? {
+                let encoding = self.vector_items(font_def)[1];
+                if !encoding.is_nil() {
+                    let mut tail = self.charsets.ordered_list;
+                    while tail != self.charsets.non_preferred_head && tail.is_cons() {
+                        if encoding == self.xcar(tail) {
+                            break;
+                        } else if score
+                            <= i64::from(i32::MAX).min(crate::value::MOST_POSITIVE_FIXNUM) - 0x100
+                        {
+                            score += 0x100;
+                        }
+                        tail = self.xcdr(tail);
+                    }
+                } else {
+                    let lang = crate::font::f_font_get(self, &[font_spec, sym::K_LANG])?;
+                    let current = self.find_symbol_value(sym::CURRENT_ISO639_LANGUAGE);
+                    if !lang.is_nil()
+                        && lang != current
+                        && (!current.is_cons() || self.memq(lang, current).is_nil())
+                    {
+                        score |= 0x100;
+                    }
+                }
+            }
+            if self.rfont_def_score(rfont_def) != score {
+                self.fontset_vector_set(rfont_def, 3, Value::fixnum(score));
+                score_changed = true;
+            }
+        }
+        if score_changed {
+            let mut items = self.vector_items(vec)[..size].to_vec();
+            items.sort_by(|&v1, &v2| match (v1.is_nil(), v2.is_nil()) {
+                (true, true) => std::cmp::Ordering::Equal,
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (false, false) => self.rfont_def_score(v1).cmp(&self.rfont_def_score(v2)),
+            });
+            for (i, item) in items.into_iter().enumerate() {
+                self.fontset_vector_set(vec, i, item);
+            }
+        }
+        let low_tick_bits =
+            self.charsets.ordered_list_tick as i64 & crate::value::MOST_POSITIVE_FIXNUM;
+        self.heap.set_car(font_group, Value::fixnum(low_tick_bits));
+        Ok(())
+    }
+
+    fn fontset_get_font_group(&mut self, fontset: Value, c: i64) -> LispResult {
+        let mut font_group = if c >= 0 {
+            self.char_table_ref(fontset, c as u32)
+        } else {
+            self.fontset_extra(fontset, FONTSET_FALLBACK)
+        };
+        if !font_group.is_nil() {
+            return Ok(font_group);
+        }
+        let base_fontset = self.fontset_extra(fontset, FONTSET_BASE);
+        let (mut from, mut to) = (0, crate::character::MAX_CHAR);
+        font_group = if base_fontset.is_nil() {
+            Value::NIL
+        } else if c >= 0 {
+            self.char_table_ref_and_range(base_fontset, c as u32, &mut from, &mut to)
+        } else {
+            self.fontset_extra(base_fontset, FONTSET_FALLBACK)
+        };
+        if font_group.is_nil() {
+            font_group = Value::fixnum(0);
+            if c >= 0 {
+                self.char_table_set_range(fontset, from, to, font_group);
+            }
+            return Ok(font_group);
+        }
+        if !self.is_vector(font_group) {
+            return Ok(font_group);
+        }
+        font_group = crate::fns::f_copy_sequence(self, &[font_group])?;
+        for i in 0..self.vector_items(font_group).len() {
+            let font_def = self.vector_items(font_group)[i];
+            if !font_def.is_nil() {
+                let rfont_def = self.vector(vec![
+                    Value::NIL,
+                    font_def,
+                    Value::NIL,
+                    Value::fixnum(i as i64),
+                ]);
+                self.fontset_vector_set(font_group, i, rfont_def);
+            }
+        }
+        font_group = self.cons(Value::fixnum(-1), font_group);
+        if c >= 0 {
+            self.char_table_set_range(fontset, from, to, font_group);
+        } else {
+            self.set_fontset_extra(fontset, FONTSET_FALLBACK, font_group);
+        }
+        Ok(font_group)
+    }
+
+    fn fontset_find_font(
+        &mut self,
+        fontset: Value,
+        c: u32,
+        face: Option<usize>,
+        charset_id: i64,
+        fallback: bool,
+    ) -> LispResult {
+        let frame = self.fontset_extra(fontset, FONTSET_FRAME);
+        let f = if self.is_frame(frame) {
+            frame
+        } else {
+            self.frames.selected_frame
+        };
+        let font_group =
+            self.fontset_get_font_group(fontset, if fallback { -1 } else { i64::from(c) })?;
+        if !font_group.is_cons() {
+            return Ok(font_group);
+        }
+        let mut vec = self.xcdr(font_group);
+        if self.vector_items(vec).is_empty() {
+            return Ok(Value::NIL);
+        }
+        let face_info = |lisp: &Lisp| {
+            let face = face.expect("fontset_find_font needs a face");
+            let face = lisp.face_from_id(f, face).expect("realized face");
+            let ascii = lisp
+                .face_from_id(f, face.ascii_face)
+                .expect("realized face");
+            (face.lface, ascii.font)
+        };
+        let mut charset_matched: i64 = 0;
+        if self.vector_items(vec).len() > 1 {
+            if self.xcar(font_group).as_fixnum() != Some(self.charsets.ordered_list_tick as i64) {
+                let (_, ascii_font) = face_info(self);
+                self.reorder_font_vector(font_group, ascii_font)?;
+            }
+            if charset_id >= 0 {
+                let lcsetid = Value::fixnum(charset_id);
+                for i in 0..self.vector_items(vec).len() {
+                    let rfont_def = self.vector_items(vec)[i];
+                    if rfont_def.is_nil() {
+                        break;
+                    }
+                    let font_def = self.vector_items(rfont_def)[1];
+                    if self.vector_items(font_def)[2] == lcsetid {
+                        charset_matched = i as i64;
+                        break;
+                    }
+                }
+            }
+        }
+        let item = |lisp: &Lisp, v: Value, i: i64| lisp.vector_items(v)[i as usize];
+        let size = |lisp: &Lisp, v: Value| lisp.vector_items(v).len() as i64;
+        let mut i: i64 = 0;
+        let (found_index, rfont_def) = 'search: {
+            while i < size(self, vec) {
+                let mut found_index = i;
+                if i == 0 {
+                    if charset_matched > 0 {
+                        found_index = charset_matched;
+                        charset_matched = -charset_matched;
+                        i = -1;
+                    }
+                } else if i == -charset_matched {
+                    let rfont_def = item(self, vec, i);
+                    let font_def = item(self, rfont_def, 1);
+                    while i + 1 < size(self, vec) {
+                        let next = item(self, vec, i + 1);
+                        if next.is_nil() || item(self, next, 1) != font_def {
+                            break;
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                    continue;
+                }
+                let mut rfont_def = item(self, vec, found_index);
+                if rfont_def.is_nil() {
+                    if i < 0 {
+                        i += 1;
+                        continue;
+                    }
+                    return Ok(sym::T);
+                }
+                if item(self, rfont_def, 0)
+                    .as_fixnum()
+                    .is_some_and(|id| id < 0)
+                {
+                    i += 1;
+                    continue;
+                }
+                let mut font_object = item(self, rfont_def, 2);
+                if font_object.is_nil() {
+                    let font_def = item(self, rfont_def, 1);
+                    if face.is_none() {
+                        return Ok(Value::NIL);
+                    }
+                    let (lface, _) = face_info(self);
+                    let spec = item(self, font_def, 0);
+                    let font_entity = self.font_find_for_lface(f, &lface, spec, -1)?;
+                    if font_entity.is_nil() {
+                        self.fontset_vector_set(rfont_def, 0, Value::fixnum(-1));
+                        i += 1;
+                        continue;
+                    }
+                    font_object = self.font_open_for_lface(f, font_entity, &lface, spec)?;
+                    if font_object.is_nil() {
+                        self.fontset_vector_set(rfont_def, 0, Value::fixnum(-1));
+                        i += 1;
+                        continue;
+                    }
+                    self.fontset_vector_set(rfont_def, 2, font_object);
+                }
+                if self.font_has_char(f, font_object, c as i32) != 0 {
+                    break 'search (found_index, rfont_def);
+                }
+                let font_def = item(self, rfont_def, 1);
+                while found_index + 1 < size(self, vec) {
+                    rfont_def = item(self, vec, found_index + 1);
+                    if rfont_def.is_nil() || item(self, rfont_def, 1) != font_def {
+                        break;
+                    }
+                    font_object = item(self, rfont_def, 2);
+                    if !font_object.is_nil() && self.font_has_char(f, font_object, c as i32) != 0 {
+                        break 'search (found_index + 1, rfont_def);
+                    }
+                    found_index += 1;
+                }
+                let (lface, _) = face_info(self);
+                let spec = item(self, font_def, 0);
+                let font_entity = self.font_find_for_lface(f, &lface, spec, c as i32)?;
+                if !font_entity.is_nil() {
+                    let font_object =
+                        self.font_open_for_lface(f, font_entity, &lface, Value::NIL)?;
+                    if font_object.is_nil() {
+                        i += 1;
+                        continue;
+                    }
+                    let rfont_def =
+                        self.vector(vec![Value::NIL, font_def, font_object, Value::fixnum(0)]);
+                    let old = self.vector_items(vec).to_vec();
+                    let found_index = found_index + 1;
+                    let mut new = Vec::with_capacity(old.len() + 1);
+                    new.extend_from_slice(&old[..found_index as usize]);
+                    new.push(rfont_def);
+                    new.extend_from_slice(&old[found_index as usize..]);
+                    let new_vec = self.vector(new);
+                    self.heap.set_cdr(font_group, new_vec);
+                    vec = new_vec;
+                    break 'search (found_index, rfont_def);
+                }
+                if i >= 0 {
+                    i = found_index;
+                }
+                i += 1;
+            }
+            self.fontset_set(fontset, c, Value::fixnum(0))?;
+            return Ok(Value::NIL);
+        };
+        if fallback && found_index > 0 {
+            let mut items = self.vector_items(vec).to_vec();
+            for i in (1..=found_index as usize).rev() {
+                items[i] = items[i - 1];
+            }
+            items[0] = rfont_def;
+            for (i, x) in items.into_iter().enumerate() {
+                self.fontset_vector_set(vec, i, x);
+            }
+        }
+        Ok(rfont_def)
+    }
+
+    fn fontset_font(&mut self, fontset: Value, c: u32, face: Option<usize>, id: i64) -> LispResult {
+        let cv = Value::fixnum(i64::from(c));
+        self.font_deferred_log("current fontset: font for", cv, Value::NIL);
+        let mut rfont_def = self.fontset_find_font(fontset, c, face, id, false)?;
+        if self.is_vector(rfont_def) {
+            return Ok(rfont_def);
+        }
+        if rfont_def.is_nil() {
+            self.fontset_set(fontset, c, Value::fixnum(0))?;
+        }
+        let base_fontset = self.fontset_extra(fontset, FONTSET_BASE);
+        let default_fontset = self.fontsets.default_fontset;
+        let mut default_rfont_def = Value::NIL;
+        if base_fontset != default_fontset {
+            if self.fontset_extra(fontset, FONTSET_DEFAULT).is_nil() {
+                let frame = self.fontset_extra(fontset, FONTSET_FRAME);
+                let default = self.make_fontset(frame, Value::NIL, default_fontset)?;
+                self.set_fontset_extra(fontset, FONTSET_DEFAULT, default);
+            }
+            self.font_deferred_log("default fontset: font for", cv, Value::NIL);
+            let default = self.fontset_extra(fontset, FONTSET_DEFAULT);
+            default_rfont_def = self.fontset_find_font(default, c, face, id, false)?;
+            if self.is_vector(default_rfont_def) {
+                return Ok(default_rfont_def);
+            }
+            if default_rfont_def.is_nil() {
+                self.fontset_set(default, c, Value::fixnum(0))?;
+            }
+        }
+        if rfont_def != sym::T {
+            self.font_deferred_log("current fallback: font for", cv, Value::NIL);
+            rfont_def = self.fontset_find_font(fontset, c, face, id, true)?;
+            if self.is_vector(rfont_def) {
+                return Ok(rfont_def);
+            }
+            self.fontset_set(fontset, c, sym::T)?;
+        }
+        if base_fontset != default_fontset && default_rfont_def != sym::T {
+            self.font_deferred_log("default fallback: font for", cv, Value::NIL);
+            let default = self.fontset_extra(fontset, FONTSET_DEFAULT);
+            rfont_def = self.fontset_find_font(default, c, face, id, true)?;
+            if self.is_vector(rfont_def) {
+                return Ok(rfont_def);
+            }
+            self.fontset_set(default, c, sym::T)?;
+        }
+        Ok(Value::NIL)
+    }
+
+    fn fontset_charset_id(&mut self, pos: i64, object: Value) -> LispResult<i64> {
+        if pos < 0 {
+            return Ok(-1);
+        }
+        let mut charset = self.get_char_property(Value::fixnum(pos), sym::CHARSET, object)?;
+        if !self.charsetp(charset) {
+            return Ok(-1);
+        }
+        let alist = self.find_symbol_value(sym::FONT_ENCODING_CHARSET_ALIST);
+        let val = self.assq(charset, alist);
+        if val.is_cons() && self.charsetp(self.xcdr(val)) {
+            charset = self.xcdr(val);
+        }
+        Ok(i64::from(self.check_charset_get_id(charset)?))
+    }
+
+    pub fn face_for_char(
+        &mut self,
+        f: Value,
+        face_id: usize,
+        c: u32,
+        pos: i64,
+        object: Value,
+    ) -> LispResult<usize> {
+        let face = self.face_from_id(f, face_id).expect("realized face");
+        let (ascii_face, fontset_id, font) = (face.ascii_face, face.fontset, face.font);
+        if !(0x80..=crate::character::MAX_5_BYTE_CHAR).contains(&c) {
+            return Ok(ascii_face);
+        }
+        if !self.plain_value(sym::USE_DEFAULT_FONT_FOR_SYMBOLS).is_nil() && c > 0 {
+            let table = self.find_symbol_value(sym::CHAR_SCRIPT_TABLE);
+            if self.char_table_ref(table, c) == sym::SYMBOL {
+                let ascii_font = self
+                    .face_from_id(f, ascii_face)
+                    .expect("realized face")
+                    .font;
+                if !ascii_font.is_nil() && self.font_has_char(f, ascii_font, c as i32) != 0 {
+                    return Ok(ascii_face);
+                }
+            }
+        }
+        if fontset_id < 0 && font.is_nil() {
+            return Ok(face_id);
+        }
+        let fontset = self.fontsets.table[fontset_id as usize];
+        let id = self.fontset_charset_id(pos, object)?;
+        let rfont_def = self.fontset_font(fontset, c, Some(face_id), id)?;
+        if self.is_vector(rfont_def) {
+            let rfont_face = self.vector_items(rfont_def)[0];
+            if let Some(id) = rfont_face.as_fixnum() {
+                return Ok(id as usize);
+            }
+            let font_object = self.vector_items(rfont_def)[2];
+            let id = self.face_for_font(f, font_object, face_id)?;
+            self.fontset_vector_set(rfont_def, 0, Value::fixnum(id as i64));
+            Ok(id)
+        } else {
+            let nofont = self.fontset_extra(fontset, FONTSET_NOFONT_FACE);
+            if let Some(id) = nofont.as_fixnum() {
+                return Ok(id as usize);
+            }
+            let id = self.face_for_font(f, Value::NIL, face_id)?;
+            self.set_fontset_extra(fontset, FONTSET_NOFONT_FACE, Value::fixnum(id as i64));
+            Ok(id)
+        }
     }
 
     pub fn make_fontset_for_ascii_face(

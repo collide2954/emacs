@@ -69,6 +69,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("set-quit-char", 1, 1, f_set_quit_char),
     Subr::fixed("set-input-mode", 3, 4, f_set_input_mode),
     Subr::fixed("current-input-mode", 0, 0, f_current_input_mode),
+    Subr::fixed("discard-input", 0, 0, f_discard_input),
     Subr::fixed(
         "command-error-default-function",
         3,
@@ -168,6 +169,16 @@ impl Lisp {
     }
 }
 
+fn f_discard_input(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    if !lisp.kvar(Kvar::DefiningKbdMacro).is_nil() {
+        crate::macros::f_cancel_kbd_macro_events(lisp, &[])?;
+        lisp.end_kbd_macro();
+    }
+    lisp.set_plain_value(sym::UNREAD_COMMAND_EVENTS, Value::NIL);
+    lisp.keyboard.input_pending = false;
+    Ok(Value::NIL)
+}
+
 fn f_command_error_default_function(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (data, context, signal) = (args[0], args[1], args[2]);
     let sf = lisp.frames.selected_frame;
@@ -177,7 +188,8 @@ fn f_command_error_default_function(lisp: &mut Lisp, args: &[Value]) -> LispResu
     lisp.check_string(context)?;
     let context = lisp.string_to_rust(context);
     let initial = lisp.frame(sf).output_method == OutputMethod::Initial;
-    if !is_minibuffer_quit && (initial || lisp.noninteractive) {
+    let glyphs_initialized_p = lisp.frame(sf).flags.glyphs_initialized_p;
+    if !is_minibuffer_quit && (!glyphs_initialized_p || initial || lisp.noninteractive) {
         lisp.print_error_message(data, sym::EXTERNAL_DEBUGGING_OUTPUT, Some(&context), signal)?;
         crate::print::f_terpri(lisp, &[sym::EXTERNAL_DEBUGGING_OUTPUT, Value::NIL])?;
         crate::emacs::f_kill_emacs(lisp, &[Value::fixnum(-1), Value::NIL])?;
@@ -187,7 +199,8 @@ fn f_command_error_default_function(lisp: &mut Lisp, args: &[Value]) -> LispResu
         if is_minibuffer_quit {
             crate::dispnew::f_ding(lisp, &[sym::T])?;
         } else {
-            unreachable!("no window frames exist yet");
+            f_discard_input(lisp, &[])?;
+            lisp.bitch_at_user()?;
         }
         lisp.print_error_message(data, sym::T, Some(&context), signal)?;
     }
@@ -225,6 +238,8 @@ pub struct Kboard {
     pub kbd_queue_has_data: bool,
     pub immediate_echo: bool,
     pub kbd_macro_buffer: Vec<Value>,
+    pub kbd_macro_ptr: usize,
+    pub kbd_macro_end: usize,
     pub deleted: bool,
 }
 
@@ -253,6 +268,8 @@ impl Lisp {
             kbd_queue_has_data: false,
             immediate_echo: false,
             kbd_macro_buffer: Vec::new(),
+            kbd_macro_ptr: 0,
+            kbd_macro_end: 0,
             deleted: false,
         };
         kb.vars[Kvar::WindowSystem as usize] = window_system;

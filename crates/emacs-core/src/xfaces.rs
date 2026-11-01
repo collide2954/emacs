@@ -1796,6 +1796,64 @@ impl Lisp {
         }
     }
 
+    pub fn face_for_font(
+        &mut self,
+        f: Value,
+        font_object: Value,
+        base_face: usize,
+    ) -> LispResult<usize> {
+        let base_face = self
+            .face_from_id(f, base_face)
+            .expect("realized face")
+            .ascii_face;
+        let base_lface = self
+            .face_from_id(f, base_face)
+            .expect("realized face")
+            .lface;
+        let hash = lface_hash(self, &base_lface);
+        let i = (hash % FACE_CACHE_BUCKETS_SIZE as u64) as usize;
+        let bucket = self.face_cache_mut(f).buckets[i].clone();
+        for id in bucket {
+            let face = self.face_from_id(f, id).expect("realized face");
+            if face.ascii_face == face.id {
+                continue;
+            }
+            let lface = face.lface;
+            if face.ascii_face == base_face
+                && face.font == font_object
+                && lface_equal_p(self, &lface, &base_lface)?
+            {
+                return Ok(id);
+            }
+        }
+        self.realize_non_ascii_face(f, font_object, base_face)
+    }
+
+    fn realize_non_ascii_face(
+        &mut self,
+        f: Value,
+        font_object: Value,
+        base_face: usize,
+    ) -> LispResult<usize> {
+        let mut face = self
+            .face_from_id(f, base_face)
+            .expect("realized face")
+            .clone();
+        face.gc = None;
+        face.overstrike = !font_object.is_nil()
+            && self.font_weight_name_numeric(face.lface[LFACE_WEIGHT_INDEX])? > 100
+            && self
+                .font_aref(font_object, crate::font::FONT_WEIGHT_INDEX)
+                .as_fixnum()
+                .map_or(-1, |weight| weight >> 8)
+                <= 100;
+        face.colors_copied_bitwise_p = true;
+        face.font = font_object;
+        face.gc = None;
+        let hash = face.hash;
+        Ok(self.face_cache_mut(f).cache_face(face, hash))
+    }
+
     fn face_mut(&mut self, f: Value, id: usize) -> &mut Face {
         self.face_cache_mut(f).faces_by_id[id]
             .as_deref_mut()
