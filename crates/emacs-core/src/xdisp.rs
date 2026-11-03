@@ -10,7 +10,191 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("tab-bar-height", 0, 2, f_tab_bar_height),
     Subr::fixed("tool-bar-height", 0, 2, f_tool_bar_height),
     Subr::fixed("set-buffer-redisplay", 4, 4, f_set_buffer_redisplay),
+    Subr::fixed(
+        "current-bidi-paragraph-direction",
+        0,
+        1,
+        f_current_bidi_paragraph_direction,
+    ),
+    Subr::fixed(
+        "bidi-find-overridden-directionality",
+        3,
+        4,
+        f_bidi_find_overridden_directionality,
+    ),
 ];
+
+fn f_current_bidi_paragraph_direction(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let buffer = args.first().copied().unwrap_or(Value::NIL);
+    let old = lisp.current_buffer;
+    let buf = if buffer.is_nil() {
+        old
+    } else {
+        lisp.check_buffer(buffer)?
+    };
+    let local = |lisp: &Lisp, symbol| lisp.buffer_local_value(symbol, buf);
+    if local(lisp, sym::BIDI_DISPLAY_REORDERING).is_nil()
+        || local(lisp, sym::ENABLE_MULTIBYTE_CHARACTERS).is_nil()
+        || lisp.var_true(sym::REDISPLAY__INHIBIT_BIDI)
+    {
+        return Ok(sym::LEFT_TO_RIGHT);
+    }
+    let direction = local(lisp, sym::BIDI_PARAGRAPH_DIRECTION);
+    if !direction.is_nil() {
+        return Ok(direction);
+    }
+    let mut pos = lisp.buffer(buf).pt as i64;
+    let mut bytepos = lisp.buffer(buf).pt_byte as i64;
+    let itb_data = lisp.bidi_shelve_cache();
+    lisp.set_buffer_internal(buf);
+    {
+        let (begv, zv) = (lisp.cur().begv as i64, lisp.cur().zv as i64);
+        if pos >= zv && pos > begv {
+            pos -= 1;
+            let text = &lisp.cur().text;
+            bytepos -= 1;
+            while text.multibyte && text.byte_at(bytepos as usize) & 0xC0 == 0x80 {
+                bytepos -= 1;
+            }
+        }
+        let trailing_white_space = lisp.string("[\x0c\t ]*\n");
+        if lisp.fast_looking_at(trailing_white_space, pos as usize, zv as usize, Value::NIL)? > 0 {
+            let begv_byte = lisp.cur().begv_byte as i64;
+            loop {
+                let c = lisp.cur().text.byte_at(bytepos as usize);
+                if !(c == b'\n' || c == b' ' || c == b'\t' || c == 0x0c) {
+                    break;
+                }
+                if bytepos <= begv_byte {
+                    break;
+                }
+                bytepos -= 1;
+                pos -= 1;
+            }
+            while lisp.cur().text.byte_at(bytepos as usize) & 0xC0 == 0x80 {
+                bytepos -= 1;
+            }
+        }
+        let mut itb = crate::bidi::BidiIt::default();
+        let frame_window_p = lisp.frame_window_p(lisp.frames.selected_frame);
+        lisp.bidi_init_it(pos, bytepos, frame_window_p, &mut itb)?;
+        itb.paragraph_dir = crate::bidi::BidiDir::NeutralDir;
+        itb.string = crate::bidi::BidiStringData::default();
+        itb.w = Value::NIL;
+        lisp.bidi_paragraph_init(crate::bidi::BidiDir::NeutralDir, &mut itb, true)?;
+        lisp.bidi_unshelve_cache(itb_data, false);
+        lisp.set_buffer_internal(old);
+        match itb.paragraph_dir {
+            crate::bidi::BidiDir::L2R => Ok(sym::LEFT_TO_RIGHT),
+            crate::bidi::BidiDir::R2L => Ok(sym::RIGHT_TO_LEFT),
+            crate::bidi::BidiDir::NeutralDir => std::process::abort(),
+        }
+    }
+}
+
+fn f_bidi_find_overridden_directionality(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    use crate::bidi::{BidiDir, BidiIt, BidiStringData};
+    let (from, to, object) = (args[0], args[1], args[2]);
+    let base_dir = args.get(3).copied().unwrap_or(Value::NIL);
+    let old = lisp.current_buffer;
+    let mut buf = old;
+    let mut w = Value::NIL;
+    let mut frame_window_p = lisp.frame_window_p(lisp.frames.selected_frame);
+    if !object.is_nil() {
+        if lisp.is_buffer(object) {
+            buf = object;
+        } else if lisp.is_window(object) {
+            w = lisp.decode_live_window(object)?;
+            buf = lisp.window(w).contents;
+            frame_window_p = lisp.frame_window_p(lisp.window(w).frame);
+        } else {
+            lisp.check_string(object)?;
+        }
+    }
+    let mut itb = BidiIt::default();
+    let (from_pos, to_pos);
+    let itb_data;
+    if object.is_string() {
+        if !lisp.string_multibyte(object) || lisp.var_true(sym::REDISPLAY__INHIBIT_BIDI) {
+            return Ok(Value::NIL);
+        }
+        let schars = lisp.string_chars(object);
+        let (f, t) = lisp.validate_subarray(object, from, to, schars)?;
+        if f >= schars {
+            return Ok(Value::NIL);
+        }
+        (from_pos, to_pos) = (f as i64, t as i64);
+        itb_data = lisp.bidi_shelve_cache();
+        itb.paragraph_dir = BidiDir::NeutralDir;
+        itb.string = BidiStringData {
+            lstring: object,
+            schars: schars as i64,
+            ..BidiStringData::default()
+        };
+        itb.w = w;
+        lisp.bidi_init_it(0, 0, frame_window_p, &mut itb)?;
+    } else {
+        if lisp
+            .buffer_local_value(sym::BIDI_DISPLAY_REORDERING, buf)
+            .is_nil()
+            || lisp
+                .buffer_local_value(sym::ENABLE_MULTIBYTE_CHARACTERS, buf)
+                .is_nil()
+            || lisp.var_true(sym::REDISPLAY__INHIBIT_BIDI)
+        {
+            return Ok(Value::NIL);
+        }
+        lisp.set_buffer_internal(buf);
+        let (f, t) = lisp.validate_region(from, to)?;
+        (from_pos, to_pos) = (f as i64, t as i64);
+        if from_pos >= lisp.cur().zv as i64 {
+            return Ok(Value::NIL);
+        }
+        itb_data = lisp.bidi_shelve_cache();
+        let from_bpos = lisp.cur().text.char_to_byte(from_pos as usize) as i64;
+        if from_pos == lisp.cur().begv as i64 {
+            itb.charpos = lisp.cur().begv as i64;
+            itb.bytepos = lisp.cur().begv_byte as i64;
+        } else if lisp.cur().text.byte_at(from_bpos as usize - 1) == b'\n' {
+            itb.charpos = from_pos;
+            itb.bytepos = from_bpos;
+        } else {
+            let begv = lisp.cur().begv;
+            let charpos = lisp.find_newline(from_pos as usize, begv, -1).0;
+            itb.charpos = charpos as i64;
+            itb.bytepos = lisp.cur().text.char_to_byte(charpos) as i64;
+        }
+        itb.paragraph_dir = BidiDir::NeutralDir;
+        itb.string = BidiStringData::default();
+        itb.w = w;
+        let (charpos, bytepos) = (itb.charpos, itb.bytepos);
+        lisp.bidi_init_it(charpos, bytepos, frame_window_p, &mut itb)?;
+    }
+    let bdir = if base_dir == sym::RIGHT_TO_LEFT {
+        BidiDir::R2L
+    } else {
+        BidiDir::L2R
+    };
+    let found = loop {
+        lisp.bidi_paragraph_init(bdir, &mut itb, false)?;
+        let found = loop {
+            let found = lisp.bidi_find_first_overridden(&mut itb)?;
+            if found >= from_pos {
+                break found;
+            }
+        };
+        if !(found == lisp.cur().zv as i64 && itb.ch == 10 && itb.charpos < to_pos) {
+            break found;
+        }
+    };
+    lisp.bidi_unshelve_cache(itb_data, false);
+    lisp.set_buffer_internal(old);
+    Ok(if from_pos <= found && found < to_pos {
+        Value::fixnum(found)
+    } else {
+        Value::NIL
+    })
+}
 
 fn f_set_buffer_redisplay(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let b = lisp.current_buffer;
@@ -1163,6 +1347,146 @@ impl Lisp {
             unreachable!("valid_image_p needs image.c's image types");
         }
         false
+    }
+
+    pub fn compute_display_string_pos(
+        &mut self,
+        (charpos, bytepos): (i64, i64),
+        string: &crate::bidi::BidiStringData,
+        w: Value,
+        frame_window_p: bool,
+        disp_prop: &mut i32,
+    ) -> LispResult<i64> {
+        const MAX_DISP_SCAN: i64 = 250;
+        let string_p = string.lstring.is_string() || string.s.is_some();
+        let eob = if string_p {
+            string.schars
+        } else {
+            self.cur().zv as i64
+        };
+        let begb = if string_p { 0 } else { self.cur().begv as i64 };
+        let lim = if charpos < eob - MAX_DISP_SCAN {
+            charpos + MAX_DISP_SCAN
+        } else {
+            eob
+        };
+        let (object, object1) = if string.lstring.is_string() {
+            (string.lstring, string.lstring)
+        } else if !w.is_nil() && !string_p {
+            (w, Value::NIL)
+        } else {
+            (Value::NIL, Value::NIL)
+        };
+        *disp_prop = 1;
+        if charpos >= eob || string.from_disp_str || (string.s.is_some() && !object.is_string()) {
+            *disp_prop = 0;
+            return Ok(eob);
+        }
+        let mut pos = Value::fixnum(charpos);
+        let mut bufpos = if object.is_string() {
+            string.bufpos
+        } else {
+            charpos
+        };
+        let mut tpos = (charpos, bytepos);
+        let ctx = |position: i64, bufpos: i64| DisplaySpecContext {
+            object: object1,
+            position: position as usize,
+            bufpos: bufpos as usize,
+            frame_window_p,
+            enable_eval: true,
+        };
+        let (spec, overlay) = self.get_char_property_and_overlay(pos, sym::DISPLAY, object)?;
+        if !spec.is_nil() {
+            let differs = charpos <= begb || {
+                let before = Value::fixnum(charpos - 1);
+                let (spec1, ov1) =
+                    self.get_char_property_and_overlay(before, sym::DISPLAY, object)?;
+                spec1 != spec || overlay != ov1
+            };
+            if differs {
+                let rv = self.handle_display_spec_without_iterator(spec, ctx(tpos.0, bufpos))?;
+                if rv != 0 {
+                    if rv == 2 {
+                        *disp_prop = 2;
+                    }
+                    return Ok(charpos);
+                }
+            }
+        }
+        let limpos = Value::fixnum(lim);
+        let mut rv;
+        loop {
+            pos = crate::textprop::f_next_single_char_property_change(
+                self,
+                &[pos, sym::DISPLAY, object1, limpos],
+            )?;
+            tpos.0 = pos.as_fixnum().unwrap_or(0);
+            if tpos.0 >= lim {
+                *disp_prop = 0;
+                rv = 0;
+                break;
+            }
+            tpos.1 = if object.is_string() {
+                self.string_char_to_byte_index(object, tpos.0 as usize) as i64
+            } else {
+                self.cur().text.char_to_byte(tpos.0 as usize) as i64
+            };
+            let (spec, _overlay) = self.get_char_property_and_overlay(pos, sym::DISPLAY, object)?;
+            if !object.is_string() {
+                bufpos = tpos.0;
+            }
+            if spec.is_nil() {
+                continue;
+            }
+            rv = self.handle_display_spec_without_iterator(spec, ctx(tpos.0, bufpos))?;
+            if rv != 0 {
+                break;
+            }
+        }
+        if rv == 2 {
+            *disp_prop = 2;
+        }
+        Ok(tpos.0)
+    }
+
+    pub fn compute_display_string_end(
+        &mut self,
+        charpos: i64,
+        string: &crate::bidi::BidiStringData,
+        w: Value,
+    ) -> LispResult<i64> {
+        let mut object = if string.lstring.is_string() {
+            string.lstring
+        } else if self.is_window(w) {
+            w
+        } else {
+            Value::NIL
+        };
+        let pos = Value::fixnum(charpos);
+        let eob = if object.is_string() || string.s.is_some() {
+            string.schars
+        } else {
+            self.cur().zv as i64
+        };
+        if charpos >= eob || (string.s.is_some() && !object.is_string()) {
+            return Ok(eob);
+        }
+        let (spec, overlay) = self.get_char_property_and_overlay(pos, sym::DISPLAY, object)?;
+        if spec.is_nil() {
+            return Ok(-1);
+        }
+        if self.is_overlay(overlay) {
+            return Ok(self.overlay(overlay).end as i64);
+        }
+        if self.is_window(object) {
+            object = self.window(w).contents;
+        }
+        let pos = crate::textprop::f_next_single_char_property_change(
+            self,
+            &[pos, sym::DISPLAY, object, Value::NIL],
+        )?;
+        Ok(pos.as_fixnum().unwrap_or(0))
     }
 
     pub fn display_prop_intangible_p(&mut self, prop: Value, charpos: usize) -> LispResult<bool> {

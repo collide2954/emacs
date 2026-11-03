@@ -149,6 +149,7 @@ pub struct Lisp {
     pub fonts: crate::font::Fonts,
     pub fontsets: crate::fontset::Fontsets,
     pub xdisp: crate::xdisp::Xdisp,
+    pub bidi: crate::bidi::Bidi,
     pub keyboard: crate::keyboard::Keyboard,
     pub atimer: crate::atimer::Atimers,
     pub random: crate::sysdep::Random,
@@ -370,6 +371,7 @@ impl Lisp {
             fonts: crate::font::Fonts::default(),
             fontsets: crate::fontset::Fontsets::default(),
             xdisp: crate::xdisp::Xdisp::default(),
+            bidi: crate::bidi::Bidi::default(),
             keyboard: crate::keyboard::Keyboard::default(),
             atimer: crate::atimer::Atimers::default(),
             random: crate::sysdep::Random::default(),
@@ -1145,6 +1147,7 @@ impl Lisp {
         roots.push(self.xdisp.echo_area_window);
         roots.extend_from_slice(&self.xdisp.echo_area_buffer);
         roots.push(self.xdisp.redisplay_ticks_window);
+        self.bidi.roots(&mut roots);
         self.keyboard.roots(&mut roots);
         roots.push(self.fileio.annotation_buffers);
         for kboard in &self.kboards {
