@@ -196,7 +196,7 @@ fn f_command_error_default_function(lisp: &mut Lisp, args: &[Value]) -> LispResu
         crate::print::f_terpri(lisp, &[sym::EXTERNAL_DEBUGGING_OUTPUT, Value::NIL])?;
         crate::emacs::f_kill_emacs(lisp, &[Value::fixnum(-1), Value::NIL])?;
     } else {
-        lisp.clear_message(true)?;
+        lisp.clear_message(true, false)?;
         lisp.message_log_maybe_newline()?;
         if is_minibuffer_quit {
             crate::dispnew::f_ding(lisp, &[sym::T])?;

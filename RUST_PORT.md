@@ -125,11 +125,11 @@ Ported but not yet complete (C kept):
 | `terminal.c` | `terminal.rs` | nothing; `delete_terminal_internal` leaves the coding systems to be dropped with the terminal object |
 | `frame.c` | `frame.rs` | in `delete_frame`, the pgtk selection clearing and event swallowing (there are no selections or event queue yet) and `free_glyphs` (there are no glyph matrices, so `glyphs_initialized_p` stays false and, as in C, messages on a window frame are only logged and errors go to standard error); `do_switch_frame` does not resize the old frame's mini-window or redirect focus; of the window-system parameter code (`gui_display_get_arg`, `gui_default_parameter`, `gui_set_frame_parameters`, `frame_float` and the generic `gui_set_*` handlers, dispatched through the terminal's `frame_parm_handlers`), the divider-width and `scroll-bar-width` handlers (they need glyph matrices; `gui_set_font` and `gui_set_font_backend` are ported, minus the image-cache rescaling, as there are no images yet); `adjust_frame_size` is ported but stops with `unreachable!` where it would call a window system's size hook or resize child frames, which don't exist yet |
 | `window.c` | `window.rs` | splitting, resizing (`resize_frame_windows` handles only a leaf root window, the only kind the port can make), `window-list`; window configurations (`current-window-configuration`, `set-window-configuration`, `window-configuration-equal-p` and the dead-windows table) follow C, as do `set-window-fringes`, `set-window-scroll-bars`, `set-window-margins`, `window-scroll-bars`, `set-window-start`, `set-window-point` and the mode/header/tab line, divider and scroll bar size DEFUNs (without glyph matrices, line heights always come from `estimate_mode_line_height`; horizontal scroll bars don't exist, as in C without toolkit scroll bars) |
-| `minibuf.c` | `minibuf.rs` | interactive reading (`read_minibuf`'s interactive path still signals an error, although the command loop and `recursive_edit_1` it needs are ported); `move_minibuffers_onto_frame` and `zip_minibuffer_stacks` are ported |
+| `minibuf.c` | `minibuf.rs` | `cancel_hourglass` on entry (the hourglass isn't ported, so it would do nothing); interactive reading (`read_minibuf` with `read_minibuf_unwind`, `minibuffer_unwind` and `run_exit_minibuf_hook`), recursive minibuffers, `move_minibuffers_onto_frame` and `zip_minibuffer_stacks` are ported. On exit, `resize_mini_window` only resets the window start while the frame has no glyph matrices (see `xdisp.c`), and the cursor update after the recursive edit does nothing until `update_frame` exists |
 | `font.c` | `font.rs` | `font-face-attributes`, `font-shape-gstring`, `font-variation-glyphs`, `font-get-glyphs`, `font-at`, `font_range`, the OTF DEFUNs; `font_put_frame_data` (unused with cairo); the driver layer (`struct font_driver` as `FontDriver`, per-frame driver lists, font caches, listing, sorting, matching, opening, `font_load_for_lface`, `font_open_by_name`, the font log) and its DEFUNs are ported |
 | `fontset.c` | `fontset.rs` | `fontset-info` and `font_for_char`; the realized-fontset lookup (`fontset_get_font_group`, `reorder_font_vector`, `fontset_find_font`, `fontset_font`, `face_for_char`) is ported, sorting font groups stably where C calls `qsort`; `map_charset_chars` takes a Rust callback (`CharsetMapFunction::Rust`) where C passes a C function |
 | `xfaces.c` | `xfaces.rs` | tty face realization, stipples (there are no bitmaps yet), `face-font`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource`; `face_at_buffer_position` and GUI face realization (`realize_gui_face`, the default face from the frame font, colors, boxes, underlines, `prepare_face_for_display`, freeing faces and their fontsets, `realize_non_ascii_face`, `face_for_font`) are ported |
-| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path, the message stack (`push_message`, `restore_message`), `invisible-p`, and `tab-bar-height`/`tool-bar-height`, which stop with `unreachable!` once a frame has a tab or tool bar window (none can be made yet) |
+| `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path, the message stack (`push_message`, `restore_message`), `invisible-p`, `window_box_height`, and `tab-bar-height`/`tool-bar-height`, which stop with `unreachable!` once a frame has a tab or tool bar window (none can be made yet). `resize_mini_window` is ported up to the display iterator: on a frame without glyph matrices it returns without resizing (nothing has been displayed, so the mini-window never grew), and stops with `unreachable!` once a frame has them |
 | `composite.c` | `composite.rs` | shaping on window-system frames |
 
 Window-system frames don't exist yet, so the face, font and composition code stops with
@@ -139,7 +139,9 @@ which gets plain realized faces as in C.
 `doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables,
 `frame-or-buffer-changed-p`, `ding`, `internal-show-cursor(-p)`, `sleep-for`, `sit_for`
 (which never redisplays, as there is no redisplay yet) and `redraw-frame` (which marks the
-frame and its windows for redisplay but has no glyph matrices or terminal hooks to clear).
+frame and its windows for redisplay but has no glyph matrices or terminal hooks to clear);
+`update_frame` does nothing on a frame without glyph matrices and stops with `unreachable!`
+once a frame has them.
 `w32fns.rs` defines `w32-ansi-code-page` and `w32-multibyte-code-page` on Windows.
 `filelock.rs` ports `filelock.c` (locks are symlinks on unix and nonce-renamed regular files
 on Windows, as in C), with gnulib's `get_boot_time` as `boot_time.rs`. Whether a lock's owner
@@ -325,11 +327,12 @@ terminal frame and its terminal, sets up faces and fonts (non-ASCII characters g
 through the realized fontsets) and then enters the command loop. Key and focus events from
 iced go through pgtk's `read_socket` into the event queue, `read_key_sequence` looks them up
 and commands run through `command-execute` and `call-interactively`; timers run while Emacs
-waits for input. Nothing is drawn yet, so typing can only be observed from Lisp (a timer that
-prints the buffer, for instance); an error still ends the session, because
-`command-error-default-function` prints to standard error and kills Emacs while the frame has
-no glyph matrices, and minibuffer input is not ported.
+waits for input. The minibuffer works too: `read-string` and `M-x` (with `completing-read`)
+read typed input and record history. Nothing is drawn yet, so typing can only be observed
+from Lisp (a timer that prints the buffer, for instance); an error still ends the session,
+because `command-error-default-function` prints to standard error and kills Emacs while the
+frame has no glyph matrices.
 
-Next: interactive minibuffer reading (`read_minibuf`), then redisplay (glyph matrices,
-`adjust_frame_glyphs`, the display iterator and `echo_area_display`), which also brings map
-events and frame visibility.
+Next: redisplay (glyph matrices, `adjust_frame_glyphs`, the display iterator and
+`echo_area_display`), which also brings map events and frame visibility; with the iterator,
+`resize_mini_window` and `update_frame` lose their glyph-less shortcuts.

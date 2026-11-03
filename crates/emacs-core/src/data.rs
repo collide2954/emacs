@@ -1421,12 +1421,12 @@ fn f_indirect_variable(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(args[0])
 }
 
-fn f_symbol_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_symbol_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let symbol = lisp.check_symbol(args[0])?;
     lisp.symbol_value(symbol)
 }
 
-fn f_set(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_set(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.set(args[0], args[1])?;
     Ok(args[1])
 }

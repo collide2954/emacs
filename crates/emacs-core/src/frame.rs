@@ -887,7 +887,7 @@ impl Lisp {
     }
 }
 
-fn f_make_frame_visible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_make_frame_visible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(arg(args, 0))?;
     if lisp.frame_window_p(f)
         && let Some(hook) = lisp.frame_terminal_hooks(f).frame_visible_invisible
@@ -902,7 +902,7 @@ fn f_make_frame_visible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(f)
 }
 
-fn f_make_frame_invisible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_make_frame_invisible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(arg(args, 0))?;
     if arg(args, 1).is_nil() && !lisp.other_frames(f, true, false) {
         return Err(lisp.error("Attempt to make invisible the sole visible or iconified frame"));
@@ -919,7 +919,7 @@ fn f_make_frame_invisible(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_iconify_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_iconify_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let frame = arg(args, 0);
     let f = lisp.decode_live_frame(frame)?;
     if !lisp.frame_parent_frame(f).is_nil() {
@@ -941,7 +941,7 @@ fn f_iconify_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_raise_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_raise_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(arg(args, 0))?;
     f_make_frame_visible(lisp, &[f])?;
     if let Some(hook) = lisp.frame_terminal_hooks(f).frame_raise_lower {
@@ -2618,7 +2618,7 @@ fn f_last_nonminibuffer_frame(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(if lisp.frame_live_p(f) { f } else { Value::NIL })
 }
 
-fn f_delete_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_delete_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let force = if arg(args, 1).is_nil() {
         Value::NIL
     } else {

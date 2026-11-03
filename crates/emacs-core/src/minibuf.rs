@@ -13,6 +13,8 @@ pub struct Minibuf {
     pub command_loop_level: i64,
     pub mb_frame: Value,
     pub last_minibuf_string: Value,
+    pub minibuf_prompt_width: i64,
+    pub exp_mb_frame: Value,
 }
 
 impl Default for Minibuf {
@@ -26,6 +28,8 @@ impl Default for Minibuf {
             command_loop_level: 0,
             mb_frame: Value::NIL,
             last_minibuf_string: Value::NIL,
+            minibuf_prompt_width: 0,
+            exp_mb_frame: Value::NIL,
         }
     }
 }
@@ -39,6 +43,7 @@ impl Minibuf {
             self.minibuf_save_list,
             self.mb_frame,
             self.last_minibuf_string,
+            self.exp_mb_frame,
         ]);
     }
 }
@@ -199,6 +204,22 @@ impl Lisp {
         let value =
             crate::eval::f_default_toplevel_value(self, &[sym::MINIBUFFER_FOLLOWS_SELECTED_FRAME])?;
         Ok(value == sym::T)
+    }
+
+    fn minibuf_moves_frame_when_opened(&mut self) -> LispResult<bool> {
+        let value =
+            crate::eval::f_default_toplevel_value(self, &[sym::MINIBUFFER_FOLLOWS_SELECTED_FRAME])?;
+        Ok(!value.is_nil())
+    }
+
+    fn choose_minibuf_frame(&mut self) {
+        let sf = self.frames.selected_frame;
+        if self.is_frame(sf) && self.frame_live_p(sf) {
+            let mw = self.frame(sf).minibuffer_window;
+            if self.window_live_p(mw) && self.windows.minibuf_window != mw {
+                self.windows.minibuf_window = mw;
+            }
+        }
     }
 
     fn zip_minibuffer_stacks(
@@ -464,47 +485,41 @@ impl Lisp {
         Ok(val)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn read_minibuf(
-        &mut self,
-        map: Value,
-        initial: Value,
-        prompt: Value,
-        expflag: bool,
-        histvar: Value,
-        histpos: Value,
-        defalt: Value,
-        allow_props: bool,
-        inherit_input_method: bool,
-    ) -> LispResult {
+    fn read_minibuf(&mut self, req: MinibufRequest) -> LispResult {
         let count = self.specpdl.len();
-        let r = self.read_minibuf_1(
-            map,
+        let base = self.stack.len();
+        let calling_frame = self.frames.selected_frame;
+        let calling_window = self.windows.selected_window;
+        self.stack.extend_from_slice(&[
+            req.map,
+            req.initial,
+            req.prompt,
+            req.histvar,
+            req.histpos,
+            req.defalt,
+            calling_frame,
+            calling_window,
+        ]);
+        let r = self.read_minibuf_1(count, req, calling_frame, calling_window);
+        let r = self.unbind_to_value(count, r);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn read_minibuf_1(
+        &mut self,
+        count: usize,
+        req: MinibufRequest,
+        calling_frame: Value,
+        calling_window: Value,
+    ) -> LispResult {
+        let MinibufRequest {
             initial,
             prompt,
             expflag,
-            histvar,
-            histpos,
             defalt,
-            allow_props,
-            inherit_input_method,
-        );
-        self.unbind_to_value(count, r)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn read_minibuf_1(
-        &mut self,
-        map: Value,
-        initial: Value,
-        prompt: Value,
-        expflag: bool,
-        histvar: Value,
-        histpos: Value,
-        defalt: Value,
-        allow_props: bool,
-        inherit_input_method: bool,
-    ) -> LispResult {
+            ..
+        } = req;
         self.specbind(sym::MINIBUFFER_DEFAULT, defalt)?;
         self.specbind(sym::INHIBIT_READ_ONLY, Value::NIL)?;
         let this_command = self.plain_value(sym::THIS_COMMAND);
@@ -530,6 +545,8 @@ impl Lisp {
                 self.check_string(initial)?;
             }
         }
+        let ambient_dir = self.plain_value(sym::DEFAULT_DIRECTORY);
+        self.stack.push(ambient_dir);
         let prompt = if prompt.is_string() {
             prompt
         } else {
@@ -545,10 +562,26 @@ impl Lisp {
         if self.noninteractive() && self.plain_value(sym::EXECUTING_KBD_MACRO).is_nil() {
             return self.read_minibuf_noninteractive(prompt, expflag, defalt);
         }
-        self.read_minibuf_interactive(
+        let req = MinibufRequest {
+            initial,
+            prompt,
+            ..req
+        };
+        let calling = (calling_frame, calling_window);
+        self.read_minibuf_interactive(count, req, pos, calling, ambient_dir)
+    }
+
+    fn read_minibuf_interactive(
+        &mut self,
+        count: usize,
+        req: MinibufRequest,
+        pos: i64,
+        (calling_frame, calling_window): (Value, Value),
+        ambient_dir: Value,
+    ) -> LispResult {
+        let MinibufRequest {
             map,
             initial,
-            pos,
             prompt,
             expflag,
             histvar,
@@ -556,25 +589,435 @@ impl Lisp {
             defalt,
             allow_props,
             inherit_input_method,
-        )
+        } = req;
+        let minibuffer = self.get_minibuffer(self.minibuf.minibuf_level + 1)?;
+        self.minibuf.minibuf_level += 1;
+        self.record_unwind_current_buffer();
+        self.choose_minibuf_frame();
+        let mini_frame = self.window(self.windows.minibuf_window).frame;
+        self.stack.push(mini_frame);
+        if self.minibuf.minibuf_level > 1 {
+            let mb_frame = self.minibuf.mb_frame;
+            let sf_mini_window = self.frame(self.frames.selected_frame).minibuffer_window;
+            if self.window_live_p(self.frame(mb_frame).minibuffer_window)
+                && self.window(sf_mini_window).frame != mb_frame
+                && self.minibuf_moves_frame_when_opened()?
+                && !self.minibuf_follows_frame()?
+            {
+                let of_mini_window = self.frame(mb_frame).minibuffer_window;
+                self.zip_minibuffer_stacks(self.windows.minibuf_window, of_mini_window)?;
+                let of_selected = self.frame(mb_frame).selected_window;
+                if self.window(of_selected).mini {
+                    let first = crate::window::f_frame_first_window(self, &[mb_frame])?;
+                    crate::window::f_set_frame_selected_window(
+                        self,
+                        &[mb_frame, first, Value::NIL],
+                    )?;
+                }
+            }
+        }
+        let sf_mini_window = self.frame(self.frames.selected_frame).minibuffer_window;
+        self.minibuf.mb_frame = self.window(sf_mini_window).frame;
+        self.funcall(sym::RECORD_WINDOW_BUFFER, &[self.windows.minibuf_window])?;
+        self.record_unwind(minibuffer_unwind, Value::NIL);
+        if self.var_true(sym::READ_MINIBUFFER_RESTORE_WINDOWS) {
+            let config = crate::window::f_current_window_configuration(self, &[Value::NIL])?;
+            let data = self.list(&[config, sym::T, sym::T]);
+            self.record_unwind(crate::window::restore_window_configuration, data);
+            if mini_frame != self.frames.selected_frame {
+                let config = crate::window::f_current_window_configuration(self, &[mini_frame])?;
+                let data = self.list(&[config, Value::NIL, sym::T]);
+                self.record_unwind(crate::window::restore_window_configuration, data);
+            }
+        } else if mini_frame != self.frames.selected_frame {
+            let sf = self.frames.selected_frame;
+            let data = self.cons(sf, self.frame(sf).focus_frame);
+            self.record_unwind(crate::window::restore_focus_frame, data);
+        }
+        crate::frame::f_make_frame_visible(self, &[mini_frame])?;
+        if self.var_true(sym::MINIBUFFER_AUTO_RAISE) {
+            crate::frame::f_raise_frame(self, &[mini_frame])?;
+        }
+        if !self.var_true(sym::MULTIPLE_TERMINALS_MERGE_KEYBOARDS) {
+            self.temporarily_switch_to_single_kboard(Some(mini_frame))?;
+        }
+        let saved = [
+            calling_window,
+            calling_frame,
+            self.windows.minibuf_window,
+            self.plain_value(sym::OVERRIDING_LOCAL_MAP),
+            self.plain_value(sym::MINIBUFFER_HISTORY_VARIABLE),
+            self.plain_value(sym::MINIBUFFER_HISTORY_POSITION),
+            self.plain_value(sym::CURRENT_PREFIX_ARG),
+            self.plain_value(sym::HELP_FORM),
+            Value::fixnum(self.minibuf.minibuf_prompt_width),
+            self.minibuf.minibuf_prompt,
+        ];
+        for value in saved {
+            self.minibuf.minibuf_save_list = self.cons(value, self.minibuf.minibuf_save_list);
+        }
+        let keys = crate::keyboard::reader::f_this_command_keys_vector(self, &[])?;
+        self.minibuf.minibuf_save_list = self.cons(keys, self.minibuf.minibuf_save_list);
+        self.record_unwind(read_minibuf_unwind, Value::NIL);
+        self.record_unwind(run_exit_minibuf_hook, minibuffer);
+        self.minibuf.minibuf_prompt_width = 0;
+        self.minibuf.minibuf_prompt = crate::fns::f_copy_sequence(self, &[prompt])?;
+        self.set_plain_value(sym::MINIBUFFER_HISTORY_POSITION, histpos);
+        self.set_plain_value(sym::MINIBUFFER_HISTORY_VARIABLE, histvar);
+        let help_form = self.plain_value(sym::MINIBUFFER_HELP_FORM);
+        self.set_plain_value(sym::HELP_FORM, help_form);
+        if !self
+            .plain_value(sym::MINIBUFFER_COMPLETING_FILE_NAME)
+            .is_nil()
+        {
+            self.set_plain_value(sym::MINIBUFFER_COMPLETING_FILE_NAME, sym::LAMBDA);
+        }
+        let histvar_symbol = self.check_symbol(histvar)?;
+        if self.find_symbol_value(histvar_symbol) == sym::UNBOUND {
+            crate::data::f_set(self, &[histvar, Value::NIL])?;
+        }
+        let mut input_method = Value::NIL;
+        let mut enable_multibyte = Value::NIL;
+        if inherit_input_method {
+            input_method = crate::data::f_symbol_value(self, &[sym::CURRENT_INPUT_METHOD])?;
+            enable_multibyte = self.plain_value(sym::ENABLE_MULTIBYTE_CHARACTERS);
+        }
+        self.stack.push(input_method);
+        self.set_minibuffer_mode(minibuffer, self.minibuf.minibuf_level)?;
+        crate::buffer::f_set_buffer(self, &[minibuffer])?;
+        let cb = self.current_buffer;
+        self.buffer_local_set(cb, sym::TRUNCATE_LINES, Value::NIL);
+        if ambient_dir.is_string() {
+            self.buffer_local_set(cb, sym::DEFAULT_DIRECTORY, ambient_dir);
+        } else {
+            let live: Vec<Value> = self
+                .buffers
+                .iter()
+                .copied()
+                .filter(|&b| self.buffer_live_p(b))
+                .collect();
+            for buf in live {
+                let dir = self.buffer_local_value(sym::DEFAULT_DIRECTORY, buf);
+                if dir.is_string() {
+                    self.buffer_local_set(cb, sym::DEFAULT_DIRECTORY, dir);
+                    break;
+                }
+            }
+        }
+        if mini_frame != self.frames.selected_frame {
+            let sf = self.frames.selected_frame;
+            crate::frame::f_redirect_frame_focus(self, &[sf, mini_frame])?;
+        }
+        let sw = self.windows.selected_window;
+        self.set_plain_value(sym::MINIBUFFER_SCROLL_WINDOW, sw);
+        if self.minibuf.minibuf_level == 1 || self.windows.minibuf_window != sw {
+            self.windows.minibuf_selected_window = sw;
+        }
+        let empty_minibuf = self.nth_minibuffer(0)?;
+        self.set_minibuffer_mode(empty_minibuf, 0)?;
+        let mw = self.windows.minibuf_window;
+        self.set_window_buffer(mw, self.current_buffer, false, false)?;
+        crate::window::f_select_window(self, &[mw, Value::NIL])?;
+        let w = self.window_mut(mw);
+        w.hscroll = 0;
+        w.flags.suspend_auto_hscroll = false;
+        let count1 = self.specpdl.len();
+        let r = self.insert_minibuf_prompt(inherit_input_method, enable_multibyte);
+        self.unbind_to_value(count1, r)?;
+        self.minibuf.minibuf_prompt_width = self.current_column()?;
+        if !initial.is_nil() {
+            crate::editfns::f_insert(self, &[initial])?;
+            crate::editfns::f_forward_char(self, &[Value::fixnum(pos)])?;
+        }
+        self.clear_message(true, true)?;
+        let cb = self.current_buffer;
+        self.buffer_mut(cb).keymap = map;
+        if input_method.is_string()
+            && !crate::data::f_fboundp(self, &[sym::ACTIVATE_INPUT_METHOD])?.is_nil()
+        {
+            self.funcall(sym::ACTIVATE_INPUT_METHOD, &[input_method])?;
+        }
+        self.run_hook(sym::MINIBUFFER_SETUP_HOOK)?;
+        let cb = self.current_buffer;
+        self.buffer_local_set(cb, sym::BUFFER_UNDO_LIST, Value::NIL);
+        self.recursive_edit_1()?;
+        let mw = self.windows.minibuf_window;
+        let sf = self.frames.selected_frame;
+        if self.window(mw).cursor.vpos >= 0
+            && !self.noninteractive
+            && self.frame(sf).output_method != crate::terminal::OutputMethod::Initial
+        {
+            let w = self.window_mut(mw);
+            w.cursor.hpos = 0;
+            w.cursor.x = 0;
+            w.flags.must_be_updated_p = true;
+            self.update_frame(sf, true);
+            let f = self.window(mw).frame;
+            self.flush_frame(f);
+        }
+        crate::buffer::f_set_buffer(self, &[minibuffer])?;
+        let val = if allow_props || self.var_true(sym::MINIBUFFER_ALLOW_TEXT_PROPERTIES) {
+            f_minibuffer_contents(self, &[])?
+        } else {
+            f_minibuffer_contents_no_properties(self, &[])?
+        };
+        self.stack.push(val);
+        self.minibuf.last_minibuf_string = val;
+        let histstring = if self.string_chars(val) != 0 {
+            val
+        } else if defalt.is_string() {
+            defalt
+        } else if defalt.is_cons() && self.xcar(defalt).is_string() {
+            self.xcar(defalt)
+        } else {
+            Value::NIL
+        };
+        self.unbind_to(count)?;
+        if self.frame_live_p(calling_frame) {
+            let cf_mini_window = self.frame(calling_frame).minibuffer_window;
+            if self.frames.selected_frame != calling_frame
+                || (self.window_live_p(cf_mini_window)
+                    && self.window(cf_mini_window).frame != calling_frame)
+            {
+                self.funcall(
+                    sym::SELECT_FRAME_SET_INPUT_FOCUS,
+                    &[calling_frame, Value::NIL],
+                )?;
+            }
+        }
+        if !(self.plain_value(sym::HISTORY_ADD_NEW_INPUT).is_nil() || histstring.is_nil()) {
+            self.funcall(sym::ADD_TO_HISTORY, &[histvar, histstring])?;
+        }
+        if expflag {
+            return self.string_to_object(val, defalt);
+        }
+        Ok(val)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn read_minibuf_interactive(
+    fn insert_minibuf_prompt(
         &mut self,
-        _map: Value,
-        _initial: Value,
-        _pos: i64,
-        _prompt: Value,
-        _expflag: bool,
-        _histvar: Value,
-        _histpos: Value,
-        _defalt: Value,
-        _allow_props: bool,
-        _inherit_input_method: bool,
+        inherit_input_method: bool,
+        enable_multibyte: Value,
     ) -> LispResult {
-        Err(self.error("Interactive minibuffer input needs the keyboard command loop"))
+        self.specbind(sym::INHIBIT_READ_ONLY, sym::T)?;
+        self.specbind(sym::INHIBIT_MODIFICATION_HOOKS, sym::T)?;
+        crate::buffer::f_erase_buffer(self, &[])?;
+        let flag = if inherit_input_method {
+            enable_multibyte
+        } else {
+            sym::T
+        };
+        let cb = self.current_buffer;
+        self.buffer_mut(cb).text.multibyte = !flag.is_nil();
+        self.buffer_local_set(cb, sym::ENABLE_MULTIBYTE_CHARACTERS, flag);
+        let prompt = self.minibuf.minibuf_prompt;
+        crate::editfns::f_insert(self, &[prompt])?;
+        let pt = self.cur().pt;
+        if pt > 1 {
+            let (beg, end) = (Value::fixnum(1), Value::fixnum(pt as i64));
+            for prop in [sym::FRONT_STICKY, sym::REAR_NONSTICKY, sym::FIELD] {
+                crate::textprop::f_put_text_property(self, &[beg, end, prop, sym::T, Value::NIL])?;
+            }
+            let mut list = self.plain_value(sym::MINIBUFFER_PROMPT_PROPERTIES);
+            while list.is_cons() {
+                let key = self.xcar(list);
+                list = self.xcdr(list);
+                if list.is_cons() {
+                    let val = self.xcar(list);
+                    list = self.xcdr(list);
+                    if key == sym::FACE {
+                        crate::textprop::f_add_face_text_property(
+                            self,
+                            &[beg, end, val, sym::T, Value::NIL],
+                        )?;
+                    } else {
+                        crate::textprop::f_put_text_property(
+                            self,
+                            &[beg, end, key, val, Value::NIL],
+                        )?;
+                    }
+                }
+            }
+        }
+        Ok(Value::NIL)
     }
+
+    fn pop_minibuf_save_list(&mut self) -> LispResult {
+        let list = self.minibuf.minibuf_save_list;
+        let head = self.car(list)?;
+        self.minibuf.minibuf_save_list = self.cdr(list)?;
+        Ok(head)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MinibufRequest {
+    map: Value,
+    initial: Value,
+    prompt: Value,
+    expflag: bool,
+    histvar: Value,
+    histpos: Value,
+    defalt: Value,
+    allow_props: bool,
+    inherit_input_method: bool,
+}
+
+fn run_exit_minibuf_hook(lisp: &mut Lisp, minibuf: Value) -> LispResult<()> {
+    let count = lisp.specpdl.len();
+    lisp.record_unwind_current_buffer();
+    if lisp.buffer_live_p(minibuf) {
+        crate::buffer::f_set_buffer(lisp, &[minibuf])?;
+    }
+    lisp.safe_run_hooks(sym::MINIBUFFER_EXIT_HOOK)?;
+    lisp.unbind_to(count)
+}
+
+fn read_minibuf_unwind(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
+    let base = lisp.stack.len();
+    let r = read_minibuf_unwind_1(lisp);
+    lisp.stack.truncate(base);
+    r
+}
+
+fn erase_expired_minibuffer(lisp: &mut Lisp) -> LispResult {
+    lisp.specbind(sym::INHIBIT_READ_ONLY, sym::T)?;
+    lisp.specbind(sym::INHIBIT_MODIFICATION_HOOKS, sym::T)?;
+    let old_deactivate_mark = lisp.plain_value(sym::DEACTIVATE_MARK);
+    lisp.stack.push(old_deactivate_mark);
+    crate::buffer::f_erase_buffer(lisp, &[])?;
+    lisp.set_plain_value(sym::DEACTIVATE_MARK, old_deactivate_mark);
+    Ok(Value::NIL)
+}
+
+fn read_minibuf_unwind_1(lisp: &mut Lisp) -> LispResult<()> {
+    let saved_selected_frame = lisp.frames.selected_frame;
+    lisp.stack.push(saved_selected_frame);
+    let expired_mb = lisp.nth_minibuffer(lisp.minibuf.minibuf_level)?;
+    if expired_mb.is_nil() {
+        std::process::abort();
+    }
+    lisp.minibuf.exp_mb_frame = Value::NIL;
+    for frame in lisp.frames.list.clone() {
+        let window = lisp.frame(frame).minibuffer_window;
+        if lisp.window_live_p(window) {
+            let w = lisp.window(window);
+            if w.frame == frame && w.contents == expired_mb {
+                lisp.minibuf.exp_mb_frame = frame;
+                break;
+            }
+        }
+    }
+    let exp_mb_frame = lisp.minibuf.exp_mb_frame;
+    if exp_mb_frame != saved_selected_frame && !exp_mb_frame.is_nil() {
+        lisp.do_switch_frame(exp_mb_frame, false, sym::T)?;
+    }
+    crate::buffer::f_set_buffer(lisp, &[expired_mb])?;
+    lisp.minibuf.minibuf_level -= 1;
+    let key_vec = lisp.pop_minibuf_save_list()?;
+    lisp.keyboard.this_command_key_count = lisp.vector_items(key_vec).len();
+    lisp.keyboard.this_command_keys = key_vec;
+    lisp.minibuf.minibuf_prompt = lisp.pop_minibuf_save_list()?;
+    let width = lisp.pop_minibuf_save_list()?;
+    lisp.minibuf.minibuf_prompt_width = width.as_fixnum().unwrap_or(0);
+    for symbol in [
+        sym::HELP_FORM,
+        sym::CURRENT_PREFIX_ARG,
+        sym::MINIBUFFER_HISTORY_POSITION,
+        sym::MINIBUFFER_HISTORY_VARIABLE,
+        sym::OVERRIDING_LOCAL_MAP,
+    ] {
+        let value = lisp.pop_minibuf_save_list()?;
+        lisp.set_plain_value(symbol, value);
+    }
+    let future_mini_window = lisp.pop_minibuf_save_list()?;
+    let calling_frame = lisp.pop_minibuf_save_list()?;
+    let calling_window = lisp.pop_minibuf_save_list()?;
+    lisp.stack
+        .extend_from_slice(&[future_mini_window, calling_frame, calling_window]);
+    let count = lisp.specpdl.len();
+    let r = erase_expired_minibuffer(lisp);
+    lisp.unbind_to_value(count, r)?;
+    if lisp.minibuf.minibuf_level == 0
+        || lisp.frames.selected_frame != lisp.window(future_mini_window).frame
+    {
+        lisp.resize_mini_window(lisp.windows.minibuf_window, false)?;
+    }
+    for frame1 in lisp.frames.list.clone() {
+        if lisp.frame_parent_frame(frame1).is_nil()
+            && lisp.get_frame_param(frame1, sym::DELETE_BEFORE).is_nil()
+        {
+            continue;
+        }
+        let val = lisp.get_frame_param(frame1, sym::MINIBUFFER_EXIT);
+        if val.is_nil() {
+            continue;
+        }
+        if val == sym::ICONIFY_FRAME {
+            crate::frame::f_iconify_frame(lisp, &[frame1])?;
+        } else if val == sym::DELETE_FRAME {
+            crate::frame::f_delete_frame(lisp, &[frame1, Value::NIL])?;
+        } else {
+            crate::frame::f_make_frame_invisible(lisp, &[frame1, Value::NIL])?;
+        }
+    }
+    lisp.call0(sym::MINIBUFFER_INACTIVE_MODE)?;
+    lisp.choose_minibuf_frame();
+    let mw = lisp.windows.minibuf_window;
+    if lisp.window(mw).prev_buffers.is_nil() {
+        if lisp.window(mw).frame != calling_frame {
+            let prev = crate::window::f_previous_window(lisp, &[mw, Value::NIL, Value::NIL])?;
+            if prev != mw && lisp.window(prev).frame == lisp.window(mw).frame {
+                let sf = lisp.frames.selected_frame;
+                crate::window::f_set_frame_selected_window(lisp, &[sf, prev, Value::NIL])?;
+            }
+        } else if lisp.window_live_p(calling_window) {
+            crate::window::f_set_frame_selected_window(
+                lisp,
+                &[calling_frame, calling_window, Value::NIL],
+            )?;
+        }
+    }
+    let exp_mb_frame = lisp.minibuf.exp_mb_frame;
+    if exp_mb_frame != saved_selected_frame && !exp_mb_frame.is_nil() {
+        lisp.do_switch_frame(saved_selected_frame, false, sym::T)?;
+    }
+    Ok(())
+}
+
+fn minibuffer_unwind(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
+    let exp_mb_frame = lisp.minibuf.exp_mb_frame;
+    if exp_mb_frame.is_nil() || !lisp.frame_live_p(exp_mb_frame) {
+        return Ok(());
+    }
+    let window = lisp.frame(exp_mb_frame).minibuffer_window;
+    if !lisp.window_live_p(window) {
+        return Ok(());
+    }
+    let prev_buffers = lisp.window(window).prev_buffers;
+    if !prev_buffers.is_nil() {
+        let entry = lisp.car(prev_buffers)?;
+        let buffer = lisp.car(entry)?;
+        if lisp.is_buffer(buffer) && lisp.buffer_live_p(buffer) {
+            let base = lisp.stack.len();
+            lisp.stack.push(entry);
+            let r = (|| -> LispResult<()> {
+                lisp.window_mut(window).prev_buffers = lisp.cdr(prev_buffers)?;
+                lisp.set_window_buffer(window, buffer, false, false)?;
+                let rest = lisp.cdr(entry)?;
+                let start = lisp.car(rest)?;
+                crate::window::f_set_window_start(lisp, &[window, start, Value::NIL])?;
+                let rest = lisp.cdr(rest)?;
+                let point = lisp.car(rest)?;
+                crate::window::f_set_window_point(lisp, &[window, point])?;
+                Ok(())
+            })();
+            lisp.stack.truncate(base);
+            return r;
+        }
+    }
+    let minibuffer = lisp.nth_minibuffer(0)?;
+    lisp.set_window_buffer(window, minibuffer, false, false)
 }
 
 fn f_active_minibuffer_window(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
@@ -705,17 +1148,17 @@ fn f_read_from_minibuffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         histpos = Value::fixnum(0);
     }
     let allow_props = lisp.var_true(sym::MINIBUFFER_ALLOW_TEXT_PROPERTIES);
-    lisp.read_minibuf(
-        keymap,
-        initial_contents,
+    lisp.read_minibuf(MinibufRequest {
+        map: keymap,
+        initial: initial_contents,
         prompt,
-        !read.is_nil(),
+        expflag: !read.is_nil(),
         histvar,
         histpos,
-        default_value,
+        defalt: default_value,
         allow_props,
-        !inherit_input_method.is_nil(),
-    )
+        inherit_input_method: !inherit_input_method.is_nil(),
+    })
 }
 
 pub(crate) fn f_read_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {

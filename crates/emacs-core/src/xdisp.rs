@@ -102,6 +102,88 @@ impl Lisp {
         }
     }
 
+    fn estimated_line_height(&mut self, w: Value, active: usize, inactive: usize) -> i64 {
+        let f = self.window(w).frame;
+        if self.frame(f).flags.glyphs_initialized_p {
+            unreachable!("window_box_height needs the window's current matrix");
+        }
+        let face_id = self.current_line_active_face_id(w, active, inactive);
+        self.estimate_mode_line_height(f, face_id)
+    }
+
+    pub fn window_box_height(&mut self, w: Value) -> i64 {
+        let mut height = self.window(w).pixel_height;
+        height -= self.window_bottom_divider_width(w);
+        height -= self.window_scroll_bar_area_height(w);
+        if self.window_wants_mode_line(w) {
+            let line_height = self.window(w).mode_line_height;
+            height -= if line_height >= 0 {
+                line_height
+            } else {
+                self.estimated_line_height(
+                    w,
+                    crate::xfaces::MODE_LINE_ACTIVE_FACE_ID,
+                    crate::xfaces::MODE_LINE_INACTIVE_FACE_ID,
+                )
+            };
+        }
+        if self.window_wants_tab_line(w) {
+            let line_height = self.window(w).tab_line_height;
+            height -= if line_height >= 0 {
+                line_height
+            } else {
+                self.estimated_line_height(
+                    w,
+                    crate::xfaces::TAB_LINE_ACTIVE_FACE_ID,
+                    crate::xfaces::TAB_LINE_INACTIVE_FACE_ID,
+                )
+            };
+        }
+        if self.window_wants_header_line(w) {
+            let line_height = self.window(w).header_line_height;
+            height -= if line_height >= 0 {
+                line_height
+            } else {
+                self.estimated_line_height(
+                    w,
+                    crate::xfaces::HEADER_LINE_ACTIVE_FACE_ID,
+                    crate::xfaces::HEADER_LINE_INACTIVE_FACE_ID,
+                )
+            };
+        }
+        height.max(0)
+    }
+
+    pub fn resize_mini_window(&mut self, w: Value, _exact_p: bool) -> LispResult<bool> {
+        let f = self.window(w).frame;
+        let old_height = self.window_box_height(w);
+        if !self.plain_value(sym::INHIBIT_REDISPLAY).is_nil() {
+            return Ok(false);
+        }
+        if self.var_true(sym::REDISPLAY_ADHOC_SCROLL_IN_RESIZE_MINI_WINDOWS) {
+            let (start, contents) = (self.window(w).start, self.window(w).contents);
+            let begv = self.buffer(contents).begv;
+            self.set_marker_position(start, begv, contents);
+        }
+        let minibuf_only = self.frame_minibuf_only_p(f);
+        let resize_mini_frames = self.plain_value(sym::RESIZE_MINI_FRAMES);
+        if self.plain_value(sym::RESIZE_MINI_WINDOWS).is_nil()
+            && (resize_mini_frames.is_nil() || !minibuf_only)
+        {
+            return Ok(false);
+        }
+        if minibuf_only {
+            if !resize_mini_frames.is_nil() {
+                self.safe_call(false, &[sym::WINDOW__RESIZE_MINI_FRAME, f])?;
+            }
+        } else if self.frame(f).flags.glyphs_initialized_p {
+            unreachable!("resize_mini_window needs the display iterator");
+        } else {
+            return Ok(false);
+        }
+        Ok(self.window_box_height(w) != old_height)
+    }
+
     pub fn truncate_echo_area(&mut self, nchars: usize) {
         if nchars == 0 {
             self.xdisp.echo_area_buffer[0] = Value::NIL;
@@ -232,7 +314,7 @@ impl Lisp {
         Ok(())
     }
 
-    pub fn clear_message(&mut self, current_p: bool) -> LispResult<()> {
+    pub fn clear_message(&mut self, current_p: bool, last_displayed_p: bool) -> LispResult<()> {
         if current_p && !self.var_true(sym::INHIBIT_MESSAGE) {
             let mut preserve = Value::NIL;
             let function = self.find_symbol_value(sym::CLEAR_MESSAGE_FUNCTION);
@@ -250,11 +332,14 @@ impl Lisp {
                 self.set_plain_value(sym::CURRENT_MESSAGE_INTERNAL, Value::NIL);
             }
         }
+        if last_displayed_p {
+            self.xdisp.echo_area_buffer[1] = Value::NIL;
+        }
         Ok(())
     }
 
     fn log_message(&mut self, m: Value) -> LispResult<()> {
-        self.clear_message(true)?;
+        self.clear_message(true, false)?;
         self.cancel_echoing();
         self.message_log_maybe_newline()?;
         if m.is_string() {

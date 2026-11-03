@@ -1033,7 +1033,7 @@ impl Lisp {
                     {
                         if !self.xdisp.echo_area_buffer[0].is_nil() {
                             self.safe_run_hooks(sym::ECHO_AREA_CLEAR_HOOK)?;
-                            self.clear_message(true)?;
+                            self.clear_message(true, false)?;
                             if self.minibuf.minibuf_level != 0
                                 && self.windows.minibuf_window == self.xdisp.echo_area_window
                                 && !self
@@ -1044,7 +1044,7 @@ impl Lisp {
                         } else {
                             let function = self.plain_value(sym::CLEAR_MESSAGE_FUNCTION);
                             if self.functionp(function) {
-                                self.clear_message(true)?;
+                                self.clear_message(true, false)?;
                             }
                         }
                     }
@@ -1081,7 +1081,7 @@ impl Lisp {
                         if !self.xdisp.echo_area_buffer[0].is_nil() {
                             self.safe_run_hooks(sym::ECHO_AREA_CLEAR_HOOK)?;
                         }
-                        self.clear_message(true)?;
+                        self.clear_message(true, false)?;
                         self.echo_truncate(0)?;
                         if !self.keymapp(map) {
                             self.specbind(sym::INPUT_METHOD_USE_ECHO_AREA, sym::T)?;
@@ -1466,7 +1466,7 @@ fn f_set_this_command_keys(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_this_command_keys_vector(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_this_command_keys_vector(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let keys = command_keys(lisp);
     Ok(lisp.vector(keys))
 }

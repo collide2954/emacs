@@ -828,7 +828,7 @@ fn general_insert(
     Ok(Value::NIL)
 }
 
-fn f_insert(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_insert(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     general_insert(lisp, args, false, false)
 }
 
@@ -1203,7 +1203,7 @@ fn f_transpose_regions(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-fn f_forward_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_forward_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = if args[0].is_nil() {
         1
     } else {

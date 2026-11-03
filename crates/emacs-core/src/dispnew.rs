@@ -43,6 +43,12 @@ impl Lisp {
         self.frame_mut(f).flags.garbaged = false;
     }
 
+    pub fn update_frame(&mut self, f: Value, _inhibit_scrolling: bool) {
+        if self.frame(f).flags.glyphs_initialized_p {
+            unreachable!("update_frame needs glyph matrices");
+        }
+    }
+
     fn set_window_update_flags(&mut self, mut w: Value, on_p: bool) {
         loop {
             let contents = self.window(w).contents;

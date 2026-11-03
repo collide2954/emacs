@@ -1216,7 +1216,7 @@ fn f_set_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(sym::T)
 }
 
-fn f_add_face_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_add_face_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (start, end, face, appendp, object) = (args[0], args[1], args[2], args[3], args[4]);
     let obj = lisp.decode_obj(object)?;
     let (s, e) = lisp.validate_range(obj, start, end)?;

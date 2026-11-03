@@ -26,6 +26,14 @@ pub struct WindowFlags {
     pub cursor_off_p: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CursorPos {
+    pub x: i64,
+    pub y: i64,
+    pub hpos: i64,
+    pub vpos: i64,
+}
+
 #[derive(Clone, Debug)]
 pub struct Window {
     pub frame: Value,
@@ -78,6 +86,7 @@ pub struct Window {
     pub column_number_displayed: i64,
     pub nrows_scale_factor: i64,
     pub ncols_scale_factor: i64,
+    pub cursor: CursorPos,
     pub last_cursor_vpos: i64,
     pub phys_cursor_width: i64,
     pub left_fringe_width: i64,
@@ -962,6 +971,7 @@ impl Lisp {
             column_number_displayed: -1,
             nrows_scale_factor: 1,
             ncols_scale_factor: 1,
+            cursor: CursorPos::default(),
             last_cursor_vpos: 0,
             phys_cursor_width: -1,
             left_fringe_width: -1,
@@ -1129,7 +1139,7 @@ impl Lisp {
         }
     }
 
-    fn window_scroll_bar_area_height(&self, w: Value) -> i64 {
+    pub(crate) fn window_scroll_bar_area_height(&self, w: Value) -> i64 {
         if self.window_has_horizontal_scroll_bar(w) {
             self.window_config_scroll_bar_height(w)
         } else {
@@ -1163,7 +1173,7 @@ impl Lisp {
         }
     }
 
-    fn window_bottom_divider_width(&self, w: Value) -> i64 {
+    pub(crate) fn window_bottom_divider_width(&self, w: Value) -> i64 {
         let win = self.window(w);
         let root = self.frame(win.frame).root_window;
         if (self.window_bottommost_p(w) && self.window(root).next.is_nil())
@@ -1759,7 +1769,7 @@ fn f_next_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.next_window(arg(args, 0), arg(args, 1), arg(args, 2), true)
 }
 
-fn f_previous_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_previous_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.next_window(arg(args, 0), arg(args, 1), arg(args, 2), false)
 }
 
@@ -1802,7 +1812,7 @@ pub(crate) fn f_get_buffer_window(lisp: &mut Lisp, args: &[Value]) -> LispResult
     }
 }
 
-fn f_frame_first_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_frame_first_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = frame_or_window_frame(lisp, arg(args, 0))?;
     let mut window = lisp.frame(f).root_window;
     while lisp.is_window(lisp.window(window).contents) {
@@ -2448,7 +2458,7 @@ impl Lisp {
         Ok(quint.is_cons() && self.car(quint)? == buffer)
     }
 
-    fn buffer_local_value(&self, symbol: Value, buffer: Value) -> Value {
+    pub(crate) fn buffer_local_value(&self, symbol: Value, buffer: Value) -> Value {
         self.buffer_local_get(buffer, symbol)
             .unwrap_or_else(|| self.default_value_unchecked(symbol))
     }
@@ -3131,6 +3141,22 @@ pub(crate) fn restore_window_configuration(
         f_set_window_configuration(lisp, &[config, dont_set_frame, dont_set_miniwindow])?;
     } else {
         f_set_window_configuration(lisp, &[configuration, Value::NIL, Value::NIL])?;
+    }
+    Ok(())
+}
+
+pub(crate) fn restore_focus_frame(lisp: &mut Lisp, frame_and_focus_frame: Value) -> LispResult<()> {
+    let frame = lisp.car(frame_and_focus_frame)?;
+    let focus_frame = lisp.cdr(frame_and_focus_frame)?;
+    if lisp.frame_live_p(frame) && (focus_frame.is_nil() || lisp.frame_live_p(focus_frame)) {
+        let frame_focus_frame = lisp.frame(frame).focus_frame;
+        crate::frame::f_redirect_frame_focus(lisp, &[frame, focus_frame])?;
+        if lisp.plain_value(sym::FOCUS_FOLLOWS_MOUSE) == sym::AUTO_RAISE
+            && focus_frame.is_nil()
+            && lisp.frames.selected_frame == frame_focus_frame
+        {
+            lisp.funcall(sym::SELECT_FRAME_SET_INPUT_FOCUS, &[frame, Value::NIL])?;
+        }
     }
     Ok(())
 }
