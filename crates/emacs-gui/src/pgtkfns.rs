@@ -476,7 +476,7 @@ fn pgtk_set_foreground_color(
     Ok(())
 }
 
-fn pgtk_clear_frame(lisp: &mut Lisp, f: Value) {
+pub fn pgtk_clear_frame(lisp: &mut Lisp, f: Value) {
     let key = frame_key(lisp, f) as u64;
     let background = lisp.frame(f).background_pixel as u32;
     crate::with_display(|display| {

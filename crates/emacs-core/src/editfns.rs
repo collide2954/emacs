@@ -333,10 +333,6 @@ impl Lisp {
         self.make_marker_at(pt, buffer, false)
     }
 
-    pub fn current_message_value(&self) -> Value {
-        self.plain_value(sym::CURRENT_MESSAGE_INTERNAL)
-    }
-
     pub fn format_string(&mut self, args: &[Value], message: bool) -> LispResult {
         styled_format(self, args, message)
     }
@@ -1140,7 +1136,7 @@ pub(crate) fn f_message(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 fn f_current_message(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    Ok(lisp.current_message_value())
+    lisp.current_message()
 }
 
 fn f_propertize(lisp: &mut Lisp, args: &[Value]) -> LispResult {

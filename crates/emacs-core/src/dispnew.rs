@@ -36,14 +36,83 @@ fn f_redraw_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 impl Lisp {
     pub fn redraw_frame(&mut self, f: Value) {
+        self.update_begin(f);
         if self.frame_window_p(f) {
             self.set_frame_garbaged(f);
         }
+        if self.frame(f).parent_frame.is_nil() {
+            self.clear_frame(f);
+        }
+        self.clear_current_matrices(f);
+        self.update_end(f);
         self.fset_redisplay(f);
         let root = self.frame(f).root_window;
         self.mark_window_display_accurate(root, false);
         self.set_window_update_flags(root, true);
         self.frame_mut(f).flags.garbaged = false;
+    }
+
+    pub fn do_pending_window_change(&mut self, safe: bool) -> LispResult<()> {
+        if self.xdisp.redisplaying_p && !safe {
+            return Ok(());
+        }
+        while self.frames.delayed_size_change {
+            self.frames.delayed_size_change = false;
+            for f in self.frames.list.clone() {
+                let g = &self.frame(f).geometry;
+                let (new_width, new_height) = (g.new_width, g.new_height);
+                if new_height >= 0 && new_width >= 0 && self.frame(f).flags.new_size_p {
+                    self.change_frame_size(f, new_width, new_height, false, safe)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn change_frame_size(
+        &mut self,
+        f: Value,
+        new_width: i64,
+        new_height: i64,
+        delay: bool,
+        safe: bool,
+    ) -> LispResult<()> {
+        if delay || (self.xdisp.redisplaying_p && !safe) {
+            let label = self.string("change_frame_size_1, delayed");
+            let g = &self.frame(f).geometry;
+            let sizes = [
+                g.pixel_width,
+                g.pixel_height,
+                new_width,
+                new_height,
+                g.new_width,
+                g.new_height,
+            ];
+            self.frame_size_history_extra(f, label, sizes);
+            let g = &mut self.frame_mut(f).geometry;
+            g.new_width = new_width;
+            g.new_height = new_height;
+            self.frame_mut(f).flags.new_size_p = true;
+            self.frames.delayed_size_change = true;
+        } else {
+            let g = &mut self.frame_mut(f).geometry;
+            g.new_height = -1;
+            g.new_width = -1;
+            self.frame_mut(f).flags.new_size_p = false;
+            let width = self.frame_pixel_to_text_width(f, new_width);
+            let height = self.frame_pixel_to_text_height(f, new_height);
+            self.adjust_frame_size(f, width, height, 5, sym::CHANGE_FRAME_SIZE)?;
+        }
+        Ok(())
+    }
+
+    pub fn clear_frame(&mut self, f: Value) {
+        let t = self.frame(f).terminal;
+        if self.is_terminal(t)
+            && let Some(hook) = self.terminal(t).hooks.clear_frame
+        {
+            hook(self, f);
+        }
     }
 
     fn set_window_update_flags(&mut self, mut w: Value, on_p: bool) {

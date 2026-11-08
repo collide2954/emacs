@@ -602,6 +602,7 @@ pub fn pgtk_term_init(
     hooks.update_begin = Some(crate::pgtkdraw::pgtk_update_begin);
     hooks.update_end = Some(crate::pgtkdraw::pgtk_update_end);
     hooks.implicit_set_name = Some(crate::pgtkfns::pgtk_implicitly_set_name);
+    hooks.clear_frame = Some(crate::pgtkfns::pgtk_clear_frame);
     lisp.terminal_mut(terminal).rif = Some(&crate::pgtkdraw::PGTK_REDISPLAY_INTERFACE);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =

@@ -1,6 +1,7 @@
 pub mod append;
 pub mod cursor;
 pub mod draw;
+pub mod echo;
 pub mod elements;
 pub mod geom;
 pub mod gui_produce;
@@ -278,7 +279,7 @@ impl Lisp {
         self.redisplay_internal()
     }
 
-    fn redisplay_internal(&mut self) -> LispResult<()> {
+    pub(crate) fn redisplay_internal(&mut self) -> LispResult<()> {
         if self.xdisp.redisplaying_p {
             return Ok(());
         }
@@ -305,8 +306,12 @@ impl Lisp {
     }
 
     pub fn flush_frame(&mut self, f: Value) {
-        if self.frame(f).flags.glyphs_initialized_p {
-            unreachable!("flush_frame needs the redisplay interface");
+        let t = self.frame(f).terminal;
+        if self.is_terminal(t)
+            && let Some(rif) = self.terminal(t).rif
+            && let Some(flush) = rif.flush_display
+        {
+            flush(self, f);
         }
     }
 
@@ -380,50 +385,6 @@ impl Lisp {
             };
         }
         height.max(0)
-    }
-
-    pub fn resize_mini_window(&mut self, w: Value, _exact_p: bool) -> LispResult<bool> {
-        let f = self.window(w).frame;
-        let old_height = self.window_box_height(w);
-        if !self.plain_value(sym::INHIBIT_REDISPLAY).is_nil() {
-            return Ok(false);
-        }
-        if self.var_true(sym::REDISPLAY_ADHOC_SCROLL_IN_RESIZE_MINI_WINDOWS) {
-            let (start, contents) = (self.window(w).start, self.window(w).contents);
-            let begv = self.buffer(contents).begv;
-            self.set_marker_position(start, begv, contents);
-        }
-        let minibuf_only = self.frame_minibuf_only_p(f);
-        let resize_mini_frames = self.plain_value(sym::RESIZE_MINI_FRAMES);
-        if self.plain_value(sym::RESIZE_MINI_WINDOWS).is_nil()
-            && (resize_mini_frames.is_nil() || !minibuf_only)
-        {
-            return Ok(false);
-        }
-        if minibuf_only {
-            if !resize_mini_frames.is_nil() {
-                self.safe_call(false, &[sym::WINDOW__RESIZE_MINI_FRAME, f])?;
-            }
-        } else if self.frame(f).flags.glyphs_initialized_p {
-            unreachable!("resize_mini_window needs the display iterator");
-        } else {
-            return Ok(false);
-        }
-        Ok(self.window_box_height(w) != old_height)
-    }
-
-    pub fn truncate_echo_area(&mut self, nchars: usize) {
-        if nchars == 0 {
-            self.xdisp.echo_area_buffer[0] = Value::NIL;
-        } else if !self.noninteractive
-            && self.plain_value(sym::EXECUTING_KBD_MACRO).is_nil()
-            && !self.xdisp.echo_area_buffer[0].is_nil()
-        {
-            let sf = self.frames.selected_frame;
-            if self.frame(sf).flags.glyphs_initialized_p {
-                unreachable!("truncating the echo area needs with_echo_area_buffer");
-            }
-        }
     }
 }
 
@@ -500,6 +461,12 @@ pub struct Xdisp {
     pub line_number_displayed: bool,
     pub dont_resize_frames: i32,
     pub multiple_frames: bool,
+    pub echo_buffer: [Value; 2],
+    pub message_buf_print: bool,
+    pub message_cleared_p: bool,
+    pub display_last_displayed_message_p: bool,
+    pub message_enable_multibyte: bool,
+    pub with_echo_area_save_vector: Value,
 }
 
 impl Default for Xdisp {
@@ -545,6 +512,12 @@ impl Default for Xdisp {
             line_number_displayed: false,
             dont_resize_frames: 0,
             multiple_frames: false,
+            echo_buffer: [Value::NIL; 2],
+            message_buf_print: false,
+            message_cleared_p: false,
+            display_last_displayed_message_p: false,
+            message_enable_multibyte: false,
+            with_echo_area_save_vector: Value::NIL,
         }
     }
 }
@@ -565,10 +538,10 @@ pub fn pop_message_unwind(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
 }
 
 impl Lisp {
-    pub fn push_message(&mut self) -> bool {
-        let msg = self.current_message_value();
+    pub fn push_message(&mut self) -> LispResult<bool> {
+        let msg = self.current_message()?;
         self.xdisp.message_stack = self.cons(msg, self.xdisp.message_stack);
-        msg.is_string()
+        Ok(msg.is_string())
     }
 
     pub fn restore_message(&mut self) -> LispResult<()> {
@@ -609,12 +582,14 @@ impl Lisp {
                 };
             }
             if preserve != sym::DONT_CLEAR_MESSAGE {
-                self.set_plain_value(sym::CURRENT_MESSAGE_INTERNAL, Value::NIL);
+                self.xdisp.echo_area_buffer[0] = Value::NIL;
+                self.xdisp.message_cleared_p = true;
             }
         }
         if last_displayed_p {
             self.xdisp.echo_area_buffer[1] = Value::NIL;
         }
+        self.xdisp.message_buf_print = false;
         Ok(())
     }
 
@@ -652,7 +627,30 @@ impl Lisp {
         let interactive =
             self.plain_value(sym::EXECUTING_KBD_MACRO).is_nil() && !self.noninteractive;
         if interactive && self.frame(sf).flags.glyphs_initialized_p {
-            unreachable!("showing a message needs echo_area_display");
+            let count = self.specpdl_index();
+            let mini_window = self.frame(sf).minibuffer_window;
+            let frame = self.window(mini_window).frame;
+            let mbf = frame;
+            if self.frame(sf).flags.visible && !self.frame(mbf).flags.visible {
+                crate::frame::f_make_frame_visible(self, &[frame])?;
+            }
+            if m.is_string() && self.string_chars(m) > 0 {
+                self.set_message(m)?;
+                if self.var_true(sym::MINIBUFFER_AUTO_RAISE) && !frame.is_nil() {
+                    crate::frame::f_raise_frame(self, &[frame])?;
+                }
+                self.keyboard.echo_message_buffer = Value::NIL;
+            } else {
+                self.clear_message(true, true)?;
+            }
+            self.do_pending_window_change(false)?;
+            self.echo_area_display(true)?;
+            self.do_pending_window_change(false)?;
+            let t = self.frame(mbf).terminal;
+            if let Some(hook) = self.terminal(t).hooks.frame_up_to_date {
+                hook(self, mbf);
+            }
+            self.unbind_to(count)?;
         }
         Ok(())
     }
@@ -1473,14 +1471,6 @@ impl Lisp {
             ));
         }
         Ok(())
-    }
-
-    pub fn resize_echo_area_exactly(&mut self) {
-        if self.is_buffer(self.xdisp.echo_area_buffer[0])
-            && self.is_window(self.xdisp.echo_area_window)
-        {
-            unreachable!("resize_echo_area_exactly needs resize_mini_window and glyph matrices");
-        }
     }
 
     fn safe_eval_handler(&mut self, arg: Value, args: &[Value]) -> LispResult {

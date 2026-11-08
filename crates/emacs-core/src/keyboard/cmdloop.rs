@@ -141,7 +141,7 @@ impl Lisp {
                 self.safe_run_hooks_maybe_narrowed(sym::POST_COMMAND_HOOK)?;
             }
             if !self.xdisp.echo_area_buffer[0].is_nil() {
-                self.resize_echo_area_exactly();
+                self.resize_echo_area_exactly()?;
             }
             if !self.plain_value(sym::DELAYED_WARNINGS_LIST).is_nil() {
                 self.safe_run_hooks(sym::DELAYED_WARNINGS_HOOK)?;
@@ -242,7 +242,7 @@ impl Lisp {
                         && self.xdisp.echo_area_window
                             == self.frame(selected_frame).minibuffer_window
                     {
-                        self.resize_echo_area_exactly();
+                        self.resize_echo_area_exactly()?;
                     }
                     if !self.plain_value(sym::DELAYED_WARNINGS_LIST).is_nil() {
                         self.safe_run_hooks(sym::DELAYED_WARNINGS_HOOK)?;

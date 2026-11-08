@@ -50,6 +50,8 @@ pub struct TerminalHooks {
     pub set_horizontal_scroll_bar: Option<ScrollBarHook>,
     pub redeem_scroll_bar: Option<FrameHook>,
     pub implicit_set_name: Option<FrameParmHandler>,
+    pub clear_frame: Option<fn(&mut Lisp, Value)>,
+    pub frame_up_to_date: Option<fn(&mut Lisp, Value)>,
 }
 
 pub type ReadSocketHook = fn(&mut Lisp, Value, &mut crate::termhooks::KbdEvent) -> LispResult<i32>;

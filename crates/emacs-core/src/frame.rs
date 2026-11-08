@@ -1257,14 +1257,14 @@ impl Lisp {
             + 2 * self.frame(f).geometry.internal_border_width
     }
 
-    fn frame_pixel_to_text_width(&self, f: Value, width: i64) -> i64 {
+    pub(crate) fn frame_pixel_to_text_width(&self, f: Value, width: i64) -> i64 {
         width
             - self.frame_scroll_bar_area_width(f)
             - self.frame_total_fringe_width(f)
             - 2 * self.frame(f).geometry.internal_border_width
     }
 
-    fn frame_pixel_to_text_height(&self, f: Value, height: i64) -> i64 {
+    pub(crate) fn frame_pixel_to_text_height(&self, f: Value, height: i64) -> i64 {
         height
             - self.frame_margin_height(f)
             - self.frame_scroll_bar_area_height(f)
@@ -1276,7 +1276,7 @@ impl Lisp {
         g.pixel_width - 2 * g.internal_border_width
     }
 
-    fn frame_inner_height(&self, f: Value) -> i64 {
+    pub(crate) fn frame_inner_height(&self, f: Value) -> i64 {
         let g = &self.frame(f).geometry;
         g.pixel_height - self.frame_margin_height(f) - 2 * g.internal_border_width
     }
@@ -1343,6 +1343,29 @@ impl Lisp {
             retval = retval.max(min_height);
         }
         Ok(retval)
+    }
+
+    pub(crate) fn frame_size_history_extra(&mut self, f: Value, parameter: Value, sizes: [i64; 6]) {
+        let history = self.plain_value(sym::FRAME_SIZE_HISTORY);
+        if !history.is_cons() {
+            return;
+        }
+        let Some(n) = self.xcar(history).as_fixnum().filter(|&n| 0 < n) else {
+            return;
+        };
+        let head = self.list(&[
+            f,
+            Value::fixnum(sizes[0]),
+            Value::fixnum(sizes[1]),
+            parameter,
+        ]);
+        let extra = [sizes[2], sizes[3], sizes[4], sizes[5]].map(Value::fixnum);
+        let tail = self.list(&extra);
+        let entry = self.cons(head, tail);
+        let rest = self.xcdr(history);
+        let rest = self.cons(entry, rest);
+        let history = self.cons(Value::fixnum(n - 1), rest);
+        self.set_plain_value(sym::FRAME_SIZE_HISTORY, history);
     }
 
     #[allow(clippy::too_many_arguments)]

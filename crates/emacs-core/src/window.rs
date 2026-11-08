@@ -1439,6 +1439,57 @@ impl Lisp {
         self.window(w).pixel_width == self.window(root).pixel_width
     }
 
+    pub(crate) fn grow_mini_window(&mut self, w: Value, delta: i32, unit: i32) -> LispResult<()> {
+        let f = self.window(w).frame;
+        let old_height = self.window_body_height(w, WindowBodyUnit::Pixels)? as i32;
+        let min_height = unit;
+        let mut delta = delta;
+        if old_height + delta < min_height {
+            delta = if old_height > min_height {
+                min_height - old_height
+            } else {
+                0
+            };
+        }
+        if delta != 0 {
+            let root = self.frame(f).root_window;
+            let grow = self.funcall(
+                sym::WINDOW__RESIZE_ROOT_WINDOW_VERTICALLY,
+                &[root, Value::fixnum(-i64::from(delta)), sym::T],
+            )?;
+            if grow.as_fixnum().is_some_and(|g| g != 0) {
+                unreachable!(
+                    "resizing the mini-window needs window_resize_check and window_resize_apply"
+                );
+            }
+        }
+        let body = self.window_body_height(w, WindowBodyUnit::Pixels)?;
+        self.frame_mut(f).flags.frozen_window_starts = body > i64::from(unit);
+        Ok(())
+    }
+
+    pub(crate) fn shrink_mini_window(&mut self, w: Value, unit: i32) -> LispResult<()> {
+        let f = self.window(w).frame;
+        let delta = self.window_body_height(w, WindowBodyUnit::Pixels)? as i32 - unit;
+        if delta > 0 {
+            let root = self.frame(f).root_window;
+            let grow = self.funcall(
+                sym::WINDOW__RESIZE_ROOT_WINDOW_VERTICALLY,
+                &[root, Value::fixnum(i64::from(delta)), sym::T],
+            )?;
+            if grow.is_fixnum() {
+                unreachable!(
+                    "resizing the mini-window needs window_resize_check and window_resize_apply"
+                );
+            }
+        } else if delta < 0 {
+            self.grow_mini_window(w, -delta, unit)?;
+        }
+        let body = self.window_body_height(w, WindowBodyUnit::Pixels)?;
+        self.frame_mut(f).flags.frozen_window_starts = body > i64::from(unit);
+        Ok(())
+    }
+
     pub fn window_body_height(&mut self, w: Value, pixelwise: WindowBodyUnit) -> LispResult<i64> {
         let height = self.window(w).pixel_height
             - self.window_tab_line_height(w)

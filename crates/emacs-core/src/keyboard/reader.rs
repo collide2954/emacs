@@ -212,8 +212,7 @@ impl Lisp {
             )?;
             self.set_kvar(Kvar::EchoString, truncated);
         }
-        self.truncate_echo_area(nchars);
-        Ok(())
+        self.truncate_echo_area(nchars)
     }
 
     pub fn add_command_key(&mut self, key: Value) {
@@ -1022,7 +1021,7 @@ impl Lisp {
                         && (0o40..256).contains(&n)
                         && n != 127
                     {
-                        let message = self.current_message_value();
+                        let message = self.current_message()?;
                         self.stack[prev_msg_slot] = message;
                         self.set_plain_value(sym::INPUT_METHOD_PREVIOUS_MESSAGE, message);
                     }

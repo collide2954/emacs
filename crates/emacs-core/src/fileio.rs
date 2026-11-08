@@ -3030,7 +3030,7 @@ pub(crate) fn f_do_auto_save(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         no_message = sym::T;
     }
     if no_message.is_nil() {
-        old_message_p = lisp.push_message();
+        old_message_p = lisp.push_message()?;
         lisp.record_unwind(crate::xdisp::pop_message_unwind, Value::NIL);
     }
     let oquit = lisp.plain_value(sym::QUIT_FLAG);
