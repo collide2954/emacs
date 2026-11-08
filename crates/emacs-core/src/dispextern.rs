@@ -4,8 +4,9 @@ use crate::bidi::{BidiDir, BidiIt, IT_STACK_SIZE};
 use crate::composite::CompositionIt;
 use crate::value::Value;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum DrawGlyphsFace {
+    #[default]
     NormalText,
     InverseVideo,
     Cursor,
@@ -14,18 +15,308 @@ pub enum DrawGlyphsFace {
     ImageSunken,
 }
 
-#[derive(Clone, Debug)]
-pub struct GlyphString {
-    pub f: Value,
-    pub face_id: usize,
-    pub font: Value,
-    pub char2b: Vec<u32>,
-    pub nchars: usize,
+pub const OVERLAPS_PRED: u8 = 1 << 0;
+pub const OVERLAPS_SUCC: u8 = 1 << 1;
+pub const OVERLAPS_BOTH: u8 = OVERLAPS_PRED | OVERLAPS_SUCC;
+pub const OVERLAPS_ERASED_CURSOR: u8 = 1 << 2;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct EmacsRectangle {
+    pub x: i32,
+    pub y: i32,
     pub width: i32,
-    pub padding_p: bool,
-    pub hl: DrawGlyphsFace,
+    pub height: i32,
+}
+
+pub fn gui_intersect_rectangles(
+    r1: &EmacsRectangle,
+    r2: &EmacsRectangle,
+) -> Option<EmacsRectangle> {
+    let (left, right) = if r1.x < r2.x { (r1, r2) } else { (r2, r1) };
+    if right.x <= left.x + left.width {
+        let x = right.x;
+        let width = (left.x + left.width).min(right.x + right.width) - x;
+        let (upper, lower) = if r1.y < r2.y { (r1, r2) } else { (r2, r1) };
+        if lower.y <= upper.y + upper.height {
+            let y = lower.y;
+            let height = (lower.y + lower.height).min(upper.y + upper.height) - y;
+            return Some(EmacsRectangle {
+                x,
+                y,
+                width,
+                height,
+            });
+        }
+    }
+    None
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct EmacsGc {
     pub foreground: u64,
     pub background: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct GlyphString {
+    pub x: i32,
+    pub y: i32,
+    pub ybase: i32,
+    pub width: i32,
+    pub background_width: i32,
+    pub height: i32,
+    pub left_overhang: i32,
+    pub right_overhang: i32,
+    pub f: Value,
+    pub w: Value,
+    pub row: GlyphRowRef,
+    pub area: usize,
+    pub char2b: Vec<u32>,
+    pub nchars: usize,
+    pub hl: DrawGlyphsFace,
+    pub face: Option<usize>,
+    pub font: Value,
+    pub cmp: Option<usize>,
+    pub cmp_id: i64,
+    pub cmp_from: i32,
+    pub cmp_to: i32,
+    pub extends_to_end_of_line_p: bool,
+    pub background_filled_p: bool,
+    pub font_not_found_p: bool,
+    pub stippled_p: bool,
+    pub for_overlaps: u8,
+    pub padding_p: bool,
+    pub xgcv: EmacsGc,
+    pub first_glyph: usize,
+    pub slice: GlyphSlice,
+    pub clip_head: Option<usize>,
+    pub clip_tail: Option<usize>,
+    pub clip: [EmacsRectangle; 2],
+    pub num_clips: i32,
+    pub underline_position: i32,
+    pub underline_thickness: i32,
+    pub next: Option<usize>,
+    pub prev: Option<usize>,
+}
+
+impl GlyphString {
+    pub fn new(w: Value, f: Value, row: GlyphRowRef, area: usize, start: usize) -> GlyphString {
+        GlyphString {
+            x: 0,
+            y: 0,
+            ybase: 0,
+            width: 0,
+            background_width: 0,
+            height: 0,
+            left_overhang: 0,
+            right_overhang: 0,
+            f,
+            w,
+            row,
+            area,
+            char2b: Vec::new(),
+            nchars: 0,
+            hl: DrawGlyphsFace::NormalText,
+            face: None,
+            font: Value::NIL,
+            cmp: None,
+            cmp_id: 0,
+            cmp_from: 0,
+            cmp_to: 0,
+            extends_to_end_of_line_p: false,
+            background_filled_p: false,
+            font_not_found_p: false,
+            stippled_p: false,
+            for_overlaps: 0,
+            padding_p: false,
+            xgcv: EmacsGc::default(),
+            first_glyph: start,
+            slice: GlyphSlice::None,
+            clip_head: None,
+            clip_tail: None,
+            clip: [EmacsRectangle::default(); 2],
+            num_clips: 0,
+            underline_position: 0,
+            underline_thickness: 0,
+            next: None,
+            prev: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TextCursorKind {
+    #[default]
+    Default,
+    NoCursor,
+    FilledBox,
+    HollowBox,
+    Bar,
+    Hbar,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Run {
+    pub desired_y: i32,
+    pub current_y: i32,
+    pub desired_vpos: i32,
+    pub current_vpos: i32,
+    pub height: i32,
+    pub nrows: i32,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct DrawFringeBitmapParams {
+    pub which: i32,
+    pub wd: i32,
+    pub h: i32,
+    pub dh: i32,
+    pub x: i32,
+    pub y: i32,
+    pub bx: i32,
+    pub nx: i32,
+    pub by: i32,
+    pub ny: i32,
+    pub face: usize,
+    pub cursor_p: bool,
+    pub overlay_p: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct MouseHlInfo {
+    pub mouse_face_beg_row: i32,
+    pub mouse_face_beg_col: i32,
+    pub mouse_face_beg_x: i32,
+    pub mouse_face_end_row: i32,
+    pub mouse_face_end_col: i32,
+    pub mouse_face_end_x: i32,
+    pub mouse_face_window: Value,
+    pub mouse_face_face_id: usize,
+    pub mouse_face_overlay: Value,
+    pub mouse_face_mouse_frame: Value,
+    pub mouse_face_mouse_x: i32,
+    pub mouse_face_mouse_y: i32,
+    pub mouse_face_past_end: bool,
+    pub mouse_face_defer: bool,
+    pub mouse_face_hidden: bool,
+}
+
+impl Default for MouseHlInfo {
+    fn default() -> MouseHlInfo {
+        MouseHlInfo {
+            mouse_face_beg_row: -1,
+            mouse_face_beg_col: -1,
+            mouse_face_beg_x: 0,
+            mouse_face_end_row: -1,
+            mouse_face_end_col: -1,
+            mouse_face_end_x: 0,
+            mouse_face_window: Value::NIL,
+            mouse_face_face_id: 0,
+            mouse_face_overlay: Value::NIL,
+            mouse_face_mouse_frame: Value::NIL,
+            mouse_face_mouse_x: 0,
+            mouse_face_mouse_y: 0,
+            mouse_face_past_end: false,
+            mouse_face_defer: false,
+            mouse_face_hidden: false,
+        }
+    }
+}
+
+impl MouseHlInfo {
+    pub fn reset(&mut self) {
+        *self = MouseHlInfo::default();
+    }
+
+    pub fn trace(&self, out: &mut Vec<Value>) {
+        out.extend_from_slice(&[
+            self.mouse_face_window,
+            self.mouse_face_overlay,
+            self.mouse_face_mouse_frame,
+        ]);
+    }
+}
+
+type Lisp = crate::lisp::Lisp;
+type LispResult<T> = crate::error::LispResult<T>;
+
+pub type DrawWindowCursorHook =
+    fn(&mut Lisp, Value, GlyphRowRef, i32, i32, TextCursorKind, i32, bool, bool) -> LispResult<()>;
+pub type WriteGlyphsHook = fn(&mut Lisp, Value, GlyphRowRef, usize, usize, usize) -> LispResult<()>;
+pub type ClearEndOfLineHook = fn(&mut Lisp, Value, GlyphRowRef, usize, i32) -> LispResult<()>;
+pub type ScrollRunHook = fn(&mut Lisp, Value, &Run) -> LispResult<()>;
+pub type GetGlyphOverhangsHook = fn(&mut Lisp, &Glyph, Value) -> (i32, i32);
+pub type FixOverlappingAreaHook = fn(&mut Lisp, Value, GlyphRowRef, usize, u8) -> LispResult<()>;
+pub type DrawFringeBitmapHook = fn(&mut Lisp, Value, GlyphRowRef, &DrawFringeBitmapParams);
+pub type DefineFringeBitmapHook = fn(&mut Lisp, usize, &[u16], i32, i32);
+pub type GlyphStringHook = fn(&mut Lisp, &mut [GlyphString], usize);
+pub type FrameAreaHook = fn(&mut Lisp, Value, i32, i32, i32, i32);
+pub type VerticalBorderHook = fn(&mut Lisp, Value, i32, i32, i32);
+pub type ShiftGlyphsForInsertHook = fn(&mut Lisp, Value, i32, i32, i32, i32, i32);
+
+#[derive(Clone, Copy)]
+pub struct RedisplayInterface {
+    pub write_glyphs: Option<WriteGlyphsHook>,
+    pub insert_glyphs: Option<WriteGlyphsHook>,
+    pub clear_end_of_line: Option<ClearEndOfLineHook>,
+    pub scroll_run_hook: Option<ScrollRunHook>,
+    pub after_update_window_line_hook: Option<fn(&mut Lisp, Value, GlyphRowRef)>,
+    pub update_window_begin_hook: Option<fn(&mut Lisp, Value)>,
+    pub update_window_end_hook: Option<fn(&mut Lisp, Value, bool, bool)>,
+    pub flush_display: Option<fn(&mut Lisp, Value)>,
+    pub clear_window_mouse_face: Option<fn(&mut Lisp, Value) -> LispResult<()>>,
+    pub get_glyph_overhangs: Option<GetGlyphOverhangsHook>,
+    pub fix_overlapping_area: Option<FixOverlappingAreaHook>,
+    pub draw_fringe_bitmap: Option<DrawFringeBitmapHook>,
+    pub define_fringe_bitmap: Option<DefineFringeBitmapHook>,
+    pub destroy_fringe_bitmap: Option<fn(&mut Lisp, usize)>,
+    pub compute_glyph_string_overhangs: Option<GlyphStringHook>,
+    pub draw_glyph_string: Option<GlyphStringHook>,
+    pub define_frame_cursor: Option<fn(&mut Lisp, Value, i32)>,
+    pub clear_frame_area: Option<FrameAreaHook>,
+    pub clear_under_internal_border: Option<fn(&mut Lisp, Value)>,
+    pub draw_window_cursor: Option<DrawWindowCursorHook>,
+    pub draw_vertical_window_border: Option<VerticalBorderHook>,
+    pub draw_window_divider: Option<FrameAreaHook>,
+    pub shift_glyphs_for_insert: Option<ShiftGlyphsForInsertHook>,
+    pub show_hourglass: Option<fn(&mut Lisp, Value)>,
+    pub hide_hourglass: Option<fn(&mut Lisp, Value)>,
+}
+
+impl RedisplayInterface {
+    pub const NONE: RedisplayInterface = RedisplayInterface {
+        write_glyphs: None,
+        insert_glyphs: None,
+        clear_end_of_line: None,
+        scroll_run_hook: None,
+        after_update_window_line_hook: None,
+        update_window_begin_hook: None,
+        update_window_end_hook: None,
+        flush_display: None,
+        clear_window_mouse_face: None,
+        get_glyph_overhangs: None,
+        fix_overlapping_area: None,
+        draw_fringe_bitmap: None,
+        define_fringe_bitmap: None,
+        destroy_fringe_bitmap: None,
+        compute_glyph_string_overhangs: None,
+        draw_glyph_string: None,
+        define_frame_cursor: None,
+        clear_frame_area: None,
+        clear_under_internal_border: None,
+        draw_window_cursor: None,
+        draw_vertical_window_border: None,
+        draw_window_divider: None,
+        shift_glyphs_for_insert: None,
+        show_hourglass: None,
+        hide_hourglass: None,
+    };
+}
+
+impl std::fmt::Debug for RedisplayInterface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RedisplayInterface")
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -266,7 +557,7 @@ pub struct GlyphRow {
     pub reversed_p: bool,
     pub stipple_p: bool,
     pub continuation_lines_width: i32,
-    pub clip: Option<(i32, i32, i32, i32)>,
+    pub clip: Option<EmacsRectangle>,
 }
 
 impl GlyphRow {

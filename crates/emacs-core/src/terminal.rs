@@ -43,6 +43,8 @@ pub struct TerminalHooks {
     pub delete_frame: Option<fn(&mut Lisp, Value)>,
     pub delete_terminal: Option<fn(&mut Lisp, Value) -> LispResult<()>>,
     pub read_socket: Option<ReadSocketHook>,
+    pub update_begin: Option<fn(&mut Lisp, Value)>,
+    pub update_end: Option<fn(&mut Lisp, Value)>,
 }
 
 pub type ReadSocketHook = fn(&mut Lisp, Value, &mut crate::termhooks::KbdEvent) -> LispResult<i32>;
@@ -67,6 +69,8 @@ pub struct DisplayInfo {
     pub smallest_font_height: i32,
     pub smallest_char_width: i32,
     pub reference_count: i32,
+    pub highlight_frame: Value,
+    pub mouse_highlight: crate::dispextern::MouseHlInfo,
 }
 
 impl DisplayInfo {
@@ -82,6 +86,8 @@ impl DisplayInfo {
             smallest_font_height: 0,
             smallest_char_width: 0,
             reference_count: 0,
+            highlight_frame: Value::NIL,
+            mouse_highlight: crate::dispextern::MouseHlInfo::default(),
         }
     }
 }
@@ -100,6 +106,7 @@ pub struct Terminal {
     pub terminal_coding: Box<CodingSystem>,
     pub keyboard_coding: Box<CodingSystem>,
     pub hooks: TerminalHooks,
+    pub rif: Option<&'static crate::dispextern::RedisplayInterface>,
     pub display_info: Option<Box<DisplayInfo>>,
 }
 
@@ -115,6 +122,8 @@ impl Terminal {
         }
         if let Some(info) = &self.display_info {
             out.push(info.name_list_element);
+            out.push(info.highlight_frame);
+            info.mouse_highlight.trace(out);
         }
     }
 }
@@ -237,6 +246,7 @@ impl Lisp {
                 terminal_coding: Box::new(terminal_coding),
                 keyboard_coding: Box::new(keyboard_coding),
                 hooks: TerminalHooks::default(),
+                rif: None,
                 display_info: None,
             })));
         self.terminals.list.insert(0, terminal);

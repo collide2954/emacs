@@ -754,15 +754,28 @@ fn ftcrfont_draw(
     };
     let frame = lisp.frame(s.f).id as u64;
     let glyphs = s.char2b[from..to].to_vec();
+    let background = if with_background {
+        let face_font = s
+            .face
+            .and_then(|face| lisp.face_from_id(s.f, face))
+            .map_or(s.font, |face| face.font);
+        let fo = lisp.font_object(face_font);
+        let (ascent, height) = (fo.ascent, fo.height);
+        Some(Background {
+            color: s.xgcv.background as u32,
+            ascent,
+            width: s.width,
+            height,
+            respect_alpha: s.hl != DrawGlyphsFace::Cursor,
+        })
+    } else {
+        None
+    };
     let how = DrawGlyphs {
         x,
         y,
-        foreground: s.foreground as u32,
-        background: with_background.then_some(Background {
-            color: s.background as u32,
-            width: s.width,
-            respect_alpha: s.hl != DrawGlyphsFace::Cursor,
-        }),
+        foreground: s.xgcv.foreground as u32,
+        background,
         padding: s.padding_p,
     };
     crate::with_display(|display| {

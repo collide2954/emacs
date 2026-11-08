@@ -727,6 +727,30 @@ impl Lisp {
             .unwrap_or(0)
     }
 
+    pub fn lglyph_code(&self, g: Value) -> u32 {
+        let code = self
+            .aref_items(g)
+            .get(LGLYPH_IX_CODE)
+            .copied()
+            .unwrap_or(Value::NIL);
+        if code.is_nil() {
+            return crate::font::FONT_INVALID_CODE;
+        }
+        if let Some(n) = code.as_fixnum() {
+            return n as u32;
+        }
+        if code.is_cons() {
+            let hi = self.xcar(code);
+            let mut lo = self.xcdr(code);
+            if lo.is_cons() {
+                lo = self.xcar(lo);
+            }
+            let (hi, lo) = (hi.as_fixnum().unwrap_or(0), lo.as_fixnum().unwrap_or(0));
+            return ((hi << 16) | lo) as u32;
+        }
+        crate::font::FONT_INVALID_CODE
+    }
+
     fn lglyph_adjustment(&self, g: Value) -> Value {
         self.aref_items(g)
             .get(LGLYPH_IX_ADJUSTMENT)
@@ -839,7 +863,7 @@ impl Lisp {
     }
 
     pub fn composition_gstring_width(
-        &self,
+        &mut self,
         gstring: Value,
         from: usize,
         to: usize,
@@ -848,10 +872,13 @@ impl Lisp {
         if let Some(m) = metrics.as_deref_mut() {
             let font_object = self.lgstring_font(gstring);
             if self.font_object_p(font_object) {
-                unreachable!("font metrics need a font driver");
+                let (ascent, descent) = self.get_font_ascent_descent(font_object);
+                m.ascent = ascent;
+                m.descent = descent;
+            } else {
+                m.ascent = 1;
+                m.descent = 0;
             }
-            m.ascent = 1;
-            m.descent = 0;
             m.width = 0;
             m.lbearing = 0;
             m.rbearing = 0;

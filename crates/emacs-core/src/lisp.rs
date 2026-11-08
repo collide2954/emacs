@@ -159,6 +159,7 @@ pub struct Lisp {
     pub bc: crate::bytecode::Bytecode,
     pub subr_docs: std::collections::HashMap<usize, i64>,
     pub compositions: crate::composite::Compositions,
+    pub fringe: crate::fringe::Fringe,
     pub syntax: crate::syntax::Syntax,
     pub indent: crate::indent::Indent,
     pub frame_and_buffer_state: Value,
@@ -382,6 +383,7 @@ impl Lisp {
             bc: crate::bytecode::Bytecode::default(),
             subr_docs: std::collections::HashMap::new(),
             compositions: crate::composite::Compositions::default(),
+            fringe: crate::fringe::Fringe::default(),
             syntax: crate::syntax::Syntax::default(),
             indent: crate::indent::Indent::default(),
             frame_and_buffer_state: Value::NIL,
@@ -1136,6 +1138,7 @@ impl Lisp {
         self.codings.roots(&mut roots);
         self.ccl.roots(&mut roots);
         self.terminals.roots(&mut roots);
+        self.fringe.roots(&mut roots);
         self.frames.roots(&mut roots);
         self.windows.roots(&mut roots);
         self.minibuf.roots(&mut roots);

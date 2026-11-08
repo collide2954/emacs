@@ -28,7 +28,6 @@ pub struct PgtkDisplayInfo {
     pub last_user_time: u64,
     pub x_focus_frame: Value,
     pub x_focus_event_frame: Value,
-    pub highlight_frame: Value,
 }
 
 const FOCUS_EXPLICIT: i32 = 2;
@@ -149,11 +148,9 @@ pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) {
     let terminal = lisp.frame(f).terminal;
     if with_dpyinfo(lisp, f, |d| d.x_focus_frame) == f {
         let new_focus = lisp.frame_parent_frame(f);
-        with_dpyinfo(lisp, f, |d| {
-            if d.highlight_frame == f {
-                d.highlight_frame = Value::NIL;
-            }
-        });
+        if lisp.display_info(terminal).highlight_frame == f {
+            lisp.display_info_mut(terminal).highlight_frame = Value::NIL;
+        }
         if !new_focus.is_nil() && lisp.frame_live_p(new_focus) && has_output(lisp, new_focus) {
             pgtk_new_focus_frame(lisp, terminal, new_focus);
         } else {
@@ -161,10 +158,10 @@ pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) {
             pgtk_frame_rehighlight(lisp, terminal);
         }
     }
+    if lisp.display_info(terminal).highlight_frame == f {
+        lisp.display_info_mut(terminal).highlight_frame = Value::NIL;
+    }
     with_dpyinfo(lisp, f, |d| {
-        if d.highlight_frame == f {
-            d.highlight_frame = Value::NIL;
-        }
         if d.x_focus_event_frame == f {
             d.x_focus_event_frame = Value::NIL;
         }
@@ -221,7 +218,6 @@ pub fn mark_pgtkterm(roots: &mut Vec<Value>) {
                 dpyinfo.terminal,
                 dpyinfo.x_focus_frame,
                 dpyinfo.x_focus_event_frame,
-                dpyinfo.highlight_frame,
             ]);
         }
     });
@@ -347,12 +343,13 @@ fn frame_unhighlight(lisp: &mut Lisp, f: Value) {
 }
 
 fn pgtk_frame_rehighlight(lisp: &mut Lisp, terminal: Value) {
-    let (old_highlight, focus) = with_display_list(|displays| {
-        let d = displays
+    let old_highlight = lisp.display_info(terminal).highlight_frame;
+    let focus = with_display_list(|displays| {
+        displays
             .iter()
             .find(|d| d.terminal == terminal)
-            .expect("display info");
-        (d.highlight_frame, d.x_focus_frame)
+            .expect("display info")
+            .x_focus_frame
     });
     let mut highlight = Value::NIL;
     if !focus.is_nil() {
@@ -367,11 +364,7 @@ fn pgtk_frame_rehighlight(lisp: &mut Lisp, terminal: Value) {
             highlight = focus;
         }
     }
-    with_display_list(|displays| {
-        if let Some(d) = displays.iter_mut().find(|d| d.terminal == terminal) {
-            d.highlight_frame = highlight;
-        }
-    });
+    lisp.display_info_mut(terminal).highlight_frame = highlight;
     if !old_highlight.is_nil() {
         frame_unhighlight(lisp, old_highlight);
     }
@@ -495,7 +488,6 @@ fn initialize_display_info(terminal: Value) -> (PgtkDisplayInfo, DisplayInfo) {
         last_user_time: 0,
         x_focus_frame: Value::NIL,
         x_focus_event_frame: Value::NIL,
-        highlight_frame: Value::NIL,
     };
     (pgtk, common)
 }

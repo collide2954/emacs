@@ -110,7 +110,7 @@ impl Lisp {
         self.is_char_table(table) && !self.char_table_ref(table, c as u32).is_nil()
     }
 
-    fn get_char_face_and_encoding(&mut self, f: Value, c: i32, face_id: usize) -> u32 {
+    pub(crate) fn get_char_face_and_encoding(&mut self, f: Value, c: i32, face_id: usize) -> u32 {
         let font = self
             .face_from_id(f, face_id)
             .expect("face is not realized")
@@ -560,7 +560,7 @@ impl Lisp {
         Ok(())
     }
 
-    fn composition_glyph(&self, id: usize, n: usize) -> i32 {
+    pub(crate) fn composition_glyph(&self, id: usize, n: usize) -> i32 {
         let cmp = &self.compositions.table[id];
         let idx = if cmp.method == CompositionMethod::WithRuleAltchars {
             n * 2

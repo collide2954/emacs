@@ -161,6 +161,7 @@ fn rasterize_and_draw() {
     assert!(dark > 10, "{dark}");
 
     let mut surface = Surface::new(64, 40, 0xFFFFFF);
+    let (ascent, height) = (font.ascent, font.height);
     backend.draw(
         &mut surface,
         &mut font,
@@ -171,7 +172,9 @@ fn rasterize_and_draw() {
             foreground: 0x000000,
             background: Some(Background {
                 color: 0x0000FF,
+                ascent,
                 width: 20,
+                height,
                 respect_alpha: false,
             }),
             padding: false,

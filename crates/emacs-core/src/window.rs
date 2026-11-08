@@ -49,6 +49,7 @@ pub struct WindowFlags {
     pub preserve_vscroll_p: bool,
     pub cursor_off_p: bool,
     pub last_cursor_off_p: bool,
+    pub phys_cursor_on_p: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -112,6 +113,11 @@ pub struct Window {
     pub nrows_scale_factor: i64,
     pub ncols_scale_factor: i64,
     pub cursor: CursorPos,
+    pub output_cursor: CursorPos,
+    pub phys_cursor: CursorPos,
+    pub phys_cursor_type: crate::dispextern::TextCursorKind,
+    pub phys_cursor_ascent: i64,
+    pub phys_cursor_height: i64,
     pub last_cursor_vpos: i64,
     pub phys_cursor_width: i64,
     pub left_fringe_width: i64,
@@ -1011,6 +1017,11 @@ impl Lisp {
             nrows_scale_factor: 1,
             ncols_scale_factor: 1,
             cursor: CursorPos::default(),
+            output_cursor: CursorPos::default(),
+            phys_cursor: CursorPos::default(),
+            phys_cursor_type: crate::dispextern::TextCursorKind::NoCursor,
+            phys_cursor_ascent: 0,
+            phys_cursor_height: 0,
             last_cursor_vpos: 0,
             phys_cursor_width: -1,
             left_fringe_width: -1,
@@ -1138,7 +1149,7 @@ impl Lisp {
         }
     }
 
-    fn window_has_vertical_scroll_bar(&self, w: Value) -> bool {
+    pub(crate) fn window_has_vertical_scroll_bar(&self, w: Value) -> bool {
         self.window_vertical_scroll_bar_type(w) != VerticalScrollBarType::None
     }
 

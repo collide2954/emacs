@@ -1,4 +1,5 @@
 pub mod append;
+pub mod draw;
 pub mod elements;
 pub mod geom;
 pub mod gui_produce;

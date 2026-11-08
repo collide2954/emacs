@@ -135,7 +135,9 @@ pub struct OpenFont {
 #[derive(Clone, Copy, Debug)]
 pub struct Background {
     pub color: u32,
+    pub ascent: i32,
     pub width: i32,
+    pub height: i32,
     pub respect_alpha: bool,
 }
 
@@ -497,7 +499,7 @@ impl FontBackend {
         if let Some(bg) = how.background {
             surface.fill_rectangle(
                 bg.color,
-                Rect::new(how.x, how.y - font.ascent, bg.width, font.height),
+                Rect::new(how.x, how.y - bg.ascent, bg.width, bg.height),
                 bg.respect_alpha,
             );
         }
