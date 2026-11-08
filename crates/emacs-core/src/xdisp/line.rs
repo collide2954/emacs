@@ -54,7 +54,7 @@ impl Lisp {
         self.glyph_row_mut(it.glyph_row.expect("iterator has no glyph row"))
     }
 
-    fn row_vpos(it: &It) -> usize {
+    pub(super) fn row_vpos(it: &It) -> usize {
         match it.glyph_row {
             Some(GlyphRowRef::Window { vpos, .. }) => vpos,
             _ => 0,

@@ -13,6 +13,7 @@ pub mod next;
 pub mod produce;
 pub mod props;
 pub mod reseat;
+pub mod reuse;
 pub mod scroll;
 pub mod stack;
 

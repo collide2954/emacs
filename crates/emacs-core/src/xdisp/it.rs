@@ -414,7 +414,11 @@ impl Lisp {
         Ok(())
     }
 
-    fn in_ellipses_for_invisible_text_p(&mut self, pos: &DisplayPos, w: Value) -> LispResult<bool> {
+    pub(crate) fn in_ellipses_for_invisible_text_p(
+        &mut self,
+        pos: &DisplayPos,
+        w: Value,
+    ) -> LispResult<bool> {
         let charpos = pos.pos.charpos;
         if pos.dpvec_index >= 0
             && pos.overlay_string_index < 0
