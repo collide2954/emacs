@@ -638,7 +638,7 @@ impl Lisp {
         }
     }
 
-    fn string_buffer_position_lim(
+    pub(super) fn string_buffer_position_lim(
         &mut self,
         string: Value,
         from: i64,

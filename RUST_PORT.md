@@ -348,6 +348,13 @@ numbers). `C-n` still fails, because `line-move` also needs `face-font`,
 `pos-visible-in-window-p` and `posn-at-point`; `window-line-height` returns nil until
 redisplay validates a window's end.
 
-Next: glyph matrices (`adjust_frame_glyphs`), then `display_line`, `try_window` and
-`echo_area_display`, which also bring map events and frame visibility; with the matrices,
+`xdisp/line.rs` ports `display_line` (with word wrap, continuation, truncation, hscrolled
+lines, line numbers, overlay arrows, trailing whitespace and the faces extended to the end of
+a line), `set_cursor_from_row`, `try_window`, `partial_line_height` and window.c's
+`window_scroll_margin`, so a window's desired matrix can be built from its buffer. Nothing
+in redisplay calls `try_window` yet.
+
+Next: `redisplay_window`, `redisplay_internal`, the mode line and `echo_area_display`, which
+also bring map events and frame visibility; then `update_frame` and the drawing of glyph
+rows, at which point `adjust_frame_glyphs` is wired into frame creation and resizing and
 `resize_mini_window` and `update_frame` lose their glyph-less shortcuts.

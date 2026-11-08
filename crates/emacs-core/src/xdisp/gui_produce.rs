@@ -91,7 +91,7 @@ impl Lisp {
         }
     }
 
-    fn vcenter_baseline_offset(&self, font: Value, f: Value) -> i32 {
+    pub(super) fn vcenter_baseline_offset(&self, font: Value, f: Value) -> i32 {
         let fb = self.font_bits(font);
         let line_height = self.frame(f).geometry.line_height as i32;
         let frame_font = self.frame(f).font;
@@ -136,7 +136,7 @@ impl Lisp {
         self.get_per_char_metric(font, char2b)
     }
 
-    fn calc_line_height_property(
+    pub(super) fn calc_line_height_property(
         &mut self,
         it: &mut It,
         val: Value,

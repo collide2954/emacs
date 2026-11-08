@@ -4,6 +4,7 @@ pub mod geom;
 pub mod gui_produce;
 pub mod it;
 pub mod iterate;
+pub mod line;
 pub mod lnum;
 pub mod move_it;
 pub mod next;
@@ -496,6 +497,14 @@ pub struct Xdisp {
     pub last_glyphless_glyph_face_id: i64,
     pub last_glyphless_glyph_merged_face_id: i32,
     pub scratch_glyph_row: crate::dispextern::GlyphRow,
+    pub overlay_arrow_seen: bool,
+    pub this_line_buffer: Value,
+    pub this_line_start_pos: crate::dispextern::TextPos,
+    pub this_line_end_pos: crate::dispextern::TextPos,
+    pub this_line_y: i32,
+    pub this_line_pixel_height: i32,
+    pub this_line_vpos: i32,
+    pub this_line_start_x: i32,
 }
 
 impl Default for Xdisp {
@@ -522,6 +531,14 @@ impl Default for Xdisp {
             last_glyphless_glyph_face_id: 1 << reseat::FACE_ID_BITS,
             last_glyphless_glyph_merged_face_id: 0,
             scratch_glyph_row: crate::dispextern::GlyphRow::default(),
+            overlay_arrow_seen: false,
+            this_line_buffer: Value::NIL,
+            this_line_start_pos: crate::dispextern::TextPos::default(),
+            this_line_end_pos: crate::dispextern::TextPos::default(),
+            this_line_y: 0,
+            this_line_pixel_height: 0,
+            this_line_vpos: 0,
+            this_line_start_x: 0,
         }
     }
 }

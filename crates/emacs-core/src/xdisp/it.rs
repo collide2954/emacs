@@ -822,7 +822,7 @@ impl Lisp {
         Ok(handled)
     }
 
-    fn face_at_pos(&mut self, it: &It, attr_filter: usize) -> LispResult<i32> {
+    pub(super) fn face_at_pos(&mut self, it: &It, attr_filter: usize) -> LispResult<i32> {
         if !it.string.is_string() {
             let charpos = it.charpos();
             let (face_id, _) = self.face_at_buffer_position(

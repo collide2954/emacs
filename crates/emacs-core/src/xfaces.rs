@@ -2330,6 +2330,24 @@ impl Lisp {
         r
     }
 
+    pub(crate) fn face_for_prop_on_default(&mut self, f: Value, prop: Value) -> LispResult<usize> {
+        let default_lface = self
+            .face_from_id(f, DEFAULT_FACE_ID)
+            .expect("default face is not realized")
+            .lface;
+        let base = self.stack.len();
+        self.stack.push(prop);
+        let r = (|| -> LispResult<usize> {
+            let attrs = self.attrs_push_from(&default_lface);
+            let mut points = MergePoints::new();
+            self.merge_face_ref(None, Some(f), prop, attrs, true, &mut points, 0)?;
+            let merged = self.attrs_snapshot(attrs);
+            self.lookup_face(f, &merged)
+        })();
+        self.stack.truncate(base);
+        r
+    }
+
     pub fn smaller_face(&mut self, f: Value, face_id: usize, steps: i64) -> LispResult<usize> {
         let delta: i64 = if steps < 0 { 5 } else { -5 };
         let mut steps = steps.abs();

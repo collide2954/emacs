@@ -104,6 +104,138 @@ fn producing_glyphs_into_a_desired_row() {
 }
 
 #[test]
+fn try_window_builds_the_desired_matrix() {
+    use emacs_core::dispextern::{GlyphType, GlyphU, TextPos};
+    on_big_stack(|| {
+        let (mut lisp, f) = gui_frame();
+        let w = lisp.frame(f).root_window;
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (set-window-buffer nil (get-buffer-create \"t\")) (set-buffer \"t\") (insert \"ab\\ncd\") (goto-char 5) (point))"
+            ),
+            "5"
+        );
+        lisp.adjust_frame_glyphs(f);
+        lisp.frame_mut(f).fonts_changed = false;
+        let buffer = lisp.window(w).contents;
+        assert_eq!(lisp.try_window(w, TextPos::new(1, 1), 0).unwrap(), 1);
+        assert!(!lisp.frame(f).fonts_changed);
+        let m = lisp.window_matrix(w, WhichMatrix::Desired).unwrap();
+        let (row0, row1, row2) = (&m.rows[0], &m.rows[1], &m.rows[2]);
+        assert!(row0.enabled_p && row0.displays_text_p);
+        let chars = |row: &emacs_core::dispextern::GlyphRow| {
+            row.area_glyphs(TEXT_AREA)
+                .iter()
+                .filter(|g| g.object == buffer)
+                .map(|g| match g.u {
+                    GlyphU::Ch(c) => char::from_u32(c).unwrap(),
+                    _ => '?',
+                })
+                .collect::<String>()
+        };
+        assert_eq!(chars(row0), "ab");
+        assert_eq!(chars(row1), "cd");
+        let space = row0.area_glyphs(TEXT_AREA)[2];
+        assert_eq!(
+            (space.kind, space.object, space.charpos),
+            (GlyphType::Char, Value::NIL, 0)
+        );
+        assert_eq!((row0.minpos.charpos, row0.maxpos.charpos), (1, 4));
+        assert_eq!((row1.minpos.charpos, row1.maxpos.charpos), (4, 6));
+        assert!(row1.ends_at_zv_p && !row0.ends_at_zv_p);
+        assert_eq!(row0.y, 0);
+        assert_eq!(row1.y, row0.height);
+        assert!(row0.height > 0 && row0.hash != 0);
+        assert!(row2.enabled_p && !row2.displays_text_p);
+        let win = lisp.window(w);
+        assert_eq!((win.cursor.vpos, win.cursor.hpos), (1, 1));
+        assert_eq!(win.cursor.y, i64::from(row0.height));
+        assert_eq!(win.window_end_vpos, 1);
+        assert!(!win.flags.window_end_valid);
+        assert_eq!(lisp.marker(win.start).charpos, 1);
+    });
+}
+
+fn buffer_chars(row: &emacs_core::dispextern::GlyphRow, buffer: Value) -> String {
+    use emacs_core::dispextern::GlyphU;
+    row.area_glyphs(TEXT_AREA)
+        .iter()
+        .filter(|g| g.object == buffer)
+        .map(|g| match g.u {
+            GlyphU::Ch(c) => char::from_u32(c).unwrap(),
+            _ => '?',
+        })
+        .collect()
+}
+
+fn try_window_on(lisp: &mut Lisp, f: Value, setup: &str) -> Value {
+    use emacs_core::dispextern::TextPos;
+    let w = lisp.frame(f).root_window;
+    assert_eq!(
+        eval(
+            lisp,
+            &format!(
+                "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (set-window-buffer nil (get-buffer-create \"l\")) (set-buffer \"l\") {setup} nil)"
+            )
+        ),
+        "nil"
+    );
+    lisp.adjust_frame_glyphs(f);
+    lisp.frame_mut(f).fonts_changed = false;
+    assert_eq!(lisp.try_window(w, TextPos::new(1, 1), 0).unwrap(), 1);
+    w
+}
+
+#[test]
+fn try_window_continues_long_lines() {
+    on_big_stack(|| {
+        let (mut lisp, f) = gui_frame();
+        let w = try_window_on(
+            &mut lisp,
+            f,
+            "(insert (make-string 25 ?a) \"\\nb\") (goto-char 23)",
+        );
+        let buffer = lisp.window(w).contents;
+        let m = lisp.window_matrix(w, WhichMatrix::Desired).unwrap();
+        let (row0, row1, row2) = (&m.rows[0], &m.rows[1], &m.rows[2]);
+        assert_eq!(buffer_chars(row0, buffer), "a".repeat(20));
+        assert!(row0.continued_p && !row0.continuation_line_p());
+        assert_eq!((row0.minpos.charpos, row0.maxpos.charpos), (1, 21));
+        assert_eq!(buffer_chars(row1, buffer), "a".repeat(5));
+        assert!(!row1.continued_p && row1.continuation_line_p());
+        assert_eq!((row1.minpos.charpos, row1.maxpos.charpos), (21, 27));
+        assert_eq!(buffer_chars(row2, buffer), "b");
+        assert!(row2.ends_at_zv_p);
+        let win = lisp.window(w);
+        assert_eq!((win.cursor.vpos, win.cursor.hpos), (1, 2));
+        assert_eq!(win.window_end_vpos, 2);
+    });
+}
+
+#[test]
+fn try_window_truncates_long_lines() {
+    on_big_stack(|| {
+        let (mut lisp, f) = gui_frame();
+        let w = try_window_on(
+            &mut lisp,
+            f,
+            "(setq truncate-lines t) (insert (make-string 25 ?a) \"\\nb\") (goto-char 27)",
+        );
+        let buffer = lisp.window(w).contents;
+        let m = lisp.window_matrix(w, WhichMatrix::Desired).unwrap();
+        let (row0, row1) = (&m.rows[0], &m.rows[1]);
+        assert_eq!(buffer_chars(row0, buffer), "a".repeat(20));
+        assert!(row0.truncated_on_right_p && !row0.continued_p);
+        assert_eq!(row0.end.pos.charpos, 27);
+        assert_eq!(buffer_chars(row1, buffer), "b");
+        assert!(row1.ends_at_zv_p && !row1.continuation_line_p());
+        let win = lisp.window(w);
+        assert_eq!((win.cursor.vpos, win.cursor.hpos), (1, 0));
+    });
+}
+
+#[test]
 fn glyph_matrices_for_window_redisplay() {
     on_big_stack(|| {
         let (mut lisp, f) = gui_frame();

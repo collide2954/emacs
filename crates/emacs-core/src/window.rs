@@ -15,6 +15,12 @@ pub enum WindowBodyUnit {
     RemappedChars,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MarginUnit {
+    InLines,
+    InPixels,
+}
+
 fn window_body_unit_from_symbol(unit: Value) -> WindowBodyUnit {
     if unit == sym::REMAP {
         WindowBodyUnit::RemappedChars
@@ -117,6 +123,7 @@ pub struct Window {
     pub header_line_height: i64,
     pub tab_line_height: i64,
     pub window_end_pos: i64,
+    pub window_end_bytepos: i64,
     pub window_end_vpos: i64,
     pub vscroll: i64,
     pub last_modified: i64,
@@ -1013,6 +1020,7 @@ impl Lisp {
             header_line_height: -1,
             tab_line_height: -1,
             window_end_pos: 0,
+            window_end_bytepos: 0,
             window_end_vpos: 0,
             vscroll: 0,
             last_modified: 0,
@@ -1261,7 +1269,7 @@ impl Lisp {
         height
     }
 
-    fn current_header_line_height(&mut self, w: Value) -> i64 {
+    pub(crate) fn current_header_line_height(&mut self, w: Value) -> i64 {
         let height = self.window(w).header_line_height;
         if height >= 0 {
             return height;
@@ -1276,7 +1284,7 @@ impl Lisp {
         height
     }
 
-    fn current_tab_line_height(&mut self, w: Value) -> i64 {
+    pub(crate) fn current_tab_line_height(&mut self, w: Value) -> i64 {
         let height = self.window(w).tab_line_height;
         if height >= 0 {
             return height;
@@ -1321,6 +1329,33 @@ impl Lisp {
             ht -= 1;
         }
         ht
+    }
+
+    pub fn window_scroll_margin(&mut self, w: Value, unit: MarginUnit) -> i32 {
+        let scroll_margin = self.int_var(sym::SCROLL_MARGIN);
+        if scroll_margin <= 0 {
+            return 0;
+        }
+        let frame_line_height = self.default_line_pixel_height(w);
+        let window_lines = (self.window_box_height(w) / i64::from(frame_line_height)) as i32;
+        let mut ratio = 0.25;
+        let maximum = self.find_symbol_value(sym::MAXIMUM_SCROLL_MARGIN);
+        if maximum.is_float() {
+            ratio = self.heap.float_value(maximum).clamp(0.0, 0.5);
+        }
+        let max_margin = ((window_lines - 1) / 2).min((f64::from(window_lines) * ratio) as i32);
+        let margin = if scroll_margin < 0 {
+            0
+        } else if scroll_margin <= i64::from(max_margin) {
+            scroll_margin as i32
+        } else {
+            max_margin
+        };
+        if unit == MarginUnit::InPixels {
+            margin * frame_line_height
+        } else {
+            margin
+        }
     }
 
     pub(crate) fn window_left_margin_width(&self, w: Value) -> i64 {
