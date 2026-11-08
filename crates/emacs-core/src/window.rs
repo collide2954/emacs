@@ -2510,7 +2510,7 @@ pub(crate) fn f_window_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.window_point(w)))
 }
 
-fn f_window_old_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_window_old_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let w = lisp.decode_live_window(arg(args, 0))?;
     let m = lisp.window(w).old_pointm;
     Ok(lisp.marker_position_value(m).unwrap_or(Value::NIL))

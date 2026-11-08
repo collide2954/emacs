@@ -961,7 +961,11 @@ impl Lisp {
         Ok(self.xdisp.scratch_glyph_row.area_glyphs(TEXT_AREA).to_vec())
     }
 
-    fn fast_move_it_horizontally(&mut self, it: &mut It, nchars: i64) -> LispResult<MoveItResult> {
+    pub(crate) fn fast_move_it_horizontally(
+        &mut self,
+        it: &mut It,
+        nchars: i64,
+    ) -> LispResult<MoveItResult> {
         let zv = self.cur().zv;
         let (nl, _) = self.find_newline(it.charpos() as usize, zv, 1);
         let mut nl_pos = nl as i64;

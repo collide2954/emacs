@@ -5,6 +5,7 @@ pub mod echo;
 pub mod elements;
 pub mod geom;
 pub mod gui_produce;
+pub mod hscroll;
 pub mod it;
 pub mod iterate;
 pub mod line;
