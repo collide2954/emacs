@@ -165,6 +165,41 @@ impl Lisp {
         }
     }
 
+    pub fn gui_define_fringe_bitmap(&mut self, f: Value, n: i64) {
+        let Some(define) = self.frame_rif(f).define_fringe_bitmap else {
+            return;
+        };
+        if n >= self.fringe.max_used_fringe_bitmap {
+            return;
+        }
+        let fb = match self.fringe.bitmaps.get(n as usize).and_then(Option::as_ref) {
+            Some(fb) => fb.clone(),
+            None if n < MAX_STANDARD_FRINGE_BITMAPS => standard_bitmap(n as usize),
+            None => return,
+        };
+        define(self, n as usize, &fb.bits, fb.height, fb.width);
+    }
+
+    pub fn gui_init_fringe(&mut self, rif: &crate::dispextern::RedisplayInterface) {
+        let Some(define) = rif.define_fringe_bitmap else {
+            return;
+        };
+        let mut bt = NO_FRINGE_BITMAP + 1;
+        while bt < MAX_STANDARD_FRINGE_BITMAPS {
+            if self.fringe.bitmaps[bt as usize].is_none() {
+                let fb = standard_bitmap(bt as usize);
+                define(self, bt as usize, &fb.bits, fb.height, fb.width);
+            }
+            bt += 1;
+        }
+        while bt < self.fringe.max_used_fringe_bitmap {
+            if let Some(fb) = self.fringe.bitmaps[bt as usize].clone() {
+                define(self, bt as usize, &fb.bits, fb.height, fb.width);
+            }
+            bt += 1;
+        }
+    }
+
     fn window_leftmost_p(&self, w: Value) -> bool {
         self.window(w).pixel_left == 0
     }

@@ -173,6 +173,26 @@ impl Lisp {
         self.window_box_left(w, GlyphRowArea::Text) + x
     }
 
+    pub fn window_right_edge_x(&self, w: Value) -> i64 {
+        self.frame_internal_border_width(self.window(w).frame)
+            + self.window(w).pixel_left
+            + self.window(w).pixel_width
+    }
+
+    pub fn window_box(&mut self, w: Value, area: GlyphRowArea) -> (i64, i64, i64, i64) {
+        let width = self.window_box_width(w, area);
+        let height = self.window_box_height(w);
+        let x = self.window_box_left(w, area);
+        let mut y = self.window_top_edge_y(w);
+        if self.window_wants_tab_line(w) {
+            y += self.current_tab_line_height(w);
+        }
+        if self.window_wants_header_line(w) {
+            y += self.current_header_line_height(w);
+        }
+        (x, y, width, height)
+    }
+
     fn top_lines_height(&mut self, w: Value) -> i64 {
         self.window_tab_line_height(w) + self.window_header_line_height(w)
     }

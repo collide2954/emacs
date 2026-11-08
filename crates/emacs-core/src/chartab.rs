@@ -62,7 +62,7 @@ fn chartab_idx(c: u32, depth: usize, min_char: u32) -> usize {
 }
 
 impl Lisp {
-    pub(crate) fn char_table(&self, table: Value) -> &CharTable {
+    pub fn char_table(&self, table: Value) -> &CharTable {
         match self.heap.vectorlike_ref(table) {
             Vectorlike::CharTable(t) => t,
             _ => panic!("not a char-table"),

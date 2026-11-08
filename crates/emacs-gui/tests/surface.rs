@@ -118,3 +118,64 @@ fn resize_clears_to_background() {
     assert_eq!(px(&s, 4, 2), [0x11, 0x22, 0x33, 255]);
     assert_eq!(px(&s, 0, 0), [0x11, 0x22, 0x33, 255]);
 }
+
+#[test]
+fn saved_clips_nest_and_restore() {
+    let mut s = Surface::new(4, 4, BG);
+    s.save();
+    s.clip_rectangles(&[Rect::new(0, 0, 2, 2)]);
+    s.save();
+    s.clip_rectangles(&[Rect::new(1, 1, 3, 3)]);
+    s.fill_rectangle(RED, Rect::new(0, 0, 4, 4), false);
+    assert_eq!(px(&s, 1, 1), [255, 0, 0, 255]);
+    assert_eq!(px(&s, 0, 0), [0x11, 0x22, 0x33, 255]);
+    assert_eq!(px(&s, 2, 2), [0x11, 0x22, 0x33, 255]);
+    s.restore();
+    s.fill_rectangle(RED, Rect::new(0, 0, 4, 4), false);
+    assert_eq!(px(&s, 0, 0), [255, 0, 0, 255]);
+    assert_eq!(px(&s, 2, 2), [0x11, 0x22, 0x33, 255]);
+    s.restore();
+    s.fill_rectangle(RED, Rect::new(0, 0, 4, 4), false);
+    assert_eq!(px(&s, 3, 3), [255, 0, 0, 255]);
+}
+
+#[test]
+fn stroke_rectangle_outlines_pixel_edges() {
+    let mut s = Surface::new(6, 6, BG);
+    s.stroke_rectangle(RED, Rect::new(1, 1, 3, 2), false);
+    for (x, y) in [
+        (1, 1),
+        (4, 1),
+        (1, 3),
+        (4, 3),
+        (2, 1),
+        (1, 2),
+        (4, 2),
+        (3, 3),
+    ] {
+        assert_eq!(px(&s, x, y), [255, 0, 0, 255], "({x}, {y})");
+    }
+    for (x, y) in [(2, 2), (3, 2), (0, 0), (5, 5), (5, 1)] {
+        assert_eq!(px(&s, x, y), [0x11, 0x22, 0x33, 255], "({x}, {y})");
+    }
+}
+
+#[test]
+fn fill_polygon_covers_its_interior() {
+    let mut s = Surface::new(8, 4, BG);
+    s.fill_polygon(RED, &[(0.0, 0.0), (0.0, 4.0), (8.0, 4.0), (4.0, 0.0)]);
+    assert_eq!(px(&s, 1, 2), [255, 0, 0, 255]);
+    assert_eq!(px(&s, 6, 3), [255, 0, 0, 255]);
+    assert_eq!(px(&s, 7, 0), [0x11, 0x22, 0x33, 255]);
+}
+
+#[test]
+fn dashed_lines_alternate_segments() {
+    let mut s = Surface::new(12, 3, BG);
+    s.stroke_line(RED, (0.0, 1.5), (12.0, 1.5), 1.0, Some((2.0, 0.0)));
+    assert_eq!(px(&s, 0, 1), [255, 0, 0, 255]);
+    assert_eq!(px(&s, 1, 1), [255, 0, 0, 255]);
+    assert_eq!(px(&s, 2, 1), [0x11, 0x22, 0x33, 255]);
+    assert_eq!(px(&s, 4, 1), [255, 0, 0, 255]);
+    assert_eq!(px(&s, 1, 0), [0x11, 0x22, 0x33, 255]);
+}

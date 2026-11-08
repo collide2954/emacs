@@ -53,6 +53,8 @@ pub struct PgtkOutput {
     pub cursor_xgcv_background: i64,
     pub white_relief_pixel: i64,
     pub black_relief_pixel: i64,
+    pub relief_background: i64,
+    pub relief_background_valid_p: bool,
     pub parent_desc: i64,
     pub explicit_parent: bool,
     pub preferred_width: i64,
@@ -586,6 +588,9 @@ pub fn pgtk_term_init(
     hooks.delete_frame = Some(pgtk_destroy_window);
     hooks.delete_terminal = Some(pgtk_delete_terminal);
     hooks.read_socket = Some(pgtk_read_socket);
+    hooks.update_begin = Some(crate::pgtkdraw::pgtk_update_begin);
+    hooks.update_end = Some(crate::pgtkdraw::pgtk_update_end);
+    lisp.terminal_mut(terminal).rif = Some(&crate::pgtkdraw::PGTK_REDISPLAY_INTERFACE);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =
         with_display_list(|displays| displays.iter().map(|d| d.terminal).collect::<Vec<_>>())
@@ -638,6 +643,7 @@ pub fn pgtk_term_init(
     dpyinfo.scroll_y_per_line = 1;
     dpyinfo.connection = -1;
     with_display_list(|displays| displays.insert(0, dpyinfo));
+    lisp.gui_init_fringe(&crate::pgtkdraw::PGTK_REDISPLAY_INTERFACE);
     Ok(Some(terminal))
 }
 

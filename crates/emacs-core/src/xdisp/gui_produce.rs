@@ -91,7 +91,7 @@ impl Lisp {
         }
     }
 
-    pub(super) fn vcenter_baseline_offset(&self, font: Value, f: Value) -> i32 {
+    pub fn vcenter_baseline_offset(&self, font: Value, f: Value) -> i32 {
         let fb = self.font_bits(font);
         let line_height = self.frame(f).geometry.line_height as i32;
         let frame_font = self.frame(f).font;
@@ -560,7 +560,7 @@ impl Lisp {
         Ok(())
     }
 
-    pub(crate) fn composition_glyph(&self, id: usize, n: usize) -> i32 {
+    pub fn composition_glyph(&self, id: usize, n: usize) -> i32 {
         let cmp = &self.compositions.table[id];
         let idx = if cmp.method == CompositionMethod::WithRuleAltchars {
             n * 2

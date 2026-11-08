@@ -720,7 +720,7 @@ impl Lisp {
             .unwrap_or(Value::NIL)
     }
 
-    fn lglyph_int(&self, g: Value, idx: usize) -> i64 {
+    pub fn lglyph_int(&self, g: Value, idx: usize) -> i64 {
         self.aref_items(g)
             .get(idx)
             .and_then(|v| v.as_fixnum())
@@ -751,14 +751,14 @@ impl Lisp {
         crate::font::FONT_INVALID_CODE
     }
 
-    fn lglyph_adjustment(&self, g: Value) -> Value {
+    pub fn lglyph_adjustment(&self, g: Value) -> Value {
         self.aref_items(g)
             .get(LGLYPH_IX_ADJUSTMENT)
             .copied()
             .unwrap_or(Value::NIL)
     }
 
-    fn lglyph_adjust_part(&self, g: Value, idx: usize) -> i64 {
+    pub fn lglyph_adjust_part(&self, g: Value, idx: usize) -> i64 {
         let adj = self.lglyph_adjustment(g);
         if self.is_vector(adj) {
             self.lglyph_int(adj, idx)

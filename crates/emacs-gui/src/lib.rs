@@ -8,6 +8,7 @@ pub mod font;
 pub mod ftcrfont;
 pub mod gdkrgba;
 pub mod keysym;
+pub mod pgtkdraw;
 pub mod pgtkfns;
 pub mod pgtkim;
 pub mod pgtkselect;

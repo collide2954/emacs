@@ -1,6 +1,6 @@
 use tiny_skia::{
-    BlendMode, Color, FillRule, Mask, Paint, PathBuilder, Pixmap, PixmapPaint,
-    PremultipliedColorU8, Transform,
+    BlendMode, Color, FillRule, LineCap, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint,
+    PremultipliedColorU8, Stroke, StrokeDash, Transform,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -47,6 +47,7 @@ pub struct Surface {
     background: u32,
     alpha_background: f32,
     clip: Option<Mask>,
+    clip_stack: Vec<Option<Mask>>,
 }
 
 fn rgb(pixel: u32) -> (u8, u8, u8) {
@@ -78,6 +79,7 @@ impl Surface {
             background,
             alpha_background: 1.0,
             clip: None,
+            clip_stack: Vec::new(),
         };
         surface.pixmap.fill(color(background, 1.0));
         surface
@@ -112,6 +114,7 @@ impl Surface {
         self.pixmap
             .fill(color(self.background, self.alpha_background));
         self.clip = None;
+        self.clip_stack.clear();
     }
 
     fn bounds(&self) -> Rect {
@@ -222,6 +225,150 @@ impl Surface {
 
     pub fn reset_clip(&mut self) {
         self.clip = None;
+    }
+
+    pub fn save(&mut self) {
+        self.clip_stack.push(self.clip.clone());
+    }
+
+    pub fn restore(&mut self) {
+        if let Some(clip) = self.clip_stack.pop() {
+            self.clip = clip;
+        }
+    }
+
+    pub fn clip_path(&mut self, path: Option<&Path>) {
+        let (width, height) = (self.width(), self.height());
+        match (&mut self.clip, path) {
+            (Some(mask), Some(path)) => {
+                mask.intersect_path(path, FillRule::Winding, false, Transform::identity())
+            }
+            (Some(mask), None) => mask.clear(),
+            (None, path) => {
+                let Some(mut mask) = Mask::new(width, height) else {
+                    return;
+                };
+                if let Some(path) = path {
+                    mask.fill_path(path, FillRule::Winding, false, Transform::identity());
+                }
+                self.clip = Some(mask);
+            }
+        }
+    }
+
+    pub fn clip_rectangles(&mut self, rects: &[Rect]) {
+        let mut builder = PathBuilder::new();
+        for rect in rects {
+            if let Some(area) = rect.to_skia() {
+                builder.push_rect(area);
+            }
+        }
+        let path = builder.finish();
+        self.clip_path(path.as_ref());
+    }
+
+    fn paint(pixel: u32, anti_alias: bool) -> Paint<'static> {
+        let mut paint = Paint {
+            anti_alias,
+            blend_mode: BlendMode::SourceOver,
+            ..Paint::default()
+        };
+        paint.set_color(color(pixel, 1.0));
+        paint
+    }
+
+    pub fn stroke_rectangle(&mut self, pixel: u32, rect: Rect, respect_alpha_background: bool) {
+        let Some(area) = tiny_skia::Rect::from_xywh(
+            rect.x as f32 + 0.5,
+            rect.y as f32 + 0.5,
+            rect.width.max(0) as f32,
+            rect.height.max(0) as f32,
+        ) else {
+            return;
+        };
+        let path = PathBuilder::from_rect(area);
+        let mut paint = Self::paint(pixel, false);
+        if respect_alpha_background {
+            paint.set_color(color(pixel, self.alpha_background));
+            paint.blend_mode = BlendMode::Source;
+        }
+        let stroke = Stroke {
+            width: 1.0,
+            ..Stroke::default()
+        };
+        self.pixmap.stroke_path(
+            &path,
+            &paint,
+            &stroke,
+            Transform::identity(),
+            self.clip.as_ref(),
+        );
+    }
+
+    pub fn fill_polygon(&mut self, pixel: u32, points: &[(f32, f32)]) {
+        let mut builder = PathBuilder::new();
+        let Some((&(x0, y0), rest)) = points.split_first() else {
+            return;
+        };
+        builder.move_to(x0, y0);
+        for &(x, y) in rest {
+            builder.line_to(x, y);
+        }
+        builder.close();
+        if let Some(path) = builder.finish() {
+            self.pixmap.fill_path(
+                &path,
+                &Self::paint(pixel, true),
+                FillRule::Winding,
+                Transform::identity(),
+                self.clip.as_ref(),
+            );
+        }
+    }
+
+    pub fn stroke_polyline(
+        &mut self,
+        pixel: u32,
+        points: &[(f32, f32)],
+        width: f32,
+        dash: Option<(f32, f32)>,
+    ) {
+        let mut builder = PathBuilder::new();
+        let Some((&(x0, y0), rest)) = points.split_first() else {
+            return;
+        };
+        builder.move_to(x0, y0);
+        for &(x, y) in rest {
+            builder.line_to(x, y);
+        }
+        let Some(path) = builder.finish() else {
+            return;
+        };
+        let stroke = Stroke {
+            width,
+            line_cap: LineCap::Butt,
+            dash: dash
+                .and_then(|(segment, offset)| StrokeDash::new(vec![segment, segment], offset)),
+            ..Stroke::default()
+        };
+        self.pixmap.stroke_path(
+            &path,
+            &Self::paint(pixel, true),
+            &stroke,
+            Transform::identity(),
+            self.clip.as_ref(),
+        );
+    }
+
+    pub fn stroke_line(
+        &mut self,
+        pixel: u32,
+        from: (f32, f32),
+        to: (f32, f32),
+        width: f32,
+        dash: Option<(f32, f32)>,
+    ) {
+        self.stroke_polyline(pixel, &[from, to], width, dash);
     }
 
     fn blit(&mut self, rect: Rect, pixels: Vec<PremultipliedColorU8>) {
