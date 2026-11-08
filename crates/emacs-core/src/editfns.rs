@@ -158,6 +158,9 @@ impl Lisp {
 
     pub fn widen(&mut self) {
         let b = self.cur_mut();
+        if b.begv != 1 || b.zv != b.z() {
+            b.clip_changed = true;
+        }
         b.begv = 1;
         b.begv_byte = 1;
         b.zv = b.z();
@@ -166,6 +169,9 @@ impl Lisp {
 
     pub fn narrow(&mut self, start: usize, end: usize) {
         let b = self.cur_mut();
+        if b.begv != start || b.zv != end {
+            b.clip_changed = true;
+        }
         b.begv = start;
         b.begv_byte = b.text.char_to_byte(start);
         b.zv = end;
@@ -216,6 +222,11 @@ impl Lisp {
             return (end, original - count);
         }
         (start, 0)
+    }
+
+    pub fn find_before_next_newline(&self, from: usize, to: usize, cnt: i64) -> usize {
+        let (pos, counted) = self.find_newline(from, to, cnt);
+        if counted == cnt { pos - 1 } else { pos }
     }
 
     pub fn scan_newline_from_point(&self, count: i64) -> (usize, i64) {

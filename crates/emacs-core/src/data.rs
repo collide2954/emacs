@@ -1474,7 +1474,7 @@ fn f_default_boundp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(value != sym::UNBOUND))
 }
 
-fn f_default_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_default_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.default_value(args[0])
 }
 

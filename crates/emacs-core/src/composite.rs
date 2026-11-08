@@ -95,6 +95,7 @@ pub struct Composition {
     pub method: CompositionMethod,
     pub key: Value,
     pub offsets: Vec<i16>,
+    pub font: Value,
 }
 
 pub struct Compositions {
@@ -171,7 +172,7 @@ fn arg(args: &[Value], i: usize) -> Value {
 }
 
 impl Lisp {
-    fn aref_items(&self, v: Value) -> &[Value] {
+    pub(crate) fn aref_items(&self, v: Value) -> &[Value] {
         if self.is_vector(v) {
             self.vector_items(v)
         } else {
@@ -189,7 +190,7 @@ impl Lisp {
         self.xcar(prop).is_fixnum()
     }
 
-    fn composition_length(&self, prop: Value) -> Option<i64> {
+    pub(crate) fn composition_length(&self, prop: Value) -> Option<i64> {
         if self.composition_registered_p(prop) {
             self.car_safe(self.xcdr(prop)).as_fixnum()
         } else {
@@ -247,7 +248,7 @@ impl Lisp {
         ok && self.composition_length(prop) == Some(end as i64 - start as i64)
     }
 
-    fn character_width(&self, ch: i64) -> i64 {
+    pub(crate) fn character_width(&self, ch: i64) -> i64 {
         if (0..=character::MAX_CHAR as i64).contains(&ch) {
             self.char_width_of(ch as u32) as i64
         } else {
@@ -411,6 +412,7 @@ impl Lisp {
             method,
             key,
             offsets: vec![0; glyph_len * 2],
+            font: Value::NIL,
         });
         Ok(n)
     }

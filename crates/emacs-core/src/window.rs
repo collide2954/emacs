@@ -7,6 +7,23 @@ use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::value::Value;
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowBodyUnit {
+    CanonicalChars,
+    Pixels,
+    RemappedChars,
+}
+
+fn window_body_unit_from_symbol(unit: Value) -> WindowBodyUnit {
+    if unit == sym::REMAP {
+        WindowBodyUnit::RemappedChars
+    } else if unit.is_nil() {
+        WindowBodyUnit::CanonicalChars
+    } else {
+        WindowBodyUnit::Pixels
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct WindowFlags {
     pub update_mode_line: bool,
@@ -329,6 +346,9 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-old-pixel-height", 0, 1, f_window_old_pixel_height),
     Subr::fixed("window-total-height", 0, 2, f_window_total_height),
     Subr::fixed("window-total-width", 0, 2, f_window_total_width),
+    Subr::fixed("window-body-width", 0, 2, f_window_body_width),
+    Subr::fixed("window-body-height", 0, 2, f_window_body_height),
+    Subr::fixed("window-line-height", 0, 2, f_window_line_height),
     Subr::fixed("window-new-total", 0, 1, f_window_new_total),
     Subr::fixed("window-normal-size", 0, 2, f_window_normal_size),
     Subr::fixed("window-new-normal", 0, 1, f_window_new_normal),
@@ -1023,7 +1043,7 @@ impl Lisp {
         self.frame(self.window(w).frame).window_p()
     }
 
-    fn window_left_fringe_width(&self, w: Value) -> i64 {
+    pub(crate) fn window_left_fringe_width(&self, w: Value) -> i64 {
         let win = self.window(w);
         if win.left_fringe_width >= 0 {
             win.left_fringe_width
@@ -1032,7 +1052,7 @@ impl Lisp {
         }
     }
 
-    fn window_right_fringe_width(&self, w: Value) -> i64 {
+    pub(crate) fn window_right_fringe_width(&self, w: Value) -> i64 {
         let win = self.window(w);
         if win.right_fringe_width >= 0 {
             win.right_fringe_width
@@ -1041,14 +1061,14 @@ impl Lisp {
         }
     }
 
-    fn window_fringes_width(&self, w: Value) -> i64 {
+    pub(crate) fn window_fringes_width(&self, w: Value) -> i64 {
         if !self.window_frame_window_p(w) {
             return 0;
         }
         self.window_left_fringe_width(w) + self.window_right_fringe_width(w)
     }
 
-    fn window_margins_width(&self, w: Value) -> i64 {
+    pub(crate) fn window_margins_width(&self, w: Value) -> i64 {
         let win = self.window(w);
         (win.left_margin_cols + win.right_margin_cols) * self.window_frame_column_width(w)
     }
@@ -1107,7 +1127,7 @@ impl Lisp {
         }
     }
 
-    fn window_scroll_bar_area_width(&self, w: Value) -> i64 {
+    pub(crate) fn window_scroll_bar_area_width(&self, w: Value) -> i64 {
         if self.window_has_vertical_scroll_bar(w) {
             self.window_config_scroll_bar_width(w)
         } else {
@@ -1151,7 +1171,7 @@ impl Lisp {
         self.frame(self.window(w).frame).geometry.line_height
     }
 
-    fn window_rightmost_p(&self, w: Value) -> bool {
+    pub(crate) fn window_rightmost_p(&self, w: Value) -> bool {
         let win = self.window(w);
         let root = self.window(self.frame(win.frame).root_window);
         win.pixel_left + win.pixel_width == root.pixel_left + root.pixel_width
@@ -1163,7 +1183,7 @@ impl Lisp {
         win.pixel_top + win.pixel_height == root.pixel_top + root.pixel_height
     }
 
-    fn window_right_divider_width(&self, w: Value) -> i64 {
+    pub(crate) fn window_right_divider_width(&self, w: Value) -> i64 {
         if self.window_rightmost_p(w) {
             0
         } else {
@@ -1215,7 +1235,7 @@ impl Lisp {
         self.window_wants_line(w, sym::TAB_LINE_FORMAT, below)
     }
 
-    fn current_mode_line_height(&mut self, w: Value) -> i64 {
+    pub(crate) fn current_mode_line_height(&mut self, w: Value) -> i64 {
         let height = self.window(w).mode_line_height;
         if height >= 0 {
             return height;
@@ -1258,6 +1278,145 @@ impl Lisp {
         let height = self.estimate_mode_line_height(self.window(w).frame, face_id);
         self.window_mut(w).tab_line_height = height;
         height
+    }
+
+    pub fn window_display_table(&self, w: Value) -> Value {
+        let win = self.window(w);
+        if self.disp_table_p(win.display_table) {
+            return win.display_table;
+        }
+        if self.is_buffer(win.contents) {
+            let table = self.buffer_local_value(sym::BUFFER_DISPLAY_TABLE, win.contents);
+            if self.disp_table_p(table) {
+                return table;
+            }
+            let standard = self.find_symbol_value(sym::STANDARD_DISPLAY_TABLE);
+            if self.disp_table_p(standard) {
+                return standard;
+            }
+        }
+        Value::NIL
+    }
+
+    pub fn window_internal_height(&self, w: Value) -> i64 {
+        let mut ht = self.window(w).total_lines;
+        if self.window_wants_mode_line(w) {
+            ht -= 1;
+        }
+        if self.window_wants_header_line(w) {
+            ht -= 1;
+        }
+        if self.window_wants_tab_line(w) {
+            ht -= 1;
+        }
+        ht
+    }
+
+    pub(crate) fn window_left_margin_width(&self, w: Value) -> i64 {
+        self.window(w).left_margin_cols * self.window_frame_column_width(w)
+    }
+
+    pub(crate) fn window_right_margin_width(&self, w: Value) -> i64 {
+        self.window(w).right_margin_cols * self.window_frame_column_width(w)
+    }
+
+    pub(crate) fn window_left_scroll_bar_area_width(&self, w: Value) -> i64 {
+        if self.window_vertical_scroll_bar_type(w) == VerticalScrollBarType::Left {
+            self.window_config_scroll_bar_width(w)
+        } else {
+            0
+        }
+    }
+
+    pub(crate) fn window_has_vertical_scroll_bar_on_left(&self, w: Value) -> bool {
+        self.window_vertical_scroll_bar_type(w) == VerticalScrollBarType::Left
+    }
+
+    pub(crate) fn window_has_fringes_outside_margins(&self, w: Value) -> bool {
+        self.window(w).flags.fringes_outside_margins
+    }
+
+    pub(crate) fn window_full_width_p(&self, w: Value) -> bool {
+        let root = self.frame(self.window(w).frame).root_window;
+        self.window(w).pixel_width == self.window(root).pixel_width
+    }
+
+    pub fn window_body_height(&mut self, w: Value, pixelwise: WindowBodyUnit) -> LispResult<i64> {
+        let height = self.window(w).pixel_height
+            - self.window_tab_line_height(w)
+            - self.window_header_line_height(w)
+            - if self.window_has_horizontal_scroll_bar(w) {
+                self.window_scroll_bar_area_height(w)
+            } else {
+                0
+            }
+            - self.window_mode_line_height(w)
+            - self.window_bottom_divider_width(w);
+        let mut pixelwise = pixelwise;
+        let mut denom = 1;
+        let f = self.window(w).frame;
+        if pixelwise == WindowBodyUnit::RemappedChars {
+            if !self.find_symbol_value(sym::FACE_REMAPPING_ALIST).is_nil() {
+                let face_id = self.lookup_named_face(None, f, sym::DEFAULT, true)?;
+                if let Some(face) = self.face_from_id(f, face_id as usize)
+                    && !face.font.is_nil()
+                    && self.font_object(face.font).height != 0
+                {
+                    denom = i64::from(self.font_object(face.font).height);
+                }
+            } else {
+                pixelwise = WindowBodyUnit::CanonicalChars;
+            }
+        }
+        if pixelwise == WindowBodyUnit::CanonicalChars {
+            denom = self.frame(f).geometry.line_height;
+        }
+        Ok((height / denom).max(0))
+    }
+
+    pub fn window_body_width(&mut self, w: Value, pixelwise: WindowBodyUnit) -> LispResult<i64> {
+        let f = self.window(w).frame;
+        let window_p = self.frame_window_p(f);
+        let width = self.window(w).pixel_width
+            - self.window_right_divider_width(w)
+            - if self.window_has_vertical_scroll_bar(w) {
+                self.window_scroll_bar_area_width(w)
+            } else {
+                i64::from(
+                    !window_p
+                        && !self.window_rightmost_p(w)
+                        && self.window_right_divider_width(w) == 0,
+                )
+            }
+            - self.window_margins_width(w)
+            - if window_p {
+                self.window_fringes_width(w)
+            } else {
+                0
+            };
+        let mut pixelwise = pixelwise;
+        let mut denom = 1;
+        if pixelwise == WindowBodyUnit::RemappedChars {
+            if !self.find_symbol_value(sym::FACE_REMAPPING_ALIST).is_nil() {
+                let face_id = self.lookup_named_face(None, f, sym::DEFAULT, true)?;
+                if let Some(face) = self.face_from_id(f, face_id as usize)
+                    && !face.font.is_nil()
+                {
+                    let font = self.font_object(face.font);
+                    if font.average_width != 0 {
+                        denom = i64::from(font.average_width);
+                    } else if font.space_width != 0 {
+                        denom = i64::from(font.space_width);
+                    }
+                }
+            } else {
+                pixelwise = WindowBodyUnit::CanonicalChars;
+            }
+        }
+        if pixelwise == WindowBodyUnit::CanonicalChars {
+            denom = self.frame(f).geometry.column_width;
+        }
+        Ok((width / denom).max(0))
     }
 
     pub fn window_mode_line_height(&mut self, w: Value) -> i64 {
@@ -2027,6 +2186,49 @@ fn f_window_total_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_window_total_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     rounded_size(lisp, args, true)
+}
+
+impl Lisp {
+    pub fn window_outdated(&self, w: Value) -> bool {
+        let win = self.window(w);
+        let text = &self.buffer(win.contents).text;
+        win.last_modified < text.modiff || win.last_overlay_modified < text.overlay_modiff
+    }
+}
+
+fn f_window_line_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (line, window) = (arg(args, 0), arg(args, 1));
+    let w = lisp.decode_live_window(window)?;
+    if lisp.noninteractive || lisp.window(w).flags.pseudo_window_p {
+        return Ok(Value::NIL);
+    }
+    let contents = lisp.window(w).contents;
+    if !lisp.is_buffer(contents) {
+        return Err(lisp.wrong_type(sym::BUFFERP, contents));
+    }
+    let b = lisp.buffer(contents);
+    if !lisp.window(w).flags.window_end_valid
+        || lisp.windows.windows_or_buffers_changed != 0
+        || b.clip_changed
+        || b.prevent_redisplay_optimizations_p
+        || lisp.window_outdated(w)
+    {
+        return Ok(Value::NIL);
+    }
+    let _ = line;
+    unreachable!("window-line-height needs the current glyph matrix")
+}
+
+fn f_window_body_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    let unit = window_body_unit_from_symbol(arg(args, 1));
+    Ok(Value::fixnum(lisp.window_body_width(w, unit)?))
+}
+
+fn f_window_body_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    let unit = window_body_unit_from_symbol(arg(args, 1));
+    Ok(Value::fixnum(lisp.window_body_height(w, unit)?))
 }
 
 fn f_window_new_total(lisp: &mut Lisp, args: &[Value]) -> LispResult {

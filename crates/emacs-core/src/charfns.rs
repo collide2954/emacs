@@ -125,6 +125,18 @@ fn sanitize_width(width: i64) -> usize {
 }
 
 impl Lisp {
+    pub fn char_printable_p(&self, c: u32) -> bool {
+        if (32..127).contains(&c) {
+            return true;
+        }
+        let table = self.find_symbol_value(sym::PRINTABLE_CHARS);
+        self.is_char_table(table) && !self.char_table_ref(table, c).is_nil()
+    }
+
+    pub fn blankp(&self, c: u32) -> bool {
+        c == u32::from(b'\t') || self.regex_env(None).blankp(c)
+    }
+
     pub fn sane_tab_width(&self) -> usize {
         match self.bound_var(sym::TAB_WIDTH).as_fixnum() {
             Some(n) if 0 < n && n <= 1000 => n as usize,

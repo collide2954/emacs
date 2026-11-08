@@ -1555,6 +1555,7 @@ fn insert_file_contents_body(lisp: &mut Lisp, s: &mut InsertFile) -> LispResult<
         }
     }
     let likely_end = end_offset.min(s.st_size);
+    lisp.cur_mut().clip_changed = true;
     let mut curpos: i64 = -1;
     let mut read_buf = vec![0u8; READ_BUF_SIZE];
     let csr = lisp.bound_var(sym::CODING_SYSTEM_FOR_READ);

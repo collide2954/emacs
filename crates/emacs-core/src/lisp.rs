@@ -104,6 +104,7 @@ pub struct Lisp {
     pub stack: Vec<Value>,
     pub lisp_eval_depth: i64,
     pub gc_inhibited: usize,
+    pub gc_deferred: usize,
     pub gc_stress: bool,
     pub empty_unibyte: Value,
     pub empty_multibyte: Value,
@@ -326,6 +327,7 @@ impl Lisp {
             stack: Vec::new(),
             lisp_eval_depth: 0,
             gc_inhibited: 1,
+            gc_deferred: 0,
             gc_stress: std::env::var_os("EMACS_GC_STRESS").is_some(),
             empty_unibyte: Value::NIL,
             empty_multibyte: Value::NIL,
@@ -401,6 +403,7 @@ impl Lisp {
         }
         lisp.init_cmdargs(&startup).expect("init_cmdargs");
         lisp.noninteractive = startup.noninteractive;
+        crate::xdisp::init_xdisp(&mut lisp);
         lisp.gc_inhibited = 0;
         lisp
     }
@@ -1147,6 +1150,7 @@ impl Lisp {
         roots.push(self.xdisp.echo_area_window);
         roots.extend_from_slice(&self.xdisp.echo_area_buffer);
         roots.push(self.xdisp.redisplay_ticks_window);
+        roots.push(self.xdisp.default_invis_vector);
         self.bidi.roots(&mut roots);
         self.keyboard.roots(&mut roots);
         roots.push(self.fileio.annotation_buffers);
@@ -1221,8 +1225,15 @@ impl Lisp {
         self.heap.collect(&roots)
     }
 
+    pub fn with_gc_deferred<T>(&mut self, f: impl FnOnce(&mut Lisp) -> T) -> T {
+        self.gc_deferred += 1;
+        let r = f(self);
+        self.gc_deferred -= 1;
+        r
+    }
+
     pub fn maybe_gc(&mut self) {
-        if self.gc_inhibited > 0 {
+        if self.gc_inhibited > 0 || self.gc_deferred > 0 {
             return;
         }
         if self.gc_stress {

@@ -16,6 +16,31 @@ struct SortvecItem {
     spriority: i64,
 }
 
+struct SortStr {
+    string: Value,
+    string2: Value,
+    size: i64,
+    priority: i64,
+}
+
+fn cmp_for_strings(s1: &SortStr, s2: &SortStr) -> Ordering {
+    if s1.size != s2.size {
+        return if s2.size < s1.size {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
+    }
+    if s1.priority != s2.priority {
+        return if s1.priority < s2.priority {
+            Ordering::Less
+        } else {
+            Ordering::Greater
+        };
+    }
+    Ordering::Equal
+}
+
 fn compare_overlays(s1: &SortvecItem, s2: &SortvecItem) -> Ordering {
     if s1.priority != s2.priority {
         if s1.priority < s2.priority {
@@ -302,6 +327,90 @@ impl Lisp {
             }
         }
         None
+    }
+
+    pub fn overlay_strings(&self, pos: i64, w: Value) -> Vec<u8> {
+        let multibyte = self.cur().text.multibyte;
+        let mut nodes: Vec<(usize, usize, Value)> = self
+            .cur()
+            .overlays
+            .iter()
+            .map(|&o| {
+                let ov = self.overlay(o);
+                (ov.start, ov.end, o)
+            })
+            .filter(|&(s, e, _)| s as i64 <= pos + 1 && pos - 1 <= e as i64)
+            .collect();
+        nodes.sort_by_key(|n| std::cmp::Reverse(n.0));
+        let mut heads: Vec<SortStr> = Vec::new();
+        let mut tails: Vec<SortStr> = Vec::new();
+        for (startpos, endpos, overlay) in nodes {
+            let (startpos, endpos) = (startpos as i64, endpos as i64);
+            if endpos != pos && startpos != pos {
+                continue;
+            }
+            let window = self.overlay_get(overlay, sym::WINDOW);
+            if self.is_window(window) && window != w {
+                continue;
+            }
+            let priority = self
+                .overlay_get(overlay, sym::PRIORITY)
+                .as_fixnum()
+                .unwrap_or(0);
+            let before = self.overlay_get(overlay, sym::BEFORE_STRING);
+            if startpos == pos && before.is_string() {
+                heads.push(SortStr {
+                    string: before,
+                    string2: if startpos == endpos {
+                        self.overlay_get(overlay, sym::AFTER_STRING)
+                    } else {
+                        Value::NIL
+                    },
+                    size: endpos - startpos,
+                    priority,
+                });
+            } else if endpos == pos {
+                let after = self.overlay_get(overlay, sym::AFTER_STRING);
+                if after.is_string() {
+                    tails.push(SortStr {
+                        string: after,
+                        string2: Value::NIL,
+                        size: endpos - startpos,
+                        priority,
+                    });
+                }
+            }
+        }
+        tails.sort_by(cmp_for_strings);
+        heads.sort_by(cmp_for_strings);
+        let mut out = Vec::new();
+        for s in tails.iter().rev() {
+            self.copy_string_text(s.string, multibyte, &mut out);
+        }
+        for s in &heads {
+            self.copy_string_text(s.string, multibyte, &mut out);
+            if s.string2.is_string() {
+                self.copy_string_text(s.string2, multibyte, &mut out);
+            }
+        }
+        out
+    }
+
+    fn copy_string_text(&self, string: Value, to_multibyte: bool, out: &mut Vec<u8>) {
+        let bytes = self.string_bytes(string);
+        let from_multibyte = self.string_multibyte(string);
+        if from_multibyte == to_multibyte {
+            out.extend_from_slice(bytes);
+        } else if from_multibyte {
+            let mut i = 0;
+            while i < bytes.len() {
+                let (c, len) = crate::character::string_char(&bytes[i..]);
+                out.push(if c < 0x80 { c as u8 } else { (c & 0xFF) as u8 });
+                i += len;
+            }
+        } else {
+            out.extend_from_slice(&crate::character::str_to_multibyte(bytes));
+        }
     }
 
     pub fn next_overlay_change(&self, buffer: Value, pos: usize, forward: bool) -> usize {

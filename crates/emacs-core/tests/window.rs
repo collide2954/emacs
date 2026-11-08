@@ -204,6 +204,59 @@ fn window_line_and_divider_sizes() {
 }
 
 #[test]
+fn window_body_sizes() {
+    check(&[
+        ("(window-body-width)", "80"),
+        ("(= (window-body-width nil t) (window-body-width))", "t"),
+        (
+            "(= (window-body-width nil 'remap) (window-body-width))",
+            "t",
+        ),
+        ("(- (window-total-height) (window-body-height))", "1"),
+        ("(window-body-height (minibuffer-window))", "1"),
+        ("(window-body-height (minibuffer-window) t)", "1"),
+        (
+            "(progn (setq header-line-format \"h\") (- (window-total-height) (window-body-height)))",
+            "2",
+        ),
+        (
+            "(window-body-width 'foo)",
+            "error: (wrong-type-argument window-live-p foo)",
+        ),
+        (
+            "(window-body-height 'foo t)",
+            "error: (wrong-type-argument window-live-p foo)",
+        ),
+    ]);
+}
+
+#[test]
+fn window_line_height_without_an_up_to_date_matrix() {
+    check(&[
+        ("(window-line-height)", "nil"),
+        ("(window-line-height 'mode-line)", "nil"),
+        (
+            "(window-line-height nil 'x)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+    ]);
+    common::on_big_stack(|| {
+        let mut lisp = emacs_core::lisp::Lisp::new_with(false);
+        for (source, expected) in [
+            ("(window-line-height)", "nil"),
+            ("(window-line-height 0)", "nil"),
+            ("(window-line-height 'header-line (selected-window))", "nil"),
+        ] {
+            assert_eq!(
+                common::eval(&mut lisp, source),
+                expected,
+                "evaluating {source}"
+            );
+        }
+    });
+}
+
+#[test]
 fn set_window_start_and_point() {
     check(&[
         (

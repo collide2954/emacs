@@ -2330,6 +2330,262 @@ impl Lisp {
         r
     }
 
+    pub fn smaller_face(&mut self, f: Value, face_id: usize, steps: i64) -> LispResult<usize> {
+        let delta: i64 = if steps < 0 { 5 } else { -5 };
+        let mut steps = steps.abs();
+        let face = self.face_from_id(f, face_id).expect("face is not realized");
+        let mut attrs = face.lface;
+        let font = face.font;
+        let mut pt = attrs[LFACE_HEIGHT_INDEX].as_fixnum().unwrap_or(0);
+        let mut last_pt = pt;
+        let mut new_face_id = face_id;
+        let mut last_height = self.font_object(font).height;
+        let base = self.stack.len();
+        self.stack.extend_from_slice(&attrs);
+        let r = (|| -> LispResult<usize> {
+            while steps != 0 && pt + delta > 0 && (last_pt - pt).abs() < 100 {
+                pt += delta;
+                attrs[LFACE_HEIGHT_INDEX] = Value::fixnum(pt);
+                new_face_id = self.lookup_face(f, &attrs)?;
+                let new_font = self
+                    .face_from_id(f, new_face_id)
+                    .expect("face is not realized")
+                    .font;
+                let height = self.font_object(new_font).height;
+                if (delta < 0 && height < last_height) || (delta > 0 && height > last_height) {
+                    steps -= 1;
+                    last_height = height;
+                    last_pt = pt;
+                }
+            }
+            Ok(new_face_id)
+        })();
+        self.stack.truncate(base);
+        r
+    }
+
+    pub fn face_with_height(&mut self, f: Value, face_id: usize, height: i64) -> LispResult<usize> {
+        if height <= 0 {
+            return Ok(face_id);
+        }
+        let mut attrs = self
+            .face_from_id(f, face_id)
+            .expect("face is not realized")
+            .lface;
+        attrs[LFACE_HEIGHT_INDEX] = Value::fixnum(height);
+        let base = self.stack.len();
+        self.stack.extend_from_slice(&attrs);
+        let r = (|| -> LispResult<usize> {
+            self.font_clear_prop(&mut attrs, crate::font::FONT_SIZE_INDEX)?;
+            self.lookup_face(f, &attrs)
+        })();
+        self.stack.truncate(base);
+        r
+    }
+
+    pub fn lookup_derived_face(
+        &mut self,
+        w: Option<Value>,
+        f: Value,
+        symbol: Value,
+        face_id: usize,
+        signal_p: bool,
+    ) -> LispResult<i64> {
+        let base = self.stack.len();
+        let r = (|| -> LispResult<i64> {
+            let symbol_attrs = self.attrs_push(sym::UNSPECIFIED);
+            let mut points = MergePoints::new();
+            if !self.get_lface_attributes(
+                w,
+                Some(f),
+                symbol,
+                symbol_attrs,
+                signal_p,
+                &mut points,
+            )? {
+                return Ok(-1);
+            }
+            let lface = self
+                .face_from_id(f, face_id)
+                .expect("face is not realized")
+                .lface;
+            let attrs = self.attrs_push_from(&lface);
+            for i in 1..N {
+                if resetp(self.at(symbol_attrs, i)) {
+                    let v = self.at(attrs, i);
+                    self.set_at(symbol_attrs, i, v);
+                }
+            }
+            self.merge_face_vectors(w, Some(f), symbol_attrs, attrs, &mut points)?;
+            let merged = self.attrs_snapshot(attrs);
+            Ok(self.lookup_face(f, &merged)? as i64)
+        })();
+        self.stack.truncate(base);
+        r
+    }
+
+    pub fn merge_faces(
+        &mut self,
+        w: Value,
+        face_name: Value,
+        face_id: i64,
+        base_face_id: usize,
+    ) -> LispResult<i64> {
+        let f = self.window(w).frame;
+        let Some(base_face) = self.face_from_id(f, base_face_id) else {
+            return Ok(base_face_id as i64);
+        };
+        let base_lface = base_face.lface;
+        if face_name == sym::T {
+            if face_id < 0 || face_id as usize >= self.faces.lface_id_to_name.len() {
+                return Ok(base_face_id as i64);
+            }
+            let name = self.faces.lface_id_to_name[face_id as usize];
+            let id = self.lookup_derived_face(Some(w), f, name, base_face_id, false)?;
+            return Ok(if id >= 0 { id } else { base_face_id as i64 });
+        }
+        let base = self.stack.len();
+        let r = (|| -> LispResult<i64> {
+            let attrs = self.attrs_push_from(&base_lface);
+            let mut points = MergePoints::new();
+            if !face_name.is_nil() {
+                if !self.merge_named_face(Some(w), Some(f), face_name, attrs, &mut points, 0)? {
+                    return Ok(base_face_id as i64);
+                }
+            } else {
+                if face_id < 0 {
+                    return Ok(base_face_id as i64);
+                }
+                let Some(face) = self.face_from_id(f, face_id as usize) else {
+                    return Ok(base_face_id as i64);
+                };
+                let face_lface = face.lface;
+                let from = self.attrs_push_from(&face_lface);
+                if face_id as usize != DEFAULT_FACE_ID {
+                    let deflt = self
+                        .face_from_id(f, DEFAULT_FACE_ID)
+                        .expect("default face is not realized")
+                        .lface;
+                    for (i, &d) in deflt.iter().enumerate().skip(1) {
+                        if self.at(from, i) == sym::RESET {
+                            self.set_at(from, i, d);
+                        }
+                    }
+                }
+                self.merge_face_vectors(Some(w), Some(f), from, attrs, &mut points)?;
+            }
+            let merged = self.attrs_snapshot(attrs);
+            Ok(self.lookup_face(f, &merged)? as i64)
+        })();
+        self.stack.truncate(base);
+        r
+    }
+
+    pub fn face_for_overlay_string(
+        &mut self,
+        w: Value,
+        pos: i64,
+        limit: i64,
+        mouse: bool,
+        _overlay: Value,
+        attr_filter: usize,
+    ) -> LispResult<(usize, i64)> {
+        let f = self.window(w).frame;
+        let propname = if mouse { sym::MOUSE_FACE } else { sym::FACE };
+        let position = Value::fixnum(pos);
+        let mut endpos = self.cur().zv as i64;
+        let contents = self.window(w).contents;
+        let prop = crate::textprop::f_get_text_property(self, &[position, propname, contents])?;
+        let base = self.stack.len();
+        self.stack.push(prop);
+        let limit1 = Value::fixnum(limit.min(endpos));
+        let end = crate::textprop::f_next_single_property_change(
+            self,
+            &[position, propname, contents, limit1],
+        )?;
+        if let Some(e) = end.as_fixnum() {
+            endpos = e;
+        }
+        if prop.is_nil() && self.find_symbol_value(sym::FACE_REMAPPING_ALIST).is_nil() {
+            self.stack.truncate(base);
+            return Ok((DEFAULT_FACE_ID, endpos));
+        }
+        let r = (|| -> LispResult<usize> {
+            let id = self.lookup_basic_face(Some(w), f, DEFAULT_FACE_ID)?;
+            let lface = self.face_from_id(f, id).expect("default face").lface;
+            let attrs = self.attrs_push_from(&lface);
+            if !prop.is_nil() {
+                self.merge_face_ref(
+                    Some(w),
+                    Some(f),
+                    prop,
+                    attrs,
+                    true,
+                    &mut MergePoints::new(),
+                    attr_filter,
+                )?;
+            }
+            let merged = self.attrs_snapshot(attrs);
+            self.lookup_face(f, &merged)
+        })();
+        self.stack.truncate(base);
+        Ok((r?, endpos))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn face_at_string_position(
+        &mut self,
+        w: Value,
+        string: Value,
+        pos: i64,
+        _bufpos: i64,
+        base_face_id: usize,
+        mouse_p: bool,
+        attr_filter: usize,
+    ) -> LispResult<(usize, i64)> {
+        let f = self.window(w).frame;
+        let multibyte_p = self.string_multibyte(string);
+        let prop_name = if mouse_p { sym::MOUSE_FACE } else { sym::FACE };
+        let position = Value::fixnum(pos);
+        let prop = crate::textprop::f_get_text_property(self, &[position, prop_name, string])?;
+        let base = self.stack.len();
+        self.stack.push(prop);
+        let limit = Value::fixnum(self.string_chars(string) as i64);
+        let end = crate::textprop::f_next_single_property_change(
+            self,
+            &[position, prop_name, string, limit],
+        )?;
+        let endptr = end.as_fixnum().unwrap_or(-1);
+        let r = (|| -> LispResult<usize> {
+            let base_face_id = if self.face_from_id(f, base_face_id).is_some() {
+                base_face_id
+            } else {
+                self.lookup_basic_face(Some(w), f, DEFAULT_FACE_ID)?
+            };
+            let base_face = self.face_from_id(f, base_face_id).expect("base face");
+            let (base_id, ascii_p, lface) = (base_face.id, base_face.is_ascii(), base_face.lface);
+            if prop.is_nil() && (multibyte_p || !self.frame_window_p(f) || ascii_p) {
+                return Ok(base_id);
+            }
+            let attrs = self.attrs_push_from(&lface);
+            if !prop.is_nil() {
+                self.merge_face_ref(
+                    Some(w),
+                    Some(f),
+                    prop,
+                    attrs,
+                    true,
+                    &mut MergePoints::new(),
+                    attr_filter,
+                )?;
+            }
+            let merged = self.attrs_snapshot(attrs);
+            self.lookup_face(f, &merged)
+        })();
+        self.stack.truncate(base);
+        Ok((r?, endptr))
+    }
+
     pub fn face_at_buffer_position(
         &mut self,
         w: Value,

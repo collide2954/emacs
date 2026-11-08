@@ -1,18 +1,34 @@
 use crate::character::bytes_by_char_head;
 use crate::charfns::f_string_width;
 use crate::composite::CompositionIt;
+use crate::dispextern::{
+    GlyphRowArea, It, ItMethod, LineWrap, MOVE_TO_POS, MOVE_TO_X, OVERLAY_STRING_CHUNK_SIZE,
+    TextPos,
+};
 use crate::editfns::f_insert_char;
 use crate::error::LispResult;
+use crate::fns::rarely_quit;
 use crate::lisp::Lisp;
 use crate::subr::Subr;
 use crate::symbols as sym;
 use crate::textprop::{f_next_property_change, f_next_single_property_change};
 use crate::value::{MOST_POSITIVE_FIXNUM, Value};
-use crate::window::WindowLoop;
+use crate::window::{WindowBodyUnit, WindowLoop};
 
 const MAX_FACE_ID: i64 = (1 << 20) - 1;
 const DISP_TABLE_EXTRA_SLOTS: usize = 6;
 const INT_MAX: i64 = i32::MAX as i64;
+const DISP_INVIS_VECTOR_SLOT: usize = 4;
+
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct Position {
+    pub bufpos: i64,
+    pub bytepos: i64,
+    pub hpos: i64,
+    pub vpos: i64,
+    pub prevhpos: i64,
+    pub contin: bool,
+}
 
 #[derive(Default)]
 pub struct Indent {
@@ -26,6 +42,14 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("indent-to", 1, 2, f_indent_to).interactive("NIndent to column: "),
     Subr::fixed("current-column", 0, 0, f_current_column),
     Subr::fixed("move-to-column", 1, 2, f_move_to_column).interactive("NMove to column: "),
+    Subr::fixed("compute-motion", 7, 7, f_compute_motion),
+    Subr::fixed("vertical-motion", 1, 3, f_vertical_motion),
+    Subr::fixed(
+        "line-number-display-width",
+        0,
+        1,
+        f_line_number_display_width,
+    ),
 ];
 
 pub fn init_vars(lisp: &mut Lisp) {
@@ -53,7 +77,7 @@ pub struct ColumnScan {
 }
 
 impl Lisp {
-    fn disp_table_p(&self, obj: Value) -> bool {
+    pub(crate) fn disp_table_p(&self, obj: Value) -> bool {
         self.is_char_table(obj)
             && self.char_table(obj).purpose == sym::DISPLAY_TABLE
             && self.char_table(obj).extras.len() == DISP_TABLE_EXTRA_SLOTS
@@ -200,7 +224,7 @@ impl Lisp {
             .goalcol)
     }
 
-    pub fn skip_invisible(&mut self, pos: i64, to: i64) -> LispResult<(i64, i64)> {
+    pub fn skip_invisible(&mut self, pos: i64, to: i64, window: Value) -> LispResult<(i64, i64)> {
         let position = Value::fixnum(pos);
         let buffer = self.current_buffer;
         let overlay_limit = self.next_overlay_change(buffer, pos as usize, true) as i64;
@@ -224,8 +248,18 @@ impl Lisp {
             .as_fixnum()
             .unwrap_or(limit)
         };
-        let prop = self.get_char_property(position, sym::INVISIBLE, buffer)?;
-        if self.text_prop_means_invisible(prop) == 1 {
+        let object = if !window.is_nil() && self.window(window).contents == buffer {
+            window
+        } else {
+            buffer
+        };
+        let prop = self.get_char_property(position, sym::INVISIBLE, object)?;
+        let inv_p = self.text_prop_means_invisible(prop);
+        if if window.is_nil() {
+            inv_p == 1
+        } else {
+            inv_p != 0
+        } {
             return Ok((next_boundary, next_boundary));
         }
         Ok((pos, next_boundary))
@@ -385,7 +419,7 @@ impl Lisp {
             while scan < end {
                 while scan == next_boundary {
                     let old_scan = scan;
-                    (scan, next_boundary) = self.skip_invisible(scan, end)?;
+                    (scan, next_boundary) = self.skip_invisible(scan, end, Value::NIL)?;
                     if scan != old_scan {
                         scan_byte = self.cur().text.char_to_byte(scan as usize) as i64;
                     }
@@ -495,7 +529,7 @@ impl Lisp {
         })
     }
 
-    fn position_indentation(&mut self, pos_byte: i64) -> LispResult<i64> {
+    pub(crate) fn position_indentation(&mut self, pos_byte: i64) -> LispResult<i64> {
         let tab_width = self.sane_tab_width() as i64;
         let mut column = 0;
         let mut pos_byte = pos_byte;
@@ -507,7 +541,7 @@ impl Lisp {
                 }
                 let pos = self.cur().text.byte_to_char(pos_byte as usize) as i64;
                 let zv = self.cur().zv as i64;
-                let (pos, next_boundary) = self.skip_invisible(pos, zv)?;
+                let (pos, next_boundary) = self.skip_invisible(pos, zv, Value::NIL)?;
                 pos_byte = self.cur().text.char_to_byte(pos as usize) as i64;
                 next_boundary_byte = self.cur().text.char_to_byte(next_boundary as usize) as i64;
             }
@@ -577,6 +611,848 @@ impl Lisp {
         self.record_known_column(mincol);
         Ok(mincol)
     }
+
+    fn selective_display_value(&self) -> i64 {
+        let selective = self.find_symbol_value(sym::SELECTIVE_DISPLAY);
+        match selective.as_fixnum() {
+            Some(n) => n,
+            None if selective.is_nil() => 0,
+            None => -1,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_motion(
+        &mut self,
+        from: i64,
+        frombyte: i64,
+        fromvpos: i64,
+        fromhpos: i64,
+        did_motion: bool,
+        to: i64,
+        tovpos: i64,
+        tohpos: i64,
+        width: i64,
+        hscroll: i64,
+        tab_offset: i64,
+        win: Value,
+    ) -> LispResult<Position> {
+        let mut hpos = fromhpos;
+        let mut vpos = fromvpos;
+        let mut did_motion = did_motion;
+        let mut tab_offset = tab_offset;
+        let mut width = width;
+        let tab_width = self.sane_tab_width() as i64;
+        let ctl_arrow = !self.find_symbol_value(sym::CTL_ARROW).is_nil();
+        let table = self.window_display_table(win);
+        let dp = (!table.is_nil()).then_some(table);
+        let selective = self.selective_display_value();
+        let selective_rlen = match dp {
+            Some(dp) if selective != 0 => {
+                let invis = self.char_table(dp).extras[DISP_INVIS_VECTOR_SLOT];
+                if self.is_vector(invis) {
+                    self.vector_items(invis).len() as i64
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        };
+        let mut next_boundary = from;
+        let multibyte = self.cur().text.multibyte;
+        let mut wide_column_end_hpos = 0;
+        let mut prev_hpos = 0;
+        let mut prev_vpos = 0;
+        let frame = self.window(win).frame;
+        let window_p = self.frame_window_p(frame);
+        let base = self.stack.len();
+        self.stack.push(win);
+        self.stack.push(table);
+        if width < 0 {
+            width = self.window_body_width(win, WindowBodyUnit::CanonicalChars)?;
+            if !window_p {
+                width -= 1;
+            }
+        }
+        let continuation_glyph_width = if window_p { 0 } else { 1 };
+        let mut pos = from;
+        let mut prev_pos = from;
+        let mut pos_byte = frombyte;
+        let mut prev_pos_byte = frombyte;
+        let mut contin_hpos = 0;
+        let mut prev_tab_offset = tab_offset;
+        let mut cmp_it = CompositionIt {
+            id: -1,
+            ..CompositionIt::default()
+        };
+        self.composition_compute_stop_pos(&mut cmp_it, pos, to, Value::NIL, true)?;
+        let mut quit_count: u16 = 0;
+        'after_loop: loop {
+            quit_count = quit_count.wrapping_add(1);
+            rarely_quit(self, i64::from(quit_count))?;
+            while pos == next_boundary {
+                let pos_here = pos;
+                if vpos > tovpos || (vpos == tovpos && hpos >= tohpos) {
+                    if contin_hpos != 0
+                        && prev_hpos == 0
+                        && hpos > tohpos
+                        && (contin_hpos == width || wide_column_end_hpos > width)
+                    {
+                        pos = prev_pos;
+                        pos_byte = prev_pos_byte;
+                        hpos = prev_hpos;
+                        vpos = prev_vpos;
+                        tab_offset = prev_tab_offset;
+                    }
+                    break;
+                }
+                if !did_motion {
+                    let ovstr = self.overlay_strings(pos, win);
+                    let ovlen = ovstr.len() as i64;
+                    hpos += if multibyte && ovlen > 0 {
+                        self.strwidth(&ovstr) as i64
+                    } else {
+                        ovlen
+                    };
+                }
+                did_motion = false;
+                if pos >= to {
+                    break;
+                }
+                let newpos;
+                (newpos, next_boundary) = self.skip_invisible(pos, to, win)?;
+                if newpos >= to {
+                    pos = to.min(newpos);
+                    pos_byte = self.cur().text.char_to_byte(pos as usize) as i64;
+                    break 'after_loop;
+                }
+                if newpos != pos_here {
+                    pos = newpos;
+                    pos_byte = self.cur().text.char_to_byte(pos as usize) as i64;
+                }
+                if newpos > cmp_it.stop_pos && cmp_it.id < 0 {
+                    self.composition_reseat_it(&mut cmp_it, pos, to, win, -1, Value::NIL)?;
+                }
+                quit_count = quit_count.wrapping_add(1);
+                rarely_quit(self, i64::from(quit_count))?;
+            }
+            if hpos > width {
+                let total_width = width + continuation_glyph_width;
+                let mut truncate = false;
+                let tpww = self.find_symbol_value(sym::TRUNCATE_PARTIAL_WIDTH_WINDOWS);
+                if !tpww.is_nil() && total_width < self.frame(frame).geometry.text_cols {
+                    truncate = match tpww.as_fixnum() {
+                        Some(n) => total_width < n,
+                        None => true,
+                    };
+                }
+                if hscroll != 0 || truncate || !self.find_symbol_value(sym::TRUNCATE_LINES).is_nil()
+                {
+                    if pos <= to {
+                        pos = self.find_before_next_newline(pos as usize, to as usize, 1) as i64;
+                        pos_byte = self.cur().text.char_to_byte(pos as usize) as i64;
+                        hpos = width;
+                        if pos >= next_boundary {
+                            next_boundary = pos + 1;
+                        }
+                        prev_hpos = width;
+                        prev_vpos = vpos;
+                        prev_tab_offset = tab_offset;
+                    }
+                } else {
+                    prev_tab_offset = tab_offset;
+                    if wide_column_end_hpos > width {
+                        hpos -= prev_hpos;
+                        tab_offset += prev_hpos;
+                    } else {
+                        tab_offset += width;
+                        hpos -= width;
+                    }
+                    vpos += 1;
+                    contin_hpos = prev_hpos;
+                    prev_hpos = 0;
+                    prev_vpos = vpos;
+                }
+            }
+            if pos > to {
+                pos = prev_pos;
+                pos_byte = prev_pos_byte;
+                hpos = prev_hpos;
+                vpos = prev_vpos;
+                if contin_hpos != 0
+                    && prev_hpos == 0
+                    && contin_hpos < width
+                    && wide_column_end_hpos == 0
+                {
+                    hpos = contin_hpos;
+                    vpos -= 1;
+                }
+                break;
+            }
+            if vpos > tovpos || (vpos == tovpos && hpos >= tohpos) {
+                if contin_hpos != 0
+                    && prev_hpos == 0
+                    && hpos > tohpos
+                    && (contin_hpos == width || wide_column_end_hpos > width)
+                {
+                    pos = prev_pos;
+                    pos_byte = prev_pos_byte;
+                    hpos = prev_hpos;
+                    vpos = prev_vpos;
+                }
+                break;
+            }
+            if pos == self.cur().zv as i64 {
+                break;
+            }
+            prev_hpos = hpos;
+            prev_vpos = vpos;
+            prev_pos = pos;
+            prev_pos_byte = pos_byte;
+            wide_column_end_hpos = 0;
+            if cmp_it.id >= 0
+                || (pos == cmp_it.stop_pos
+                    && self.composition_reseat_it(&mut cmp_it, pos, to, win, -1, Value::NIL)?)
+            {
+                self.composition_update_it(&mut cmp_it, pos, pos_byte, Value::NIL);
+            }
+            if cmp_it.id >= 0 {
+                pos += cmp_it.nchars;
+                pos_byte += cmp_it.nbytes;
+                hpos += cmp_it.width;
+                if cmp_it.to == cmp_it.nglyphs {
+                    cmp_it.id = -1;
+                    self.composition_compute_stop_pos(&mut cmp_it, pos, to, Value::NIL, true)?;
+                } else {
+                    cmp_it.from = cmp_it.to;
+                }
+                continue;
+            }
+            let mut c = i64::from(self.cur().text.byte_at(pos_byte as usize));
+            pos += 1;
+            pos_byte += 1;
+            let charvec = if dp.is_some() && !(multibyte && leading_code_p(c as u8)) {
+                self.disp_vector(dp, c as u32)
+            } else {
+                None
+            };
+            let n = charvec.map_or(1, |v| self.vector_items(v).len());
+            for i in 0..n {
+                if let Some(v) = charvec {
+                    c = self.display_vector_char(self.vector_items(v)[i]);
+                }
+                if (0o40..0o177).contains(&c) {
+                    hpos += 1;
+                } else if c == i64::from(b'\t') {
+                    let mut tem =
+                        (hpos + tab_offset + hscroll - i64::from(hscroll > 0)) % tab_width;
+                    if tem < 0 {
+                        tem += tab_width;
+                    }
+                    hpos += tab_width - tem;
+                } else if c == i64::from(b'\n') {
+                    if selective > 0 && self.indented_beyond_p(pos, selective)? {
+                        if pos < to {
+                            loop {
+                                pos = self.find_before_next_newline(pos as usize, to as usize, 1)
+                                    as i64;
+                                if pos < to {
+                                    pos += 1;
+                                }
+                                quit_count = quit_count.wrapping_add(1);
+                                rarely_quit(self, i64::from(quit_count))?;
+                                if !(pos < to && self.indented_beyond_p(pos, selective)?) {
+                                    break;
+                                }
+                            }
+                            if selective_rlen != 0 {
+                                hpos += selective_rlen;
+                                if hpos >= width {
+                                    hpos = width;
+                                }
+                            }
+                            pos -= 1;
+                            pos_byte = self.cur().text.char_to_byte(pos as usize) as i64;
+                        }
+                    } else {
+                        vpos += 1;
+                        hpos = 0;
+                        hpos -= hscroll;
+                        if hscroll > 0 {
+                            hpos += continuation_glyph_width;
+                        }
+                        tab_offset = 0;
+                    }
+                    contin_hpos = 0;
+                } else if c == i64::from(b'\r') && selective < 0 {
+                    if pos < to {
+                        pos = self.find_before_next_newline(pos as usize, to as usize, 1) as i64;
+                        pos_byte = self.cur().text.char_to_byte(pos as usize) as i64;
+                    }
+                    if pos > next_boundary {
+                        next_boundary = pos;
+                    }
+                    if selective_rlen != 0 {
+                        hpos += selective_rlen;
+                        if hpos >= width {
+                            hpos = width;
+                        }
+                    }
+                } else if multibyte && leading_code_p(c as u8) {
+                    pos_byte -= 1;
+                    let head = self.cur().text.byte_at(pos_byte as usize);
+                    let (mb_bytes, mb_width) = self.multibyte_bytes_width(pos_byte as usize, dp);
+                    pos_byte += mb_bytes as i64;
+                    if mb_width > 1 && bytes_by_char_head(head) == mb_bytes {
+                        wide_column_end_hpos = hpos + mb_width;
+                    }
+                    hpos += mb_width;
+                } else if charvec.is_some() {
+                    hpos += 1;
+                } else {
+                    hpos += if ctl_arrow && c < 0o200 { 2 } else { 4 };
+                }
+            }
+        }
+        self.stack.truncate(base);
+        let contin = contin_hpos != 0 && prev_hpos == 0;
+        Ok(Position {
+            bufpos: pos,
+            bytepos: pos_byte,
+            hpos,
+            vpos,
+            prevhpos: if contin { contin_hpos } else { prev_hpos },
+            contin,
+        })
+    }
+}
+
+impl Lisp {
+    fn vmotion_line_hidden(
+        &mut self,
+        prevline: i64,
+        selective: i64,
+        prop_pos: i64,
+        object: Value,
+    ) -> LispResult<bool> {
+        if selective > 0 && self.indented_beyond_p(prevline, selective)? {
+            return Ok(true);
+        }
+        let propval = self.get_char_property(Value::fixnum(prop_pos), sym::INVISIBLE, object)?;
+        Ok(self.text_prop_means_invisible(propval) != 0)
+    }
+
+    pub fn vmotion(
+        &mut self,
+        from: i64,
+        from_byte: i64,
+        vtarget: i64,
+        w: Value,
+    ) -> LispResult<Position> {
+        let hscroll = self.window(w).hscroll;
+        let mut vpos: i64 = 0;
+        let lmargin = if hscroll > 0 { 1 - hscroll } else { 0 };
+        let selective_display = self.find_symbol_value(sym::SELECTIVE_DISPLAY);
+        let selective = match selective_display.as_fixnum() {
+            Some(n) => n.max(-1),
+            None if selective_display.is_nil() => 0,
+            None => -1,
+        };
+        let text_prop_object = if self.window(w).contents == self.current_buffer {
+            w
+        } else {
+            self.current_buffer
+        };
+        let begv = self.cur().begv as i64;
+        let mut from = from;
+        let mut from_byte = from_byte;
+        if vpos >= vtarget {
+            let mut first = true;
+            while (vpos > vtarget || first) && from > begv {
+                let mut prevline =
+                    self.find_newline((from - 1) as usize, begv as usize, -1).0 as i64;
+                while prevline > begv
+                    && self.vmotion_line_hidden(
+                        prevline,
+                        selective,
+                        prevline - 1,
+                        text_prop_object,
+                    )?
+                {
+                    prevline = self
+                        .find_newline((prevline - 1) as usize, begv as usize, -1)
+                        .0 as i64;
+                }
+                let bytepos = self.cur().text.char_to_byte(prevline as usize) as i64;
+                let pos = self.compute_motion(
+                    prevline,
+                    bytepos,
+                    0,
+                    lmargin,
+                    false,
+                    from,
+                    1 << 15,
+                    1 << 15,
+                    -1,
+                    hscroll,
+                    0,
+                    w,
+                )?;
+                vpos -= pos.vpos;
+                first = false;
+                from = prevline;
+                from_byte = bytepos;
+            }
+            if vpos >= vtarget {
+                return Ok(Position {
+                    bufpos: from,
+                    bytepos: from_byte,
+                    hpos: lmargin,
+                    vpos,
+                    prevhpos: 0,
+                    contin: false,
+                });
+            }
+        }
+        let (hpos, did_motion) =
+            if from > begv && self.cur().text.byte_at((from_byte - 1) as usize) != b'\n' {
+                let mut prevline = self.find_newline(from as usize, begv as usize, -1).0 as i64;
+                while prevline > begv
+                    && self.vmotion_line_hidden(prevline, selective, prevline, text_prop_object)?
+                {
+                    prevline = self
+                        .find_newline((prevline - 1) as usize, begv as usize, -1)
+                        .0 as i64;
+                }
+                let bytepos = self.cur().text.char_to_byte(prevline as usize) as i64;
+                let pos = self.compute_motion(
+                    prevline,
+                    bytepos,
+                    0,
+                    lmargin,
+                    false,
+                    from,
+                    1 << 15,
+                    1 << 15,
+                    -1,
+                    hscroll,
+                    0,
+                    w,
+                )?;
+                (pos.hpos, true)
+            } else {
+                (lmargin, false)
+            };
+        let zv = self.cur().zv as i64;
+        self.compute_motion(
+            from,
+            from_byte,
+            vpos,
+            hpos,
+            did_motion,
+            zv,
+            vtarget,
+            -(1 << 15),
+            -1,
+            hscroll,
+            0,
+            w,
+        )
+    }
+
+    pub fn line_number_display_width(&mut self, w: Value) -> LispResult<(i32, i32)> {
+        if self.find_symbol_value(sym::DISPLAY_LINE_NUMBERS).is_nil() {
+            return Ok((0, 0));
+        }
+        let count = self.specpdl.len();
+        let old_buf = self.current_buffer;
+        let start = self.window(w).start;
+        let marker = self.marker(start);
+        let mut startpos = TextPos::new(marker.charpos as i64, marker.bytepos as i64);
+        let start_buffer = marker.buffer;
+        let itdata = self.bidi_shelve_cache();
+        let contents = self.window(w).contents;
+        self.set_buffer_internal(contents);
+        let mut saved_restriction = false;
+        if startpos.charpos > self.cur().z() as i64
+            || !(self.is_buffer(contents) && contents == start_buffer)
+        {
+            startpos = TextPos::new(self.cur().pt as i64, self.cur().pt_byte as i64);
+        }
+        if startpos.charpos < self.cur().begv as i64 || startpos.charpos > self.cur().zv as i64 {
+            self.record_unwind_restriction();
+            self.widen();
+            saved_restriction = true;
+        }
+        let r = self.with_gc_deferred(|lisp| -> LispResult<(i32, i32)> {
+            let mut it = It::default();
+            lisp.start_display(&mut it, w, startpos)?;
+            it.first_visible_x = 0;
+            lisp.move_it_by_lines(&mut it, 1)?;
+            Ok((it.lnum_width, it.lnum_pixel_width))
+        });
+        if saved_restriction {
+            self.unbind_to(count)?;
+        }
+        self.set_buffer_internal(old_buf);
+        self.bidi_unshelve_cache(itdata, false);
+        r
+    }
+
+    fn window_column_x(
+        &mut self,
+        w: Value,
+        window: Value,
+        col: f64,
+        column: Value,
+    ) -> LispResult<i32> {
+        let f = self.window(w).frame;
+        let x = col * self.frame(f).geometry.column_width as f64 + 0.5;
+        if !(f64::from(i32::MIN) <= x && x <= f64::from(i32::MAX)) {
+            return Err(self.args_out_of_range(window, column));
+        }
+        Ok(x as i32)
+    }
+
+    fn vertical_motion_with_iterator(
+        &mut self,
+        w: Value,
+        window: Value,
+        nlines: i64,
+        lcols: Value,
+        cur_col: Value,
+    ) -> LispResult<i64> {
+        let mut it_overshoot_count: i64;
+        let mut overshoot_handled = false;
+        let mut disp_string_at_start_p = false;
+        let mut nlines = nlines;
+        let mut vpos_init = 0;
+        let mut start_col = 0.0;
+        let mut start_x = 0;
+        let mut to_x = -1;
+        let mut ovl_start: i64 = -1;
+        let start_x_given = !cur_col.is_nil();
+        if start_x_given {
+            start_col = crate::floatfns::float_arg(self, cur_col)?;
+            start_x = self.window_column_x(w, window, start_col, cur_col)?;
+        }
+        let (lnum_width, lnum_pixel_width) =
+            if self.find_symbol_value(sym::DISPLAY_LINE_NUMBERS).is_nil() {
+                (0, 0)
+            } else {
+                self.line_number_display_width(w)?
+            };
+        let pt = TextPos::new(self.cur().pt as i64, self.cur().pt_byte as i64);
+        let itdata = self.bidi_shelve_cache();
+        self.record_unwind(unwind_display_working_on_window, Value::NIL);
+        self.xdisp.display_working_on_window_p = true;
+        let mut it = It::default();
+        self.start_display(&mut it, w, pt)?;
+        it.lnum_width = lnum_width;
+        let first_x = it.first_visible_x;
+        let it_start = it.charpos();
+        let begv = self.cur().begv as i64;
+        if it.cmp_it.id >= 0 {
+            it_overshoot_count = 0;
+        } else if it.method == ItMethod::FromString {
+            let ovl_idx = if it.current.overlay_string_index >= 0 {
+                it.current.overlay_string_index % OVERLAY_STRING_CHUNK_SIZE as i64
+            } else {
+                -1
+            };
+            if !it.string_from_display_prop_p && ovl_idx >= 0 {
+                ovl_start = self.overlay(it.string_overlays[ovl_idx as usize]).start as i64;
+            }
+            disp_string_at_start_p = it.area == GlyphRowArea::Text
+                && (it.string_from_display_prop_p
+                    || (ovl_start >= begv && {
+                        let prop = self.get_char_property(
+                            Value::fixnum(ovl_start),
+                            sym::INVISIBLE,
+                            window,
+                        )?;
+                        self.text_prop_means_invisible(prop) != 0
+                    }))
+                && (it.sp > 0 && it.stack[(it.sp - 1) as usize].method == ItMethod::FromBuffer);
+            it_overshoot_count = self
+                .string_bytes(it.string)
+                .iter()
+                .filter(|&&b| b == b'\n')
+                .count() as i64;
+            if it_overshoot_count == 0 {
+                it_overshoot_count = -1;
+            }
+        } else {
+            it_overshoot_count = i64::from(
+                !((it.method == ItMethod::FromImage && it.image_id >= 0)
+                    || it.method == ItMethod::FromStretch),
+            );
+        }
+        if start_x_given {
+            it.hpos = start_col as i32;
+            it.current_x = start_x;
+        } else {
+            self.reseat_at_previous_visible_line_start(&mut it)?;
+            it.current_x = 0;
+            it.hpos = 0;
+        }
+        if it.charpos() != pt.charpos {
+            let target = if !disp_string_at_start_p
+                || self.cur().text.byte_at(it.bytepos() as usize) == b'\n'
+            {
+                pt.charpos
+            } else {
+                pt.charpos - 1
+            };
+            self.move_it_to(&mut it, target, -1, -1, -1, MOVE_TO_POS)?;
+        }
+        if it.charpos() > it_start {
+            if it_overshoot_count < 0 && it.method == ItMethod::FromBuffer && it.c == 10 {
+                it_overshoot_count = 1;
+            } else if it_overshoot_count == 1 && it.vpos == 0 && it.current_x < it.last_visible_x {
+                it_overshoot_count = 0;
+            } else if disp_string_at_start_p && it.vpos > 0 {
+                it_overshoot_count = i64::from(it.vpos);
+            }
+            if it.line_wrap == LineWrap::Truncate
+                && it.current_x >= it.last_visible_x
+                && it_overshoot_count == 0
+                && it.vpos > 0
+            {
+                it_overshoot_count = 1;
+            }
+            if it_overshoot_count > 0 {
+                self.move_it_by_lines(&mut it, -it_overshoot_count)?;
+            }
+            overshoot_handled = true;
+        } else if it.charpos() == pt.charpos - 1
+            && self.cur().text.byte_at((pt.bytepos - 1) as usize) == b'\n'
+            && nlines <= 0
+        {
+            nlines += 1;
+            vpos_init = -1;
+            overshoot_handled = true;
+        }
+        if !lcols.is_nil() {
+            let col = self.xfloatint(lcols);
+            to_x = self.window_column_x(w, window, col, lcols)? + lnum_pixel_width;
+        }
+        if nlines <= 0 {
+            it.vpos = vpos_init;
+            it.current_y = 0;
+            if (nlines < 0 && it.charpos() > self.cur().begv as i64)
+                || (nlines == 0 && !(start_x_given && start_x <= to_x))
+            {
+                self.move_it_by_lines(&mut it, nlines)?;
+            }
+            if it.charpos() == it_start
+                && disp_string_at_start_p
+                && ovl_start >= self.cur().begv as i64
+                && it_overshoot_count > 0
+            {
+                self.move_it_by_lines(&mut it, -it_overshoot_count)?;
+            }
+        } else if overshoot_handled {
+            it.vpos = vpos_init;
+            it.current_y = 0;
+            self.move_it_by_lines(&mut it, nlines)?;
+        } else if it_start < self.cur().zv as i64 {
+            if if it.bidi_it.scan_dir >= 0 || it.vpos == vpos_init {
+                it.charpos() < it_start
+            } else {
+                it.charpos() > it_start
+            } {
+                it.vpos = 0;
+                it.current_y = 0;
+                self.move_it_by_lines(&mut it, 1)?;
+            }
+            while it.charpos() == it_start {
+                it.vpos = 0;
+                it.current_y = 0;
+                self.move_it_by_lines(&mut it, 1)?;
+            }
+            if nlines > 1 {
+                self.move_it_by_lines(&mut it, nlines - 1)?;
+            }
+        } else {
+            it.vpos = 0;
+            it.current_y = 0;
+            self.move_it_by_lines(&mut it, nlines)?;
+            if it.charpos() == pt.charpos && pt.charpos == it_start {
+                it.vpos = 0;
+            }
+        }
+        if !lcols.is_nil() {
+            if it.continuation_lines_width <= 0
+                && it.hpos > 0
+                && it.method == ItMethod::FromString
+                && !it.from_overlay.is_nil()
+            {
+                self.reseat_at_previous_visible_line_start(&mut it)?;
+            }
+            let zv = self.cur().zv as i64;
+            self.move_it_in_display_line(&mut it, zv, first_x + to_x, MOVE_TO_X)?;
+            if nlines >= 0 && it.area == GlyphRowArea::Text {
+                while it.method == ItMethod::FromString
+                    && !it.string_from_display_prop_p
+                    && self.string_bytes(it.string)[it.string_bytepos() as usize..].contains(&b'\n')
+                {
+                    self.move_it_by_lines(&mut it, 1)?;
+                    let zv = self.cur().zv as i64;
+                    self.move_it_in_display_line(&mut it, zv, first_x + to_x, MOVE_TO_X)?;
+                }
+            }
+        }
+        self.goto_char_internal(it.charpos() as usize);
+        self.bidi_unshelve_cache(itdata, false);
+        Ok(i64::from(it.vpos))
+    }
+}
+
+fn unwind_display_working_on_window(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
+    lisp.xdisp.display_working_on_window_p = false;
+    Ok(())
+}
+
+fn restore_window_buffer(lisp: &mut Lisp, list: Value) -> LispResult<()> {
+    let w = lisp.decode_live_window(lisp.xcar(list))?;
+    let list = lisp.xcdr(list);
+    let buffer = lisp.xcar(list);
+    lisp.wset_buffer(w, buffer);
+    let list = lisp.xcdr(list);
+    let charpos = lisp.xcar(list).as_fixnum().unwrap_or(1) as usize;
+    let pointm = lisp.window(w).pointm;
+    let contents = lisp.window(w).contents;
+    lisp.set_marker_position(pointm, charpos, contents);
+    Ok(())
+}
+
+fn f_line_number_display_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let pixelwise = args[0];
+    let w = lisp.windows.selected_window;
+    let (width, pixel_width) = lisp.line_number_display_width(w)?;
+    if pixelwise == sym::COLUMNS {
+        let f = lisp.window(w).frame;
+        let column_width = lisp.frame(f).geometry.column_width as f64;
+        return Ok(lisp.float(f64::from(pixel_width) / column_width));
+    }
+    if !pixelwise.is_nil() {
+        return Ok(Value::fixnum(i64::from(pixel_width)));
+    }
+    Ok(Value::fixnum(i64::from(width)))
+}
+
+fn f_vertical_motion(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (mut lines, window, cur_col) = (args[0], args[1], args[2]);
+    let mut lcols = Value::NIL;
+    let count = lisp.specpdl.len();
+    if lines.is_cons() {
+        lcols = lisp.xcar(lines);
+        if !lisp.is_number(lcols) {
+            return Err(lisp.wrong_type(sym::NUMBERP, lcols));
+        }
+        lines = lisp.xcdr(lines);
+    }
+    let nlines = lisp.check_fixnum(lines)?;
+    let w = lisp.decode_live_window(window)?;
+    let contents = lisp.window(w).contents;
+    if contents != lisp.current_buffer {
+        let pointm = lisp.window(w).pointm;
+        let (charpos, bytepos) = (lisp.marker(pointm).charpos, lisp.marker(pointm).bytepos);
+        let old = lisp.list(&[
+            window,
+            contents,
+            Value::fixnum(charpos as i64),
+            Value::fixnum(bytepos as i64),
+        ]);
+        lisp.record_unwind(restore_window_buffer, old);
+        let buffer = lisp.current_buffer;
+        lisp.wset_buffer(w, buffer);
+        let pt = lisp.cur().pt;
+        lisp.set_marker_position(pointm, pt, buffer);
+    }
+    let vpos = if lisp.noninteractive {
+        let (pt, pt_byte) = (lisp.cur().pt as i64, lisp.cur().pt_byte as i64);
+        let pos = lisp.vmotion(pt, pt_byte, nlines, w)?;
+        lisp.goto_char_internal(pos.bufpos as usize);
+        pos.vpos
+    } else {
+        lisp.with_gc_deferred(|lisp| {
+            lisp.vertical_motion_with_iterator(w, window, nlines, lcols, cur_col)
+        })?
+    };
+    lisp.unbind_to(count)?;
+    Ok(Value::fixnum(vpos))
+}
+
+fn f_compute_motion(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (from, frompos, to, topos, width, offsets, window) = (
+        args[0], args[1], args[2], args[3], args[4], args[5], args[6],
+    );
+    let from = lisp.fix_position(from)?;
+    lisp.check_cons(frompos)?;
+    let fromhpos = lisp.check_fixnum(lisp.xcar(frompos))?;
+    let fromvpos = lisp.check_fixnum(lisp.xcdr(frompos))?;
+    let to = lisp.fix_position(to)?;
+    let mut target = None;
+    if !topos.is_nil() {
+        lisp.check_cons(topos)?;
+        let tohpos = lisp.check_fixnum(lisp.xcar(topos))?;
+        let tovpos = lisp.check_fixnum(lisp.xcdr(topos))?;
+        target = Some((tohpos, tovpos));
+    }
+    let width = if width.is_nil() {
+        -1
+    } else {
+        lisp.check_fixnum(width)?
+    };
+    let (hscroll, tab_offset) = if offsets.is_nil() {
+        (0, 0)
+    } else {
+        lisp.check_cons(offsets)?;
+        let hscroll = lisp.check_fixnum(lisp.xcar(offsets))?;
+        let tab_offset = lisp.check_fixnum(lisp.xcdr(offsets))?;
+        if !(0 <= hscroll && (0..=INT_MAX).contains(&tab_offset)) {
+            let (a, b) = (lisp.xcar(offsets), lisp.xcdr(offsets));
+            return Err(lisp.args_out_of_range(a, b));
+        }
+        (hscroll, tab_offset)
+    };
+    let w = lisp.decode_live_window(window)?;
+    let (begv, zv) = (lisp.cur().begv as i64, lisp.cur().zv as i64);
+    for pos in [from, to] {
+        if pos < begv || pos > zv {
+            return Err(lisp.args_out_of_range3(
+                Value::fixnum(pos),
+                Value::fixnum(begv),
+                Value::fixnum(zv),
+            ));
+        }
+    }
+    let (tohpos, tovpos) = match target {
+        Some(target) => target,
+        None => {
+            let body = lisp.window_body_width(w, WindowBodyUnit::CanonicalChars)?;
+            let window_p = lisp.frame_window_p(lisp.window(w).frame);
+            (
+                body - if window_p { 0 } else { 1 },
+                lisp.window_internal_height(w),
+            )
+        }
+    };
+    let frombyte = lisp.cur().text.char_to_byte(from as usize) as i64;
+    let pos = lisp.compute_motion(
+        from, frombyte, fromvpos, fromhpos, false, to, tovpos, tohpos, width, hscroll, tab_offset,
+        w,
+    )?;
+    let contin = lisp.bool(pos.contin);
+    Ok(lisp.list(&[
+        Value::fixnum(pos.bufpos),
+        Value::fixnum(pos.hpos),
+        Value::fixnum(pos.vpos),
+        Value::fixnum(pos.prevhpos),
+        contin,
+    ]))
 }
 
 fn f_current_column(lisp: &mut Lisp, _args: &[Value]) -> LispResult {

@@ -236,7 +236,7 @@ impl Env<'_> {
         }
     }
 
-    fn blankp(&self, c: u32) -> bool {
+    pub(crate) fn blankp(&self, c: u32) -> bool {
         self.general_category(c) == Some(UC_ZS)
     }
 

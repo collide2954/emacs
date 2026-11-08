@@ -57,6 +57,8 @@ impl BufferText {
     fn byte_at_offset(&self, offset: usize) -> u8 {
         if offset < self.gap_start {
             self.data[offset]
+        } else if offset == self.bytes() {
+            0
         } else {
             self.data[offset + self.gap_len]
         }
@@ -308,6 +310,7 @@ pub struct Buffer {
     pub inhibit_hooks: bool,
     pub prevent_redisplay_optimizations_p: bool,
     pub long_line_optimizations_p: bool,
+    pub clip_changed: bool,
     pub last_window_start: usize,
     pub window_count: usize,
     pub point_marker: Value,
@@ -813,6 +816,7 @@ impl Lisp {
             inhibit_hooks,
             prevent_redisplay_optimizations_p: false,
             long_line_optimizations_p: false,
+            clip_changed: false,
             last_window_start: 1,
             window_count: 0,
             point_marker: Value::NIL,

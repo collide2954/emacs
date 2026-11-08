@@ -192,7 +192,7 @@ fn gc_report(lisp: &mut Lisp) -> Value {
 }
 
 fn f_garbage_collect(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    if lisp.gc_inhibited > 0 {
+    if lisp.gc_inhibited > 0 || lisp.gc_deferred > 0 {
         return Ok(Value::NIL);
     }
     lisp.garbage_collect();

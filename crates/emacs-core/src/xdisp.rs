@@ -1,3 +1,16 @@
+pub mod elements;
+pub mod geom;
+pub mod gui_produce;
+pub mod it;
+pub mod iterate;
+pub mod lnum;
+pub mod move_it;
+pub mod next;
+pub mod produce;
+pub mod props;
+pub mod reseat;
+pub mod stack;
+
 use crate::character;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
@@ -7,6 +20,7 @@ use crate::value::Value;
 
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("invisible-p", 1, 1, f_invisible_p),
+    Subr::fixed("get-display-property", 2, 4, it::f_get_display_property),
     Subr::fixed("tab-bar-height", 0, 2, f_tab_bar_height),
     Subr::fixed("tool-bar-height", 0, 2, f_tool_bar_height),
     Subr::fixed("set-buffer-redisplay", 4, 4, f_set_buffer_redisplay),
@@ -439,7 +453,6 @@ fn f_invisible_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-#[derive(Default)]
 pub struct Xdisp {
     pub message_log_need_newline: bool,
     pub noninteractive_need_newline: bool,
@@ -451,6 +464,43 @@ pub struct Xdisp {
     pub display_working_on_window_p: bool,
     pub redisplay_ticks_window: Value,
     pub window_ticks: i64,
+    pub inhibit_free_realized_faces: bool,
+    pub this_line_min_pos: crate::dispextern::TextPos,
+    pub default_invis_vector: Value,
+    pub last_height: i32,
+    pub last_escape_glyph_frame: Value,
+    pub last_escape_glyph_face_id: i64,
+    pub last_escape_glyph_merged_face_id: i32,
+    pub last_glyphless_glyph_frame: Value,
+    pub last_glyphless_glyph_face_id: i64,
+    pub last_glyphless_glyph_merged_face_id: i32,
+}
+
+impl Default for Xdisp {
+    fn default() -> Xdisp {
+        Xdisp {
+            message_log_need_newline: false,
+            noninteractive_need_newline: false,
+            redisplaying_p: false,
+            message_stack: Value::NIL,
+            echo_area_window: Value::NIL,
+            echo_area_buffer: [Value::NIL; 2],
+            help_echo_showing_p: false,
+            display_working_on_window_p: false,
+            redisplay_ticks_window: Value::NIL,
+            window_ticks: 0,
+            inhibit_free_realized_faces: false,
+            this_line_min_pos: crate::dispextern::TextPos::default(),
+            default_invis_vector: Value::NIL,
+            last_height: 0,
+            last_escape_glyph_frame: Value::NIL,
+            last_escape_glyph_face_id: 1 << reseat::FACE_ID_BITS,
+            last_escape_glyph_merged_face_id: 0,
+            last_glyphless_glyph_frame: Value::NIL,
+            last_glyphless_glyph_face_id: 1 << reseat::FACE_ID_BITS,
+            last_glyphless_glyph_merged_face_id: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -649,7 +699,38 @@ impl Lisp {
     }
 }
 
+pub fn init_xdisp(lisp: &mut Lisp) {
+    let minibuf_window = lisp.windows.minibuf_window;
+    lisp.xdisp.echo_area_window = minibuf_window;
+    if !lisp.noninteractive {
+        let m = minibuf_window;
+        let f = lisp.window(m).frame;
+        let root = lisp.frame(f).root_window;
+        let top_margin = lisp.frame_top_margin(f);
+        let g = lisp.frame(f).geometry.clone();
+        let margins = g.menu_bar_lines + g.tab_bar_lines + g.tool_bar_lines;
+        let r = lisp.window_mut(root);
+        r.top_line = top_margin;
+        r.pixel_top = r.top_line * g.line_height;
+        r.total_cols = g.text_cols;
+        r.pixel_width = r.total_cols * g.column_width;
+        r.total_lines = g.total_lines - 1 - margins;
+        r.pixel_height = r.total_lines * g.line_height;
+        let mw = lisp.window_mut(m);
+        mw.top_line = g.total_lines - 1;
+        mw.pixel_top = mw.top_line * g.line_height;
+        mw.total_cols = g.text_cols;
+        mw.pixel_width = mw.total_cols * g.column_width;
+        mw.total_lines = 1;
+        mw.pixel_height = mw.total_lines * g.line_height;
+        let dot = Value::fixnum(i64::from(b'.'));
+        lisp.xdisp.default_invis_vector = lisp.vector(vec![dot; 3]);
+    }
+    lisp.xdisp.help_echo_showing_p = false;
+}
+
 pub fn init_vars(lisp: &mut Lisp) {
+    lisp.xdisp.default_invis_vector = lisp.vector(vec![Value::NIL; 3]);
     lisp.defvar_bool(sym::SCROLL_MINIBUFFER_CONSERVATIVELY, true);
     lisp.defvar_bool(sym::INHIBIT_MESSAGE, false);
     let name = lisp.string("*Messages*");
@@ -1236,6 +1317,11 @@ impl Lisp {
 
     pub fn get_font_ascent_descent(&mut self, font: Value) -> (i32, i32) {
         self.normal_char_ascent_descent(font, -1)
+    }
+
+    pub fn normal_char_height(&mut self, font: Value, c: i32) -> i32 {
+        let (ascent, descent) = self.normal_char_ascent_descent(font, c);
+        ascent + descent
     }
 }
 

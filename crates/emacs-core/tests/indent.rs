@@ -122,6 +122,254 @@ fn moving_to_columns() {
 }
 
 #[test]
+fn compute_motion() {
+    run(&[
+        (
+            in_buffer(
+                "abc\tdef\nxyz",
+                "(compute-motion 1 '(0 . 0) 12 nil nil nil nil)",
+            ),
+            "(12 3 1 2 nil)",
+        ),
+        (
+            in_buffer(
+                "abc\tdef\nxyz",
+                "(let ((truncate-partial-width-windows nil)) (compute-motion 1 '(0 . 0) 12 nil 5 nil nil))",
+            ),
+            "(12 3 3 2 nil)",
+        ),
+        (
+            in_buffer(
+                "abc\tdef\nxyz",
+                "(compute-motion 1 '(0 . 0) 12 '(2 . 1) nil nil nil)",
+            ),
+            "(11 2 1 1 nil)",
+        ),
+        (
+            in_buffer(
+                "abc",
+                "(delete-all-overlays) (overlay-put (make-overlay 2 2) 'before-string \"XY\") (prog1 (compute-motion 1 '(0 . 0) 4 nil nil nil nil) (delete-all-overlays))",
+            ),
+            "(4 5 0 4 nil)",
+        ),
+        (
+            in_buffer("a\nb", "(compute-motion 1 '(0 . 0) 4 nil nil '(3 . 0) nil)"),
+            "(4 -1 1 -2 nil)",
+        ),
+        (
+            in_buffer(
+                "a\n  x\nb",
+                "(setq selective-display 1) (prog1 (compute-motion 1 '(0 . 0) 8 nil nil nil nil) (setq selective-display nil))",
+            ),
+            "(8 1 1 0 nil)",
+        ),
+        (
+            in_buffer("abc", "(compute-motion 9 '(0 . 0) 1 nil nil nil nil)"),
+            "error: (args-out-of-range 9 1 4)",
+        ),
+        (
+            in_buffer("abc", "(compute-motion 1 '(0 . 0) 1 nil nil '(-1 . 0) nil)"),
+            "error: (args-out-of-range -1 0)",
+        ),
+        (
+            in_buffer("abc", "(compute-motion 1 '(0 . x) 1 nil nil nil nil)"),
+            "error: (wrong-type-argument fixnump x)",
+        ),
+    ]);
+}
+
+const MOTION_TEXT: &str = "ab\ncd\nef";
+
+fn long_line() -> String {
+    "x".repeat(100)
+}
+
+#[test]
+fn vertical_motion_in_batch_uses_vmotion() {
+    run(&[
+        (
+            in_buffer(
+                MOTION_TEXT,
+                "(goto-char (point-max)) (list (vertical-motion -1) (point))",
+            ),
+            "(-1 4)",
+        ),
+        (
+            in_buffer(
+                MOTION_TEXT,
+                "(goto-char 1) (list (vertical-motion 1) (point))",
+            ),
+            "(1 4)",
+        ),
+        (
+            in_buffer(
+                MOTION_TEXT,
+                "(goto-char 1) (list (vertical-motion 5) (point))",
+            ),
+            "(2 9)",
+        ),
+        (
+            in_buffer(
+                MOTION_TEXT,
+                "(goto-char 5) (list (vertical-motion 0) (point))",
+            ),
+            "(0 4)",
+        ),
+        (
+            in_buffer(
+                MOTION_TEXT,
+                "(goto-char 1) (list (vertical-motion '(2 . 1)) (point))",
+            ),
+            "(1 4)",
+        ),
+        (
+            in_buffer(
+                &long_line(),
+                "(goto-char 1) (list (vertical-motion 1) (point))",
+            ),
+            "(1 80)",
+        ),
+        (
+            in_buffer(MOTION_TEXT, "(vertical-motion 'x)"),
+            "error: (wrong-type-argument fixnump x)",
+        ),
+        (
+            in_buffer(MOTION_TEXT, "(vertical-motion '(x . 1))"),
+            "error: (wrong-type-argument numberp x)",
+        ),
+    ]);
+}
+
+#[test]
+fn vertical_motion_interactively_uses_the_display_iterator() {
+    common::on_big_stack(|| {
+        let mut lisp = emacs_core::lisp::Lisp::new_with(false);
+        let cases = [
+            (
+                in_buffer(
+                    MOTION_TEXT,
+                    "(goto-char (point-max)) (list (vertical-motion -1) (point))",
+                ),
+                "(-1 4)",
+            ),
+            (
+                in_buffer(
+                    MOTION_TEXT,
+                    "(goto-char 1) (list (vertical-motion 1) (point))",
+                ),
+                "(1 4)",
+            ),
+            (
+                in_buffer(
+                    MOTION_TEXT,
+                    "(goto-char 1) (list (vertical-motion 5) (point))",
+                ),
+                "(2 9)",
+            ),
+            (
+                in_buffer(
+                    MOTION_TEXT,
+                    "(goto-char 5) (list (vertical-motion 0) (point))",
+                ),
+                "(0 4)",
+            ),
+            (
+                in_buffer(
+                    MOTION_TEXT,
+                    "(goto-char 1) (list (vertical-motion '(1 . 1)) (point))",
+                ),
+                "(1 5)",
+            ),
+            (
+                in_buffer(
+                    &long_line(),
+                    "(goto-char 1) (list (vertical-motion 1) (point))",
+                ),
+                "(1 80)",
+            ),
+            (
+                in_buffer(
+                    &long_line(),
+                    "(goto-char 90) (list (vertical-motion -1) (point))",
+                ),
+                "(-1 1)",
+            ),
+            (
+                in_buffer(
+                    "",
+                    "(insert \"a\" 1 \"b\") (goto-char 1) (list (vertical-motion '(3 . 0)) (point))",
+                ),
+                "(0 3)",
+            ),
+            (
+                in_buffer(
+                    "\tx",
+                    "(goto-char 1) (list (vertical-motion '(8 . 0)) (point) (vertical-motion '(4 . 0)) (point))",
+                ),
+                "(0 2 0 1)",
+            ),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(
+                common::eval(&mut lisp, &source),
+                expected,
+                "evaluating {source}"
+            );
+        }
+    });
+}
+
+#[test]
+fn vertical_motion_with_line_numbers() {
+    common::on_big_stack(|| {
+        let mut lisp = emacs_core::lisp::Lisp::new_with(false);
+        let cases = [
+            (
+                in_buffer(
+                    &long_line(),
+                    "(setq display-line-numbers t) (goto-char 1) (prog1 (list (vertical-motion 1) (point)) (setq display-line-numbers nil))",
+                ),
+                "(1 76)",
+            ),
+            (
+                "(save-current-buffer (set-buffer (window-buffer)) (setq display-line-numbers t) (prog1 (list (line-number-display-width) (line-number-display-width t) (line-number-display-width 'columns)) (setq display-line-numbers nil)))".to_string(),
+                "(2 4 4.0)",
+            ),
+            (
+                in_buffer(
+                    MOTION_TEXT,
+                    "(setq display-line-numbers 'relative) (goto-char 1) (prog1 (list (vertical-motion 2) (point)) (setq display-line-numbers nil))",
+                ),
+                "(2 7)",
+            ),
+            (
+                in_buffer(MOTION_TEXT, "(line-number-display-width)"),
+                "0",
+            ),
+        ];
+        for (source, expected) in cases {
+            assert_eq!(
+                common::eval(&mut lisp, &source),
+                expected,
+                "evaluating {source}"
+            );
+        }
+    });
+}
+
+#[test]
+fn garbage_collection_waits_while_the_display_iterator_is_live() {
+    common::on_big_stack(|| {
+        let mut lisp = emacs_core::lisp::Lisp::new_with(false);
+        let source = in_buffer(
+            MOTION_TEXT,
+            "(setq gc-during-display 'unset) (setq fontification-functions (list (function (lambda (pos) (setq gc-during-display (garbage-collect)) (put-text-property pos (point-max) 'fontified t))))) (goto-char 1) (prog1 (list (vertical-motion 1) gc-during-display (consp (garbage-collect))) (setq fontification-functions nil))",
+        );
+        assert_eq!(common::eval(&mut lisp, &source), "(1 nil t)");
+    });
+}
+
+#[test]
 fn invisibility() {
     run(&[
         ("(invisible-p t)".to_string(), "t"),

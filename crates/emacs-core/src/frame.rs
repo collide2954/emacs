@@ -2960,7 +2960,7 @@ pub fn c_atof(s: &[u8]) -> f64 {
 }
 
 impl Lisp {
-    fn xfloatint(&self, v: Value) -> f64 {
+    pub(crate) fn xfloatint(&self, v: Value) -> f64 {
         if v.is_float() {
             self.heap.float_value(v)
         } else {

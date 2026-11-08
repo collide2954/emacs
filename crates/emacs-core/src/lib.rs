@@ -32,6 +32,7 @@ pub mod fns;
 pub mod font;
 pub mod fontset;
 pub mod frame;
+pub mod fringe;
 pub mod gnutls;
 pub mod heap;
 pub mod image;

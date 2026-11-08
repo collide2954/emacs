@@ -2574,7 +2574,7 @@ fn f_ntake(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 const SMALL_LIST_LEN_MAX: i64 = 127;
 
-fn rarely_quit(lisp: &mut Lisp, count: i64) -> LispResult<()> {
+pub(crate) fn rarely_quit(lisp: &mut Lisp, count: i64) -> LispResult<()> {
     if count as u16 == 0 {
         lisp.maybe_quit()?;
     }
@@ -2670,7 +2670,7 @@ fn f_member(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.member(args[0], args[1])
 }
 
-fn f_memq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_memq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (elt, list) = (args[0], args[1]);
     let base = lisp.stack.len();
     let mut li = lisp.for_each_tail(list);
