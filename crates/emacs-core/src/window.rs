@@ -1179,7 +1179,7 @@ impl Lisp {
         }
     }
 
-    fn window_has_horizontal_scroll_bar(&self, w: Value) -> bool {
+    pub(crate) fn window_has_horizontal_scroll_bar(&self, w: Value) -> bool {
         if !USE_HORIZONTAL_SCROLL_BARS {
             return false;
         }
@@ -1279,10 +1279,27 @@ impl Lisp {
         self.window_wants_line(w, sym::TAB_LINE_FORMAT, below)
     }
 
+    fn matrix_line_height(
+        &self,
+        w: Value,
+        row: fn(&crate::dispextern::GlyphMatrix) -> usize,
+    ) -> i64 {
+        self.window(w)
+            .current_matrix
+            .as_deref()
+            .filter(|m| !m.rows.is_empty())
+            .map_or(0, |m| i64::from(m.rows[row(m)].height))
+    }
+
     pub(crate) fn current_mode_line_height(&mut self, w: Value) -> i64 {
         let height = self.window(w).mode_line_height;
         if height >= 0 {
             return height;
+        }
+        let matrix_height = self.matrix_line_height(w, |m| m.mode_line_row());
+        if matrix_height != 0 {
+            self.window_mut(w).mode_line_height = matrix_height;
+            return matrix_height;
         }
         let face_id = self.current_line_active_face_id(
             w,
@@ -1299,6 +1316,11 @@ impl Lisp {
         if height >= 0 {
             return height;
         }
+        let matrix_height = self.matrix_line_height(w, |m| m.header_line_row());
+        if matrix_height != 0 {
+            self.window_mut(w).header_line_height = matrix_height;
+            return matrix_height;
+        }
         let face_id = self.current_line_active_face_id(
             w,
             crate::xfaces::HEADER_LINE_ACTIVE_FACE_ID,
@@ -1313,6 +1335,11 @@ impl Lisp {
         let height = self.window(w).tab_line_height;
         if height >= 0 {
             return height;
+        }
+        let matrix_height = self.matrix_line_height(w, |_| 0);
+        if matrix_height != 0 {
+            self.window_mut(w).tab_line_height = matrix_height;
+            return matrix_height;
         }
         let face_id = self.current_line_active_face_id(
             w,

@@ -13,6 +13,7 @@ pub mod move_it;
 pub mod next;
 pub mod produce;
 pub mod props;
+pub mod redisplay;
 pub mod reseat;
 pub mod reuse;
 pub mod scroll;
@@ -47,7 +48,7 @@ pub const SUBRS: &[Subr] = &[
     ),
 ];
 
-fn f_current_bidi_paragraph_direction(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_current_bidi_paragraph_direction(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = args.first().copied().unwrap_or(Value::NIL);
     let old = lisp.current_buffer;
     let buf = if buffer.is_nil() {
@@ -498,6 +499,7 @@ pub struct Xdisp {
     pub mode_line_unwind_vector: Value,
     pub line_number_displayed: bool,
     pub dont_resize_frames: i32,
+    pub multiple_frames: bool,
 }
 
 impl Default for Xdisp {
@@ -542,6 +544,7 @@ impl Default for Xdisp {
             mode_line_unwind_vector: Value::NIL,
             line_number_displayed: false,
             dont_resize_frames: 0,
+            multiple_frames: false,
         }
     }
 }

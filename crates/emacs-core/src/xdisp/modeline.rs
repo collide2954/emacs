@@ -145,7 +145,7 @@ impl Lisp {
         (width, i, i_byte)
     }
 
-    fn format_mode_line_unwind_data(
+    pub(crate) fn format_mode_line_unwind_data(
         &mut self,
         target_frame: Option<Value>,
         obuf: Option<Value>,

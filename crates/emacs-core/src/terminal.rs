@@ -21,6 +21,7 @@ pub type DefinedColorHook =
 pub type SetNewFontHook = fn(&mut Lisp, Value, Value, i64) -> LispResult<Value>;
 pub type DefaultFontParameterHook = fn(&mut Lisp, Value, Value) -> LispResult<()>;
 pub type WindowSizeHook = fn(&mut Lisp, Value, bool, i64, i64) -> LispResult<()>;
+pub type ScrollBarHook = fn(&mut Lisp, Value, i64, i64, i64) -> LispResult<()>;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TerminalHooks {
@@ -45,6 +46,10 @@ pub struct TerminalHooks {
     pub read_socket: Option<ReadSocketHook>,
     pub update_begin: Option<fn(&mut Lisp, Value)>,
     pub update_end: Option<fn(&mut Lisp, Value)>,
+    pub set_vertical_scroll_bar: Option<ScrollBarHook>,
+    pub set_horizontal_scroll_bar: Option<ScrollBarHook>,
+    pub redeem_scroll_bar: Option<FrameHook>,
+    pub implicit_set_name: Option<FrameParmHandler>,
 }
 
 pub type ReadSocketHook = fn(&mut Lisp, Value, &mut crate::termhooks::KbdEvent) -> LispResult<i32>;

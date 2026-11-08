@@ -225,6 +225,26 @@ pub fn str_to_multibyte(bytes: &[u8]) -> Vec<u8> {
     out
 }
 
+pub fn str_as_multibyte(bytes: &[u8]) -> (Vec<u8>, usize) {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut chars = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match multibyte_length(&bytes[i..]) {
+            Some(n) => {
+                out.extend_from_slice(&bytes[i..i + n]);
+                i += n;
+            }
+            None => {
+                push_char(&mut out, byte8_to_char(bytes[i]));
+                i += 1;
+            }
+        }
+        chars += 1;
+    }
+    (out, chars)
+}
+
 pub fn str_as_unibyte(bytes: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
