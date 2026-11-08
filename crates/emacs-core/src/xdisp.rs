@@ -11,6 +11,7 @@ pub mod next;
 pub mod produce;
 pub mod props;
 pub mod reseat;
+pub mod scroll;
 pub mod stack;
 
 use crate::character;

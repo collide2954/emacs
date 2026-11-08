@@ -3748,7 +3748,7 @@ fn lface_equal_p(lisp: &mut Lisp, v1: &[Value; N], v2: &[Value; N]) -> LispResul
     Ok(true)
 }
 
-fn f_internal_lisp_face_equal_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_internal_lisp_face_equal_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (face1, face2, frame, inherit) = (args[0], args[1], arg(args, 2), arg(args, 3));
     let f = if frame == sym::T {
         None

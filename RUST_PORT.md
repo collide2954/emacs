@@ -351,8 +351,12 @@ redisplay validates a window's end.
 `xdisp/line.rs` ports `display_line` (with word wrap, continuation, truncation, hscrolled
 lines, line numbers, overlay arrows, trailing whitespace and the faces extended to the end of
 a line), `set_cursor_from_row`, `try_window`, `partial_line_height` and window.c's
-`window_scroll_margin`, so a window's desired matrix can be built from its buffer. Nothing
-in redisplay calls `try_window` yet.
+`window_scroll_margin`, so a window's desired matrix can be built from its buffer.
+`xdisp/scroll.rs` ports what `redisplay_window` uses to choose a window start:
+`try_scrolling`, `try_cursor_movement` (which reuses the current matrix),
+`compute_window_start_on_continuation_line`, `cursor_row_fully_visible_p`,
+`row_containing_pos`, `run_window_scroll_functions` and `window_start_acceptable_p`. Nothing
+in redisplay calls them yet.
 
 Next: `redisplay_window`, `redisplay_internal`, the mode line and `echo_area_display`, which
 also bring map events and frame visibility; then `update_frame` and the drawing of glyph

@@ -627,6 +627,16 @@ impl Lisp {
         Ok(())
     }
 
+    pub fn safe_run_hooks_2(&mut self, hook: Value, arg1: Value, arg2: Value) -> LispResult<()> {
+        let count = self.specpdl.len();
+        self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+        let r = self.run_hook_with_args(&[hook, hook, arg1, arg2], |l, args| {
+            l.safe_run_hook_funcall(args)
+        });
+        self.unbind_to_value(count, r)?;
+        Ok(())
+    }
+
     pub fn record_auto_save(&mut self) {
         self.keyboard.last_auto_save = self.int_var(sym::NUM_NONMACRO_INPUT_EVENTS);
     }

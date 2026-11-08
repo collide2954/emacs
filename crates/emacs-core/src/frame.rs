@@ -46,6 +46,8 @@ const DEFAULT_TOOL_BAR_IMAGE_HEIGHT: i64 = 24;
 #[derive(Clone, Debug, Default)]
 pub struct FrameFlags {
     pub visible: bool,
+    pub cursor_type_changed: bool,
+    pub frozen_window_starts: bool,
     pub iconified: bool,
     pub garbaged: bool,
     pub wants_modeline: bool,
