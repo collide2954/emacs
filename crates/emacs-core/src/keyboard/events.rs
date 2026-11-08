@@ -791,9 +791,10 @@ impl Lisp {
         &mut self,
         used_mouse_menu: Option<&mut bool>,
         end_time: Option<Timespec>,
-    ) -> LispResult<(Value, usize, Value)> {
+    ) -> LispResult<(Value, usize, Value, EventKind)> {
         let _ = used_mouse_menu;
         let mut event_frame = Value::NIL;
+        let mut event_kind = EventKind::NoEvent;
         let mut kbp = self.current_kboard;
         loop {
             if self.plain_value(sym::UNREAD_COMMAND_EVENTS).is_cons() {
@@ -818,7 +819,7 @@ impl Lisp {
                 Some(end_time) => {
                     let now = current_timespec();
                     if end_time <= now {
-                        return Ok((Value::NIL, kbp, event_frame));
+                        return Ok((Value::NIL, kbp, event_frame, event_kind));
                     }
                     let (sec, nsec) = timespec_sub(end_time, now);
                     self.wait_reading_process_output(sec, nsec, -1, Value::NIL)?;
@@ -826,6 +827,10 @@ impl Lisp {
                 None => {
                     self.wait_reading_process_output(0, 0, -1, Value::NIL)?;
                 }
+            }
+            if kbp != self.current_kboard {
+                kbp = self.current_kboard;
+                return Ok((Value::fixnum(-2), kbp, event_frame, event_kind));
             }
             if !self.keyboard.interrupt_input && self.keyboard.kbd_buffer.is_empty() {
                 self.gobble_input()?;
@@ -837,9 +842,10 @@ impl Lisp {
             let first = self.xcar(unread);
             let rest = self.xcdr(unread);
             self.set_plain_value(sym::UNREAD_COMMAND_EVENTS, rest);
-            return Ok((first, self.current_kboard, event_frame));
+            return Ok((first, self.current_kboard, event_frame, event_kind));
         } else if let Some(&front) = self.keyboard.kbd_buffer.front() {
             let mut event = front;
+            event_kind = event.kind;
             kbp = self.event_to_kboard(&event).unwrap_or(self.current_kboard);
             if !matches!(
                 event.kind,
@@ -896,7 +902,7 @@ impl Lisp {
         self.keyboard.input_pending = self.readable_events(0)?;
         let last = self.keyboard.internal_last_event_frame;
         self.set_plain_value(sym::LAST_EVENT_FRAME, last);
-        Ok((obj, kbp, event_frame))
+        Ok((obj, kbp, event_frame, event_kind))
     }
 
     fn kbd_buffer_get_keyboard_event(&mut self, mut event: KbdEvent) -> LispResult {

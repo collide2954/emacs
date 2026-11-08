@@ -1462,22 +1462,19 @@ impl Lisp {
         Ok(())
     }
 
-    pub fn code_conversion_save(&mut self, with_work_buf: bool, multibyte: bool) -> LispResult {
-        let mut workbuf = Value::NIL;
-        if with_work_buf {
-            if self.codings.reused_workbuf_in_use {
-                let base = self.codings.workbuf_name;
-                let name = self.generate_new_buffer_name(base, Value::NIL)?;
-                workbuf = self.get_buffer_create(name, true)?;
-            } else {
-                let reused = self.codings.reused_workbuf;
-                if !self.is_buffer(reused) || !self.buffer_live_p(reused) {
-                    let name = self.codings.workbuf_name;
-                    self.codings.reused_workbuf = self.get_buffer_create(name, true)?;
-                }
-                workbuf = self.codings.reused_workbuf;
+    pub fn code_conversion_save(&mut self, multibyte: bool) -> LispResult {
+        let workbuf = if self.codings.reused_workbuf_in_use {
+            let base = self.codings.workbuf_name;
+            let name = self.generate_new_buffer_name(base, Value::NIL)?;
+            self.get_buffer_create(name, true)?
+        } else {
+            let reused = self.codings.reused_workbuf;
+            if !self.is_buffer(reused) || !self.buffer_live_p(reused) {
+                let name = self.codings.workbuf_name;
+                self.codings.reused_workbuf = self.get_buffer_create(name, true)?;
             }
-        }
+            self.codings.reused_workbuf
+        };
         let current = self.current_buffer;
         let arg = self.cons(current, workbuf);
         self.record_unwind(code_conversion_restore, arg);
@@ -1684,7 +1681,7 @@ impl Lisp {
                 return Ok(());
             }
         }
-        self.code_conversion_save(false, false)?;
+        self.record_unwind_current_buffer();
         coding.mode |= MODE_LAST_BLOCK;
         self.decode_coding(coding)?;
         let post_read = self.attr(attrs, ATTR_POST_READ);
@@ -1783,7 +1780,7 @@ impl Lisp {
         let post_read = self.attr(attrs, ATTR_POST_READ);
         if dst_object == sym::T || (!post_read.is_nil() && dst_object.is_nil()) {
             coding.dst_multibyte = coding.common_flags & FOR_UNIBYTE_MASK == 0;
-            coding.dst_object = self.code_conversion_save(true, coding.dst_multibyte)?;
+            coding.dst_object = self.code_conversion_save(coding.dst_multibyte)?;
             coding.dst_pos = 1;
             coding.dst_pos_byte = 1;
         } else if self.is_buffer(dst_object) {
@@ -1794,14 +1791,14 @@ impl Lisp {
                 self.prepare_to_modify_buffer(pt, pt)?;
                 self.set_buffer_internal(current);
             }
-            self.code_conversion_save(false, false)?;
+            self.record_unwind_current_buffer();
             coding.dst_object = dst_object;
             let b = self.buffer(dst_object);
             coding.dst_pos = b.pt;
             coding.dst_pos_byte = b.pt_byte;
             coding.dst_multibyte = b.text.multibyte;
         } else {
-            self.code_conversion_save(false, false)?;
+            self.record_unwind_current_buffer();
             coding.dst_object = Value::NIL;
             coding.dst_multibyte = true;
         }
@@ -1911,7 +1908,7 @@ impl Lisp {
         }
         let pre_write = self.attr(attrs, ATTR_PRE_WRITE);
         if !pre_write.is_nil() {
-            let work = self.code_conversion_save(true, coding.src_multibyte)?;
+            let work = self.code_conversion_save(coding.src_multibyte)?;
             coding.src_object = work;
             self.stack.push(work);
             self.set_buffer_internal(work);
@@ -1965,12 +1962,12 @@ impl Lisp {
             let end = 1 + coding.src_bytes;
             self.snapshot_source(coding, object, 1, end);
         } else if src_object.is_string() {
-            self.code_conversion_save(false, false)?;
+            self.record_unwind_current_buffer();
             self.snapshot_source(coding, src_object, from_byte, to_byte);
             coding.src_pos = from as i64;
             coding.src_pos_byte = from_byte as i64;
         } else if self.is_buffer(src_object) {
-            self.code_conversion_save(false, false)?;
+            self.record_unwind_current_buffer();
             self.set_buffer_internal(src_object);
             if same_buffer {
                 let b = self.cur();
@@ -1988,7 +1985,7 @@ impl Lisp {
                 coding.src_pos_byte = from_byte as i64;
             }
         } else {
-            self.code_conversion_save(false, false)?;
+            self.record_unwind_current_buffer();
             coding.source = coding.source[from_byte..to_byte].to_vec();
             coding.src_pos = from as i64;
             coding.src_pos_byte = from_byte as i64;

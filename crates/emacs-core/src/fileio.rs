@@ -1827,7 +1827,7 @@ fn insert_file_contents_body(lisp: &mut Lisp, s: &mut InsertFile) -> LispResult<
     if !s.replace.is_nil() && s.replace != sym::UNBOUND && !replace_handled && begv < zv {
         let this_count = lisp.specpdl.len();
         let multibyte = lisp.cur().text.multibyte;
-        let conversion_buffer = lisp.code_conversion_save(true, multibyte)?;
+        let conversion_buffer = lisp.code_conversion_save(multibyte)?;
         lisp.stack.push(conversion_buffer);
         if beg_offset != curpos {
             if !s.beg.is_nil() || 0 <= curpos {

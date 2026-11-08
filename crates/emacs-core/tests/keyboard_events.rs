@@ -1,10 +1,13 @@
 mod common;
 
 use common::{check, eval, on_big_stack};
+use emacs_core::error::LispResult;
 use emacs_core::keyboard::{CTRL_MODIFIER, META_MODIFIER, SHIFT_MODIFIER};
 use emacs_core::lisp::Lisp;
+use emacs_core::subr::Subr;
 use emacs_core::symbols as sym;
 use emacs_core::termhooks::{EventKind, KbdEvent};
+use emacs_core::timefns::{current_timespec, timespec_add};
 use emacs_core::value::Value;
 
 fn key(lisp: &Lisp, kind: EventKind, code: u32, modifiers: i64) -> KbdEvent {
@@ -18,7 +21,7 @@ fn key(lisp: &Lisp, kind: EventKind, code: u32, modifiers: i64) -> KbdEvent {
 }
 
 fn read(lisp: &mut Lisp) -> String {
-    let (event, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
+    let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
     lisp.prin1_to_string(event)
 }
 
@@ -114,7 +117,7 @@ fn frame_and_special_events() {
             (EventKind::MoveFrame, sym::MOVE_FRAME),
         ] {
             lisp.kbd_buffer_store_event(key(&lisp, kind, 0, 0)).unwrap();
-            let (event, _, frame) = lisp.kbd_buffer_get_event(None, None).unwrap();
+            let (event, _, frame, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
             assert_eq!(lisp.xcar(event), head);
             let arg = lisp.xcar(lisp.xcdr(event));
             assert_eq!((lisp.xcar(arg), lisp.xcdr(arg)), (f, Value::NIL));
@@ -125,10 +128,52 @@ fn frame_and_special_events() {
             (EventKind::FocusOut, sym::FOCUS_OUT),
         ] {
             lisp.kbd_buffer_store_event(key(&lisp, kind, 0, 0)).unwrap();
-            let (event, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
+            let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
             assert_eq!(lisp.xcar(event), head);
             assert_eq!(lisp.xcar(lisp.xcdr(event)), f);
         }
+    });
+}
+
+static SWITCH_KBOARD: Subr = Subr::fixed("test-switch-kboard", 0, 0, switch_kboard);
+
+fn switch_kboard(lisp: &mut Lisp, _: &[Value]) -> LispResult {
+    lisp.current_kboard = lisp.kboards.len() - 1;
+    Ok(Value::NIL)
+}
+
+#[test]
+fn event_kind_and_kboard_switched_while_waiting() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        lisp.kbd_buffer_store_event(key(&lisp, EventKind::AsciiKeystroke, 97, 0))
+            .unwrap();
+        let (event, _, _, kind) = lisp.kbd_buffer_get_event(None, None).unwrap();
+        assert_eq!(
+            (event, kind),
+            (Value::fixnum(97), EventKind::AsciiKeystroke)
+        );
+        eval(&mut lisp, "(setq unread-command-events '(1))");
+        let (event, _, _, kind) = lisp.kbd_buffer_get_event(None, None).unwrap();
+        assert_eq!((event, kind), (Value::fixnum(1), EventKind::NoEvent));
+        let other = lisp.allocate_kboard(Value::NIL);
+        assert_ne!(lisp.current_kboard, other);
+        lisp.defsubr(&SWITCH_KBOARD);
+        eval(
+            &mut lisp,
+            "(defalias 'timer-event-handler (function (lambda (timer) (test-switch-kboard))))",
+        );
+        eval(
+            &mut lisp,
+            "(setq timer-list (list (vector nil 0 0 0 nil 'switch nil nil 0 nil)))",
+        );
+        let end = timespec_add(current_timespec(), (0, 200_000_000));
+        let (event, kb, _, kind) = lisp.kbd_buffer_get_event(None, Some(end)).unwrap();
+        assert_eq!(
+            (event, kb, kind),
+            (Value::fixnum(-2), other, EventKind::NoEvent)
+        );
+        assert_eq!(lisp.current_kboard, other);
     });
 }
 

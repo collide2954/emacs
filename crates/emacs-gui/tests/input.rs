@@ -60,7 +60,7 @@ fn input(frame: u64, kind: EventKind, code: u32, modifiers: i64) -> Notice {
 }
 
 fn next_event(lisp: &mut Lisp) -> String {
-    let (event, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
+    let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
     lisp.prin1_to_string(event)
 }
 

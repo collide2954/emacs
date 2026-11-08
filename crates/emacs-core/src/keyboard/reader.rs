@@ -481,7 +481,7 @@ impl Lisp {
             if end_time.is_none() {
                 self.timer_start_idle()?;
             }
-            let (mut c, kb, frame) =
+            let (mut c, kb, frame, _) =
                 self.kbd_buffer_get_event(used_mouse_menu.as_deref_mut(), end_time)?;
             if !c.is_nil() && kb != self.current_kboard {
                 self.kbd_queue_append(kb, c);

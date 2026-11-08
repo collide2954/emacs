@@ -2368,7 +2368,7 @@ impl Lisp {
         } else if b"unspecified-fg".starts_with(&text) {
             self.frame(f).foreground_pixel
         } else {
-            return Ok(Value::NIL);
+            return Ok(unspec);
         };
         self.tty_color_name(f, pixel)
     }

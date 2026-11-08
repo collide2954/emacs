@@ -69,9 +69,9 @@ fn install_defines_the_pgtk_variables() {
         assert_eq!(
             eval(
                 &mut lisp,
-                "(list x-cursor-fore-pixel x-gtk-use-old-file-dialog x-gtk-show-hidden-files x-gtk-file-dialog-help-text x-max-tooltip-size pgtk-use-im-context-on-new-connection)"
+                "(list x-cursor-fore-pixel x-gtk-use-old-file-dialog x-gtk-show-hidden-files x-gtk-file-dialog-help-text x-max-tooltip-size pgtk-use-im-context-on-new-connection pgtk-input-purpose)"
             ),
-            "(nil nil nil t nil t)"
+            "(nil nil nil t nil t terminal)"
         );
         assert_eq!(
             eval(

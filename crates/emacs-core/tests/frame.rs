@@ -33,6 +33,20 @@ fn initial_terminal_and_frame() {
 }
 
 #[test]
+fn tty_color_parameter_that_is_not_unspecified() {
+    check(&[
+        (
+            "(progn (modify-frame-parameters nil '((background-color . \"red\"))) (frame-parameter nil 'background-color))",
+            "\"red\"",
+        ),
+        (
+            "(progn (modify-frame-parameters nil '((foreground-color . \"unspecified-bg\"))) (frame-parameter nil 'foreground-color))",
+            "\"unspecified-bg\"",
+        ),
+    ]);
+}
+
+#[test]
 fn deleting_the_sole_frame_and_terminal() {
     check(&[
         (
