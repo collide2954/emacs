@@ -55,7 +55,15 @@ impl Lisp {
                 || self.mr_partially_visible_at_bottom(w, row))
     }
 
-    pub(super) fn matrix_row_partially_visible_at_top_p(
+    pub(crate) fn matrix_row_partially_visible_at_bottom_p(
+        &mut self,
+        w: Value,
+        row: &GlyphRow,
+    ) -> bool {
+        mr_partially_visible(row) && self.mr_partially_visible_at_bottom(w, row)
+    }
+
+    pub(crate) fn matrix_row_partially_visible_at_top_p(
         &mut self,
         w: Value,
         row: &GlyphRow,

@@ -1,9 +1,11 @@
 use std::cell::RefCell;
 
 use emacs_core::dispextern::{
-    DrawFringeBitmapParams, DrawGlyphsFace, EmacsGc, EmacsRectangle, Glyph, GlyphRowArea,
-    GlyphRowRef, GlyphString, GlyphType, GlyphU, RedisplayInterface,
+    DrawFringeBitmapParams, DrawGlyphsFace, EmacsCursorKind, EmacsGc, EmacsRectangle, Glyph,
+    GlyphRowArea, GlyphRowRef, GlyphString, GlyphType, GlyphU, RedisplayInterface, Run, TEXT_AREA,
+    TextCursorKind,
 };
+use emacs_core::error::LispResult;
 use emacs_core::font::FontMetrics;
 use emacs_core::lisp::Lisp;
 use emacs_core::symbols as sym;
@@ -35,6 +37,10 @@ pub static PGTK_REDISPLAY_INTERFACE: RedisplayInterface = RedisplayInterface {
     write_glyphs: Some(gui_write_glyphs),
     insert_glyphs: Some(gui_insert_glyphs),
     clear_end_of_line: Some(gui_clear_end_of_line),
+    scroll_run_hook: Some(pgtk_scroll_run),
+    clear_window_mouse_face: Some(emacs_core::xdisp::cursor::gui_clear_window_mouse_face),
+    define_frame_cursor: Some(pgtk_define_frame_cursor),
+    draw_window_cursor: Some(pgtk_draw_window_cursor),
     after_update_window_line_hook: Some(pgtk_after_update_window_line),
     flush_display: Some(pgtk_flush_display),
     get_glyph_overhangs: Some(gui_get_glyph_overhangs),
@@ -1799,4 +1805,189 @@ pub fn pgtk_update_begin(lisp: &mut Lisp, f: Value) {
 
 pub fn pgtk_update_end(lisp: &mut Lisp, f: Value) {
     lisp.mouse_hl_info_mut(f).mouse_face_defer = false;
+}
+
+fn pgtk_define_frame_cursor(lisp: &mut Lisp, f: Value, cursor: EmacsCursorKind) {
+    with_output(lisp, f, |o| o.current_cursor = Some(cursor));
+}
+
+fn pgtk_draw_hollow_cursor(lisp: &mut Lisp, w: Value, row: GlyphRowRef) {
+    let f = lisp.window(w).frame;
+    let Some(cursor_glyph) = lisp.get_phys_cursor_glyph(w) else {
+        return;
+    };
+    let (mut x, y, h) = lisp.get_phys_cursor_geometry(w, row, &cursor_glyph);
+    let mut wd = lisp.window(w).phys_cursor_width as i32 - 1;
+    let cursor_color = with_output(lisp, f, |o| o.cursor_color as u64);
+    begin_cr_clip(lisp, f);
+    if (cursor_glyph.resolved_level & 1) != 0 && i32::from(cursor_glyph.pixel_width) > wd {
+        x += i32::from(cursor_glyph.pixel_width) - wd;
+        if wd > 0 {
+            wd -= 1;
+        }
+    }
+    pgtk_clip_to_row(lisp, w, row, GlyphRowArea::Text);
+    pgtk_draw_rectangle(lisp, f, cursor_color, x, y, wd, h - 1, false);
+    end_cr_clip(lisp, f);
+}
+
+fn pgtk_draw_bar_cursor(
+    lisp: &mut Lisp,
+    w: Value,
+    row: GlyphRowRef,
+    width: i32,
+    kind: TextCursorKind,
+) -> LispResult<()> {
+    let f = lisp.window(w).frame;
+    let Some(cursor_glyph) = lisp.get_phys_cursor_glyph(w) else {
+        return Ok(());
+    };
+    if cursor_glyph.kind == GlyphType::Xwidget {
+        return Ok(());
+    }
+    if cursor_glyph.kind == GlyphType::Image {
+        let vpos = lisp.window(w).phys_cursor.vpos as usize;
+        let r = GlyphRowRef::Window {
+            window: w,
+            desired: false,
+            vpos,
+        };
+        return lisp.draw_phys_cursor_glyph(w, r, DrawGlyphsFace::Cursor);
+    }
+    let face = lisp
+        .face_from_id(f, cursor_glyph.face_id as usize)
+        .expect("realized face");
+    let (face_fg, face_bg) = (face.foreground, face.background);
+    let cursor_color = with_output(lisp, f, |o| o.cursor_color as u64);
+    let color = if face_bg == cursor_color {
+        face_fg
+    } else {
+        cursor_color
+    };
+    begin_cr_clip(lisp, f);
+    pgtk_clip_to_row(lisp, w, row, GlyphRowArea::Text);
+    let row_height = lisp.glyph_row(row).height;
+    let phys = lisp.window(w).phys_cursor;
+    let mut width = width;
+    if kind == TextCursorKind::Bar {
+        let mut x = lisp.window_text_to_frame_pixel_x(w, phys.x) as i32;
+        if width < 0 {
+            width = lisp.frame(f).cursor_width;
+        }
+        width = width.min(i32::from(cursor_glyph.pixel_width));
+        lisp.window_mut(w).phys_cursor_width = i64::from(width);
+        if (cursor_glyph.resolved_level & 1) != 0 {
+            x += i32::from(cursor_glyph.pixel_width) - width;
+        }
+        let y = lisp.window_to_frame_pixel_y(w, phys.y) as i32;
+        pgtk_fill_rectangle(lisp, f, color, x, y, width, row_height, false);
+    } else {
+        let mut x = lisp.window_text_to_frame_pixel_x(w, phys.x) as i32;
+        if width < 0 {
+            width = row_height;
+        }
+        width = width.min(row_height);
+        lisp.get_phys_cursor_geometry(w, row, &cursor_glyph);
+        let phys_cursor_width = lisp.window(w).phys_cursor_width as i32;
+        if (cursor_glyph.resolved_level & 1) != 0
+            && i32::from(cursor_glyph.pixel_width) > phys_cursor_width - 1
+        {
+            x += i32::from(cursor_glyph.pixel_width) - phys_cursor_width + 1;
+        }
+        let y = lisp.window_to_frame_pixel_y(w, phys.y + i64::from(row_height - width)) as i32;
+        pgtk_fill_rectangle(lisp, f, color, x, y, phys_cursor_width - 1, width, false);
+    }
+    end_cr_clip(lisp, f);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pgtk_draw_window_cursor(
+    lisp: &mut Lisp,
+    w: Value,
+    glyph_row: GlyphRowRef,
+    _x: i32,
+    _y: i32,
+    cursor_type: TextCursorKind,
+    cursor_width: i32,
+    on_p: bool,
+    _active_p: bool,
+) -> LispResult<()> {
+    if !on_p {
+        return Ok(());
+    }
+    {
+        let win = lisp.window_mut(w);
+        win.phys_cursor_type = cursor_type;
+        win.flags.phys_cursor_on_p = true;
+    }
+    let (exact, reversed_p, used) = {
+        let r = lisp.glyph_row(glyph_row);
+        (
+            r.exact_window_width_line_p,
+            r.reversed_p,
+            i64::from(r.used[TEXT_AREA]),
+        )
+    };
+    let hpos = lisp.window(w).phys_cursor.hpos;
+    if exact && (if reversed_p { hpos < 0 } else { hpos >= used }) {
+        lisp.glyph_row_mut(glyph_row).cursor_in_fringe_p = true;
+        lisp.draw_fringe_bitmap(w, glyph_row, reversed_p)?;
+    } else {
+        match cursor_type {
+            TextCursorKind::HollowBox => pgtk_draw_hollow_cursor(lisp, w, glyph_row),
+            TextCursorKind::FilledBox => {
+                lisp.draw_phys_cursor_glyph(w, glyph_row, DrawGlyphsFace::Cursor)?
+            }
+            TextCursorKind::Bar | TextCursorKind::Hbar => {
+                pgtk_draw_bar_cursor(lisp, w, glyph_row, cursor_width, cursor_type)?
+            }
+            TextCursorKind::NoCursor => lisp.window_mut(w).phys_cursor_width = 0,
+            TextCursorKind::Default => unreachable!("draw_window_cursor with DEFAULT_CURSOR"),
+        }
+    }
+    Ok(())
+}
+
+fn pgtk_copy_bits(lisp: &Lisp, f: Value, src: Rect, dst: Rect) {
+    begin_cr_clip(lisp, f);
+    with_surface(lisp, f, |s| s.copy_bits(src, dst));
+    end_cr_clip(lisp, f);
+}
+
+fn pgtk_scroll_run(lisp: &mut Lisp, w: Value, run: &Run) -> LispResult<()> {
+    let f = lisp.window(w).frame;
+    let (x, y, width, height) = lisp.window_box(w, GlyphRowArea::Any);
+    let (x, y, width) = (x as i32, y as i32, width as i32);
+    let mut from_y = lisp.window_to_frame_pixel_y(w, i64::from(run.current_y)) as i32;
+    let mut to_y = lisp.window_to_frame_pixel_y(w, i64::from(run.desired_y)) as i32;
+    let bottom_y = y + height as i32;
+    let mut height;
+    if to_y < from_y {
+        height = if from_y + run.height > bottom_y {
+            bottom_y - from_y
+        } else {
+            run.height
+        };
+        if to_y < y {
+            let d = y - to_y;
+            height -= d;
+            to_y += d;
+            from_y += d;
+        }
+    } else {
+        height = if to_y + run.height > bottom_y {
+            bottom_y - to_y
+        } else {
+            run.height
+        };
+    }
+    lisp.gui_clear_cursor(w)?;
+    pgtk_copy_bits(
+        lisp,
+        f,
+        Rect::new(x, from_y, width, height),
+        Rect::new(x, to_y, width, height),
+    );
+    Ok(())
 }

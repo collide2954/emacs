@@ -338,7 +338,7 @@ pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
     None,
     Some(Lisp::gui_set_border_width),
     Some(pgtk_set_cursor_color),
-    None,
+    Some(Lisp::gui_set_cursor_type),
     Some(Lisp::gui_set_font),
     Some(pgtk_set_foreground_color),
     None,
@@ -617,15 +617,15 @@ fn pgtk_set_title(lisp: &mut Lisp, f: Value, name: Value, _old_name: Value) -> L
     Ok(())
 }
 
-fn unwind_create_frame(lisp: &mut Lisp, frame: Value) -> bool {
+fn unwind_create_frame(lisp: &mut Lisp, frame: Value) -> LispResult<bool> {
     if !lisp.frame_live_p(frame) {
-        return false;
+        return Ok(false);
     }
     if !lisp.frames.list.contains(&frame) {
-        pgtk_free_frame_resources(lisp, frame);
-        return true;
+        pgtk_free_frame_resources(lisp, frame)?;
+        return Ok(true);
     }
-    false
+    Ok(false)
 }
 
 fn f_x_create_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
@@ -635,12 +635,15 @@ fn f_x_create_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let count = lisp.specpdl.len();
     let mut frame = Value::NIL;
     let r = x_create_frame(lisp, parms, &mut frame);
-    if r.is_err() && !frame.is_nil() {
-        unwind_create_frame(lisp, frame);
-    }
+    let unwound = if r.is_err() && !frame.is_nil() {
+        unwind_create_frame(lisp, frame).map(|_| ())
+    } else {
+        Ok(())
+    };
     let u = lisp.unbind_to(count);
     lisp.stack.truncate(base);
     let frame = r?;
+    unwound?;
     u?;
     Ok(frame)
 }

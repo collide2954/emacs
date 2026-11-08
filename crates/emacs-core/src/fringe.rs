@@ -459,4 +459,481 @@ impl Lisp {
         self.set_buffer_internal(oldbuf);
         result.map(|()| updated_p)
     }
+
+    fn get_logical_fringe_bitmap(
+        &mut self,
+        w: Value,
+        bitmap: Value,
+        right_p: usize,
+        partial_p: bool,
+    ) -> LispResult<i64> {
+        let ix1 = right_p;
+        let ix2 = ix1 + if partial_p { 2 } else { 0 };
+        let buffer = self.window(w).contents;
+        let cmap = self.buffer_local_value(sym::FRINGE_INDICATOR_ALIST, buffer);
+        let mut bm1 = Value::NIL;
+        let mut bm2 = Value::NIL;
+        let mut ln1 = 0;
+        let mut ln2 = 0;
+        if !cmap.is_nil() {
+            bm1 = crate::fns::f_assq(self, &[bitmap, cmap])?;
+            if bm1.is_cons() {
+                bm1 = self.xcdr(bm1);
+                if bm1.is_nil() {
+                    return Ok(NO_FRINGE_BITMAP);
+                }
+                if bm1.is_cons() {
+                    ln1 = self.list_length(bm1)?;
+                    if partial_p {
+                        if ln1 > ix2 {
+                            let bm = crate::fns::f_nth(self, &[Value::fixnum(ix2 as i64), bm1])?;
+                            if bm != sym::T {
+                                return Ok(self.lookup_fringe_bitmap(bm));
+                            }
+                        }
+                    } else if ln1 > ix1 {
+                        let bm = crate::fns::f_nth(self, &[Value::fixnum(ix1 as i64), bm1])?;
+                        if bm != sym::T {
+                            return Ok(self.lookup_fringe_bitmap(bm));
+                        }
+                    }
+                } else if bm1 != sym::T {
+                    return Ok(self.lookup_fringe_bitmap(bm1));
+                }
+            }
+        }
+        let default = self.default_value_unchecked(sym::FRINGE_INDICATOR_ALIST);
+        if cmap != default && !default.is_nil() {
+            bm2 = crate::fns::f_assq(self, &[bitmap, default])?;
+            if bm2.is_cons() {
+                bm2 = self.xcdr(bm2);
+                if !bm2.is_nil() && bm2.is_cons() {
+                    ln2 = self.list_length(bm2)?;
+                    if partial_p && ln2 > ix2 {
+                        let bm = crate::fns::f_nth(self, &[Value::fixnum(ix2 as i64), bm2])?;
+                        if bm != sym::T {
+                            return Ok(self.lookup_fringe_bitmap(bm));
+                        }
+                    }
+                }
+            }
+        }
+        if ln1 > ix1 {
+            let bm = crate::fns::f_nth(self, &[Value::fixnum(ix1 as i64), bm1])?;
+            if bm != sym::T {
+                return Ok(self.lookup_fringe_bitmap(bm));
+            }
+        }
+        if ln2 > ix1 {
+            let bm = crate::fns::f_nth(self, &[Value::fixnum(ix1 as i64), bm2])?;
+            if bm != sym::T {
+                return Ok(self.lookup_fringe_bitmap(bm));
+            }
+            return Ok(NO_FRINGE_BITMAP);
+        }
+        if bm2.is_nil() {
+            return Ok(NO_FRINGE_BITMAP);
+        }
+        Ok(self.lookup_fringe_bitmap(bm2))
+    }
+
+    fn fringe_row(&self, w: Value, rn: usize) -> GlyphRowRef {
+        let desired_enabled = self
+            .window_matrix(w, WhichMatrix::Desired)
+            .is_some_and(|m| m.rows[rn].enabled_p);
+        GlyphRowRef::Window {
+            window: w,
+            desired: desired_enabled,
+            vpos: rn,
+        }
+    }
+
+    pub fn update_window_fringes(&mut self, w: Value, keep_current_p: bool) -> LispResult<bool> {
+        if self.window(w).flags.pseudo_window_p {
+            return Ok(false);
+        }
+        let count = self.specpdl_index();
+        self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+        let result = self.update_window_fringes_1(w, keep_current_p);
+        self.unbind_to(count)?;
+        result
+    }
+
+    fn update_window_fringes_1(&mut self, w: Value, keep_current_p: bool) -> LispResult<bool> {
+        let yb = self.window_text_bottom_y(w) as i32;
+        let nrows = self
+            .window_matrix(w, WhichMatrix::Current)
+            .map_or(0, |m| m.nrows.max(0) as usize);
+        let mut redraw_p = false;
+        let mut boundary_top = Value::NIL;
+        let mut boundary_bot = Value::NIL;
+        let mut arrow_top = Value::NIL;
+        let mut arrow_bot = Value::NIL;
+        let buffer = self.window(w).contents;
+        let mut ind = Value::NIL;
+        if !self.window(w).mini {
+            ind = self.buffer_local_value(sym::INDICATE_BUFFER_BOUNDARIES, buffer);
+            if !ind.is_nil() {
+                if ind == sym::LEFT || ind == sym::RIGHT {
+                    boundary_top = ind;
+                    boundary_bot = ind;
+                    arrow_top = ind;
+                    arrow_bot = ind;
+                } else if ind.is_cons() && self.xcar(ind).is_cons() {
+                    let pos = crate::fns::f_assq(self, &[sym::T, ind])?;
+                    if !pos.is_nil() {
+                        let v = self.xcdr(pos);
+                        boundary_top = v;
+                        boundary_bot = v;
+                        arrow_top = v;
+                        arrow_bot = v;
+                    }
+                    let pos = crate::fns::f_assq(self, &[sym::TOP, ind])?;
+                    if !pos.is_nil() {
+                        boundary_top = self.xcdr(pos);
+                    }
+                    let pos = crate::fns::f_assq(self, &[sym::BOTTOM, ind])?;
+                    if !pos.is_nil() {
+                        boundary_bot = self.xcdr(pos);
+                    }
+                    let pos = crate::fns::f_assq(self, &[sym::UP, ind])?;
+                    if !pos.is_nil() {
+                        arrow_top = self.xcdr(pos);
+                    }
+                    let pos = crate::fns::f_assq(self, &[sym::DOWN, ind])?;
+                    if !pos.is_nil() {
+                        arrow_bot = self.xcdr(pos);
+                    }
+                } else {
+                    boundary_top = sym::LEFT;
+                    boundary_bot = sym::LEFT;
+                }
+            }
+        }
+        let mut top_ind_rn: i64 = -1;
+        let mut bot_ind_rn: i64 = -1;
+        let (begv, zv) = {
+            let b = self.buffer(buffer);
+            (b.begv as i64, b.zv as i64)
+        };
+        let top_lines = (self.window_tab_line_height(w) + self.window_header_line_height(w)) as i32;
+        if !ind.is_nil() {
+            let mut y = self.window(w).vscroll as i32;
+            let mut rn = 0;
+            while y < yb && rn < nrows {
+                let row = self.fringe_row(w, rn);
+                {
+                    let r = self.glyph_row_mut(row);
+                    r.indicate_bob_p = false;
+                    r.indicate_top_line_p = false;
+                    r.indicate_eob_p = false;
+                    r.indicate_bottom_line_p = false;
+                }
+                let r = self.glyph_row(row).clone();
+                if !r.mode_line_p {
+                    if top_ind_rn < 0 && r.visible_height > 0 {
+                        let at_top = r.height != r.visible_height && r.y < top_lines;
+                        if r.start_charpos() <= begv && !at_top {
+                            self.glyph_row_mut(row).indicate_bob_p = !boundary_top.is_nil();
+                        } else {
+                            self.glyph_row_mut(row).indicate_top_line_p = !arrow_top.is_nil();
+                        }
+                        top_ind_rn = rn as i64;
+                    }
+                    if bot_ind_rn < 0 {
+                        if r.end_charpos() >= zv
+                            && !self.matrix_row_partially_visible_at_bottom_p(w, &r)
+                        {
+                            self.glyph_row_mut(row).indicate_eob_p = !boundary_bot.is_nil();
+                            bot_ind_rn = rn as i64;
+                        } else if y + r.height >= yb {
+                            self.glyph_row_mut(row).indicate_bottom_line_p = !arrow_bot.is_nil();
+                            bot_ind_rn = rn as i64;
+                        }
+                    }
+                }
+                y += r.height;
+                rn += 1;
+            }
+        }
+        let mut empty_pos = self.buffer_local_value(sym::INDICATE_EMPTY_LINES, buffer);
+        if !empty_pos.is_nil() && empty_pos != sym::RIGHT {
+            empty_pos = if self.window_left_fringe_width(w) == 0 {
+                sym::RIGHT
+            } else {
+                sym::LEFT
+            };
+        }
+        let mut bitmap_cache = [-1i64; 32];
+        let mut left_fringe = |lisp: &mut Lisp, cache: usize, which: Value, partial_p: bool| {
+            let slot = cache * 4 + usize::from(partial_p);
+            if bitmap_cache[slot] < 0 {
+                bitmap_cache[slot] = lisp.get_logical_fringe_bitmap(w, which, 0, partial_p)?;
+            }
+            Ok::<i64, crate::error::Flow>(bitmap_cache[slot])
+        };
+        let mut right_cache = [-1i64; 32];
+        let mut right_fringe = |lisp: &mut Lisp, cache: usize, which: Value, partial_p: bool| {
+            let slot = cache * 4 + 2 + usize::from(partial_p);
+            if right_cache[slot] < 0 {
+                right_cache[slot] = lisp.get_logical_fringe_bitmap(w, which, 1, partial_p)?;
+            }
+            Ok::<i64, crate::error::Flow>(right_cache[slot])
+        };
+        let mut top_ind_min_y = -1;
+        let mut bot_ind_max_y = -1;
+        let mut top_row_ends_at_zv_p = false;
+        let mut bot_row_ends_at_zv_p = false;
+        if top_ind_rn >= 0 {
+            let row = self.fringe_row(w, top_ind_rn as usize);
+            let r = self.glyph_row(row).clone();
+            top_row_ends_at_zv_p = r.ends_at_zv_p;
+            let mut bn = NO_FRINGE_BITMAP;
+            if r.indicate_bob_p {
+                bn = if boundary_top == sym::LEFT {
+                    if r.indicate_eob_p && boundary_bot == sym::LEFT {
+                        left_fringe(self, 1, sym::TOP_BOTTOM, r.ends_at_zv_p)?
+                    } else {
+                        left_fringe(self, 2, sym::TOP, false)?
+                    }
+                } else if r.indicate_eob_p && boundary_bot == sym::RIGHT {
+                    right_fringe(self, 1, sym::TOP_BOTTOM, r.ends_at_zv_p)?
+                } else {
+                    right_fringe(self, 2, sym::TOP, false)?
+                };
+            } else if r.indicate_top_line_p {
+                bn = if arrow_top == sym::LEFT {
+                    left_fringe(self, 6, sym::UP, false)?
+                } else {
+                    right_fringe(self, 6, sym::UP, false)?
+                };
+            }
+            if bn != NO_FRINGE_BITMAP {
+                let fb = self.get_fringe_bitmap_data(bn);
+                if fb.align == FringeBitmapAlign::Top && fb.period == 0 {
+                    top_ind_min_y = top_lines;
+                    let mut top_ind_max_y = top_ind_min_y + fb.height;
+                    if top_ind_max_y > yb {
+                        top_ind_max_y = yb;
+                    }
+                    let mut y = r.y + r.height;
+                    let mut rn = top_ind_rn as usize + 1;
+                    while y < top_ind_max_y && rn < nrows {
+                        if bot_ind_rn >= 0 && rn as i64 >= bot_ind_rn {
+                            break;
+                        }
+                        let row1 = self.fringe_row(w, rn);
+                        let r1 = self.glyph_row_mut(row1);
+                        r1.indicate_bob_p = r.indicate_bob_p;
+                        r1.indicate_top_line_p = r.indicate_top_line_p;
+                        y += r1.height;
+                        rn += 1;
+                    }
+                }
+            }
+        }
+        if bot_ind_rn >= 0 {
+            let row = self.fringe_row(w, bot_ind_rn as usize);
+            let r = self.glyph_row(row).clone();
+            bot_row_ends_at_zv_p = r.ends_at_zv_p;
+            let mut bn = NO_FRINGE_BITMAP;
+            if r.indicate_eob_p {
+                bn = if boundary_bot == sym::LEFT {
+                    left_fringe(self, 3, sym::BOTTOM, r.ends_at_zv_p)?
+                } else {
+                    right_fringe(self, 3, sym::BOTTOM, r.ends_at_zv_p)?
+                };
+            } else if r.indicate_bottom_line_p {
+                bn = if arrow_bot == sym::LEFT {
+                    left_fringe(self, 7, sym::DOWN, false)?
+                } else {
+                    right_fringe(self, 7, sym::DOWN, false)?
+                };
+            }
+            if bn != NO_FRINGE_BITMAP {
+                let fb = self.get_fringe_bitmap_data(bn);
+                if fb.align == FringeBitmapAlign::Bottom && fb.period == 0 {
+                    bot_ind_max_y = r.y + r.visible_height;
+                    let mut bot_ind_min_y = bot_ind_max_y - fb.height;
+                    if bot_ind_min_y < top_lines {
+                        bot_ind_min_y = top_lines;
+                    }
+                    let mut y = r.y;
+                    let mut rn = bot_ind_rn - 1;
+                    while y >= bot_ind_min_y && rn >= 0 {
+                        if top_ind_rn >= 0 && rn <= top_ind_rn {
+                            break;
+                        }
+                        let row1 = self.fringe_row(w, rn as usize);
+                        let r1 = self.glyph_row_mut(row1);
+                        r1.indicate_eob_p = r.indicate_eob_p;
+                        r1.indicate_bottom_line_p = r.indicate_bottom_line_p;
+                        y -= r1.height;
+                        rn -= 1;
+                    }
+                }
+            }
+        }
+        let left_width = self.window_left_fringe_width(w);
+        let right_width = self.window_right_fringe_width(w);
+        let mut y = self.window(w).vscroll as i32;
+        let mut rn = 0;
+        while y < yb && rn < nrows {
+            let row = self.fringe_row(w, rn);
+            let cur_ref = GlyphRowRef::Window {
+                window: w,
+                desired: false,
+                vpos: rn,
+            };
+            let r = self.glyph_row(row).clone();
+            let mut left_face_id = DEFAULT_FACE_ID as u32;
+            let mut right_face_id = DEFAULT_FACE_ID as u32;
+            let mut left_offset = 0;
+            let mut right_offset = 0;
+            let left = if left_width == 0 {
+                NO_FRINGE_BITMAP
+            } else if i64::from(r.left_user_fringe_bitmap) != NO_FRINGE_BITMAP {
+                left_face_id = r.left_user_fringe_face_id;
+                i64::from(r.left_user_fringe_bitmap)
+            } else if (!r.reversed_p && r.truncated_on_left_p)
+                || (r.reversed_p && r.truncated_on_right_p)
+            {
+                left_fringe(self, 0, sym::TRUNCATION, false)?
+            } else if r.indicate_bob_p && boundary_top == sym::LEFT {
+                let bn = if r.indicate_eob_p && boundary_bot == sym::LEFT {
+                    left_fringe(self, 1, sym::TOP_BOTTOM, top_row_ends_at_zv_p)?
+                } else {
+                    left_fringe(self, 2, sym::TOP, false)?
+                };
+                if top_ind_min_y >= 0 {
+                    left_offset = top_ind_min_y - r.y;
+                }
+                bn
+            } else if r.indicate_eob_p && boundary_bot == sym::LEFT {
+                let bn = left_fringe(self, 3, sym::BOTTOM, bot_row_ends_at_zv_p)?;
+                if bot_ind_max_y >= 0 {
+                    left_offset = bot_ind_max_y - (r.y + r.visible_height);
+                }
+                bn
+            } else if (!r.reversed_p && r.continuation_line_p()) || (r.reversed_p && r.continued_p)
+            {
+                left_fringe(self, 4, sym::CONTINUATION, false)?
+            } else if r.indicate_empty_line_p && empty_pos == sym::LEFT {
+                left_fringe(self, 5, sym::EMPTY_LINE, false)?
+            } else if r.indicate_top_line_p && arrow_top == sym::LEFT {
+                let bn = left_fringe(self, 6, sym::UP, false)?;
+                if top_ind_min_y >= 0 {
+                    left_offset = top_ind_min_y - r.y;
+                }
+                bn
+            } else if r.indicate_bottom_line_p && arrow_bot == sym::LEFT {
+                let bn = left_fringe(self, 7, sym::DOWN, false)?;
+                if bot_ind_max_y >= 0 {
+                    left_offset = bot_ind_max_y - (r.y + r.visible_height);
+                }
+                bn
+            } else {
+                NO_FRINGE_BITMAP
+            };
+            let right = if right_width == 0 {
+                NO_FRINGE_BITMAP
+            } else if i64::from(r.right_user_fringe_bitmap) != NO_FRINGE_BITMAP {
+                right_face_id = r.right_user_fringe_face_id;
+                i64::from(r.right_user_fringe_bitmap)
+            } else if (!r.reversed_p && r.truncated_on_right_p)
+                || (r.reversed_p && r.truncated_on_left_p)
+            {
+                right_fringe(self, 0, sym::TRUNCATION, false)?
+            } else if r.indicate_bob_p && boundary_top == sym::RIGHT {
+                let bn = if r.indicate_eob_p && boundary_bot == sym::RIGHT {
+                    right_fringe(self, 1, sym::TOP_BOTTOM, top_row_ends_at_zv_p)?
+                } else {
+                    right_fringe(self, 2, sym::TOP, false)?
+                };
+                if top_ind_min_y >= 0 {
+                    right_offset = top_ind_min_y - r.y;
+                }
+                bn
+            } else if r.indicate_eob_p && boundary_bot == sym::RIGHT {
+                let bn = right_fringe(self, 3, sym::BOTTOM, bot_row_ends_at_zv_p)?;
+                if bot_ind_max_y >= 0 {
+                    right_offset = bot_ind_max_y - (r.y + r.visible_height);
+                }
+                bn
+            } else if (!r.reversed_p && r.continued_p) || (r.reversed_p && r.continuation_line_p())
+            {
+                right_fringe(self, 4, sym::CONTINUATION, false)?
+            } else if r.indicate_top_line_p && arrow_top == sym::RIGHT {
+                let bn = right_fringe(self, 6, sym::UP, false)?;
+                if top_ind_min_y >= 0 {
+                    right_offset = top_ind_min_y - r.y;
+                }
+                bn
+            } else if r.indicate_bottom_line_p && arrow_bot == sym::RIGHT {
+                let bn = right_fringe(self, 7, sym::DOWN, false)?;
+                if bot_ind_max_y >= 0 {
+                    right_offset = bot_ind_max_y - (r.y + r.visible_height);
+                }
+                bn
+            } else if r.indicate_empty_line_p && empty_pos == sym::RIGHT {
+                right_fringe(self, 5, sym::EMPTY_LINE, false)?
+            } else {
+                NO_FRINGE_BITMAP
+            };
+            let periodic_p = self.get_fringe_bitmap_data(left).period != 0
+                || self.get_fringe_bitmap_data(right).period != 0;
+            let cur = self.glyph_row(cur_ref).clone();
+            if r.y != cur.y
+                || r.visible_height != cur.visible_height
+                || r.ends_at_zv_p != cur.ends_at_zv_p
+                || left != i64::from(cur.left_fringe_bitmap)
+                || right != i64::from(cur.right_fringe_bitmap)
+                || left_face_id != cur.left_fringe_face_id
+                || right_face_id != cur.right_fringe_face_id
+                || left_offset != cur.left_fringe_offset
+                || right_offset != cur.right_fringe_offset
+                || periodic_p != cur.fringe_bitmap_periodic_p
+                || cur.redraw_fringe_bitmaps_p
+            {
+                redraw_p = true;
+                self.glyph_row_mut(row).redraw_fringe_bitmaps_p = true;
+                if !keep_current_p {
+                    let c = self.glyph_row_mut(cur_ref);
+                    c.redraw_fringe_bitmaps_p = true;
+                    c.left_fringe_bitmap = left as u32;
+                    c.right_fringe_bitmap = right as u32;
+                    c.left_fringe_face_id = left_face_id;
+                    c.right_fringe_face_id = right_face_id;
+                    c.left_fringe_offset = left_offset;
+                    c.right_fringe_offset = right_offset;
+                    c.fringe_bitmap_periodic_p = periodic_p;
+                }
+            }
+            if r.overlay_arrow_bitmap < 0 {
+                let bm = self.get_logical_fringe_bitmap(w, sym::OVERLAY_ARROW, 0, false)?;
+                self.glyph_row_mut(row).overlay_arrow_bitmap = bm as i32;
+            }
+            let overlay_arrow_bitmap = self.glyph_row(row).overlay_arrow_bitmap;
+            if overlay_arrow_bitmap != self.glyph_row(cur_ref).overlay_arrow_bitmap {
+                redraw_p = true;
+                self.glyph_row_mut(row).redraw_fringe_bitmaps_p = true;
+                if !keep_current_p {
+                    let c = self.glyph_row_mut(cur_ref);
+                    c.redraw_fringe_bitmaps_p = true;
+                    c.overlay_arrow_bitmap = overlay_arrow_bitmap;
+                }
+            }
+            let rr = self.glyph_row_mut(row);
+            rr.left_fringe_bitmap = left as u32;
+            rr.right_fringe_bitmap = right as u32;
+            rr.left_fringe_face_id = left_face_id;
+            rr.right_fringe_face_id = right_face_id;
+            rr.left_fringe_offset = left_offset;
+            rr.right_fringe_offset = right_offset;
+            rr.fringe_bitmap_periodic_p = periodic_p;
+            y += rr.height;
+            rn += 1;
+        }
+        Ok(redraw_p && !keep_current_p)
+    }
 }

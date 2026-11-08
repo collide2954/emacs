@@ -55,6 +55,7 @@ pub struct PgtkOutput {
     pub black_relief_pixel: i64,
     pub relief_background: i64,
     pub relief_background_valid_p: bool,
+    pub current_cursor: Option<emacs_core::dispextern::EmacsCursorKind>,
     pub parent_desc: i64,
     pub explicit_parent: bool,
     pub preferred_width: i64,
@@ -145,7 +146,7 @@ pub fn pgtk_make_frame_visible_invisible(lisp: &mut Lisp, f: Value, visible: boo
     }
 }
 
-pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) {
+pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     lisp.free_frame_faces(f);
     let terminal = lisp.frame(f).terminal;
     if with_dpyinfo(lisp, f, |d| d.x_focus_frame) == f {
@@ -154,10 +155,10 @@ pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) {
             lisp.display_info_mut(terminal).highlight_frame = Value::NIL;
         }
         if !new_focus.is_nil() && lisp.frame_live_p(new_focus) && has_output(lisp, new_focus) {
-            pgtk_new_focus_frame(lisp, terminal, new_focus);
+            pgtk_new_focus_frame(lisp, terminal, new_focus)?;
         } else {
             with_dpyinfo(lisp, f, |d| d.x_focus_frame = Value::NIL);
-            pgtk_frame_rehighlight(lisp, terminal);
+            pgtk_frame_rehighlight(lisp, terminal)?;
         }
     }
     if lisp.display_info(terminal).highlight_frame == f {
@@ -171,12 +172,14 @@ pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) {
     let key = frame_key(lisp, f) as u64;
     crate::with_display(|display| display.close_frame(key));
     free_output(lisp, f);
+    Ok(())
 }
 
-pub fn pgtk_destroy_window(lisp: &mut Lisp, f: Value) {
+pub fn pgtk_destroy_window(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     let terminal = lisp.frame(f).terminal;
-    pgtk_free_frame_resources(lisp, f);
+    pgtk_free_frame_resources(lisp, f)?;
     lisp.display_info_mut(terminal).reference_count -= 1;
+    Ok(())
 }
 
 pub fn pgtk_delete_terminal(lisp: &mut Lisp, terminal: Value) -> LispResult<()> {
@@ -336,15 +339,15 @@ fn delete_event(lisp: &mut Lisp, input: InputEvent) {
     }
 }
 
-fn frame_highlight(lisp: &mut Lisp, f: Value) {
-    lisp.gui_update_cursor(f, true);
+fn frame_highlight(lisp: &mut Lisp, f: Value) -> LispResult<()> {
+    lisp.gui_update_cursor(f, true)
 }
 
-fn frame_unhighlight(lisp: &mut Lisp, f: Value) {
-    lisp.gui_update_cursor(f, true);
+fn frame_unhighlight(lisp: &mut Lisp, f: Value) -> LispResult<()> {
+    lisp.gui_update_cursor(f, true)
 }
 
-fn pgtk_frame_rehighlight(lisp: &mut Lisp, terminal: Value) {
+fn pgtk_frame_rehighlight(lisp: &mut Lisp, terminal: Value) -> LispResult<()> {
     let old_highlight = lisp.display_info(terminal).highlight_frame;
     let focus = with_display_list(|displays| {
         displays
@@ -368,14 +371,15 @@ fn pgtk_frame_rehighlight(lisp: &mut Lisp, terminal: Value) {
     }
     lisp.display_info_mut(terminal).highlight_frame = highlight;
     if !old_highlight.is_nil() {
-        frame_unhighlight(lisp, old_highlight);
+        frame_unhighlight(lisp, old_highlight)?;
     }
     if !highlight.is_nil() {
-        frame_highlight(lisp, highlight);
+        frame_highlight(lisp, highlight)?;
     }
+    Ok(())
 }
 
-fn pgtk_new_focus_frame(lisp: &mut Lisp, terminal: Value, frame: Value) {
+fn pgtk_new_focus_frame(lisp: &mut Lisp, terminal: Value, frame: Value) -> LispResult<()> {
     with_display_list(|displays| {
         if let Some(d) = displays.iter_mut().find(|d| d.terminal == terminal)
             && frame != d.x_focus_frame
@@ -383,15 +387,20 @@ fn pgtk_new_focus_frame(lisp: &mut Lisp, terminal: Value, frame: Value) {
             d.x_focus_frame = frame;
         }
     });
-    pgtk_frame_rehighlight(lisp, terminal);
+    pgtk_frame_rehighlight(lisp, terminal)
 }
 
-fn pgtk_focus_changed(lisp: &mut Lisp, is_enter: bool, state: i32, frame: Value) -> KbdEvent {
+fn pgtk_focus_changed(
+    lisp: &mut Lisp,
+    is_enter: bool,
+    state: i32,
+    frame: Value,
+) -> LispResult<KbdEvent> {
     let terminal = lisp.frame(frame).terminal;
     let mut event = KbdEvent::default();
     if is_enter {
         if with_dpyinfo(lisp, frame, |d| d.x_focus_event_frame) != frame {
-            pgtk_new_focus_frame(lisp, terminal, frame);
+            pgtk_new_focus_frame(lisp, terminal, frame)?;
             with_dpyinfo(lisp, frame, |d| d.x_focus_event_frame = frame);
             let terminal_frame = lisp.plain_value(sym::TERMINAL_FRAME_2);
             let pgtk_terminal_frame = lisp.is_frame(terminal_frame)
@@ -407,7 +416,7 @@ fn pgtk_focus_changed(lisp: &mut Lisp, is_enter: bool, state: i32, frame: Value)
         with_output(lisp, frame, |output| output.focus_state &= !state);
         if with_dpyinfo(lisp, frame, |d| d.x_focus_event_frame) == frame {
             with_dpyinfo(lisp, frame, |d| d.x_focus_event_frame = Value::NIL);
-            pgtk_new_focus_frame(lisp, terminal, Value::NIL);
+            pgtk_new_focus_frame(lisp, terminal, Value::NIL)?;
             event.kind = EventKind::FocusOut;
             event.frame_or_window = frame;
         }
@@ -415,31 +424,33 @@ fn pgtk_focus_changed(lisp: &mut Lisp, is_enter: bool, state: i32, frame: Value)
             lisp.frame_mut(frame).flags.pointer_invisible = false;
         }
     }
-    event
+    Ok(event)
 }
 
-fn focus_event(lisp: &mut Lisp, input: InputEvent, is_enter: bool) {
+fn focus_event(lisp: &mut Lisp, input: InputEvent, is_enter: bool) -> LispResult<()> {
     let Some(frame) = pgtk_any_window_to_frame(lisp, input.frame) else {
-        return;
+        return Ok(());
     };
-    let event = pgtk_focus_changed(lisp, is_enter, FOCUS_EXPLICIT, frame);
+    let event = pgtk_focus_changed(lisp, is_enter, FOCUS_EXPLICIT, frame)?;
     if event.kind != EventKind::NoEvent {
         evq_enqueue(lisp, event);
     }
+    Ok(())
 }
 
-fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) {
+fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
     if let Notice::Input(input) = notice {
         match input.kind {
             EventKind::AsciiKeystroke
             | EventKind::MultibyteCharKeystroke
             | EventKind::NonAsciiKeystroke => key_press_event(lisp, input),
             EventKind::DeleteWindow => delete_event(lisp, input),
-            EventKind::FocusIn => focus_event(lisp, input, true),
-            EventKind::FocusOut => focus_event(lisp, input, false),
+            EventKind::FocusIn => focus_event(lisp, input, true)?,
+            EventKind::FocusOut => focus_event(lisp, input, false)?,
             _ => {}
         }
     }
+    Ok(())
 }
 
 pub fn pgtk_read_socket(
@@ -455,7 +466,7 @@ pub fn pgtk_read_socket(
         .and_then(Result::ok)
         .unwrap_or_default();
     for notice in notices {
-        pgtk_handle_notice(lisp, notice);
+        pgtk_handle_notice(lisp, notice)?;
     }
     evq_flush(lisp, hold_quit)
 }

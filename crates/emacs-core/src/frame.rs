@@ -176,6 +176,10 @@ pub struct Frame {
     pub baseline_offset: i64,
     pub n_tab_bar_rows: i64,
     pub n_tool_bar_rows: i64,
+    pub desired_cursor: crate::dispextern::TextCursorKind,
+    pub cursor_width: i32,
+    pub blink_off_cursor: crate::dispextern::TextCursorKind,
+    pub blink_off_cursor_width: i32,
 }
 
 impl Frame {
@@ -237,6 +241,10 @@ impl Frame {
             baseline_offset: 0,
             n_tab_bar_rows: 0,
             n_tool_bar_rows: 0,
+            desired_cursor: crate::dispextern::TextCursorKind::FilledBox,
+            cursor_width: 0,
+            blink_off_cursor: crate::dispextern::TextCursorKind::FilledBox,
+            blink_off_cursor_width: 0,
         }
     }
 
@@ -785,7 +793,7 @@ impl Lisp {
         self.free_font_driver_list(f);
         let terminal = self.frame(f).terminal;
         if let Some(hook) = self.terminal(terminal).hooks.delete_frame {
-            hook(self, f);
+            hook(self, f)?;
         }
         self.frame_mut(f).terminal = Value::NIL;
         let t = self.terminal_mut(terminal);
@@ -3605,6 +3613,15 @@ impl Lisp {
             f_make_frame_visible(self, &[f])?;
         }
         Ok(())
+    }
+
+    pub fn gui_set_cursor_type(
+        &mut self,
+        f: Value,
+        arg: Value,
+        _old_value: Value,
+    ) -> LispResult<()> {
+        self.set_frame_cursor_types(f, arg)
     }
 
     pub fn gui_set_autoraise(&mut self, f: Value, arg: Value, _old_value: Value) -> LispResult<()> {

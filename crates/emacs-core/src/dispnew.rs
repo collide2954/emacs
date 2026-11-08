@@ -1,4 +1,5 @@
 pub mod matrix;
+pub mod update;
 
 use std::io::Write;
 
@@ -43,12 +44,6 @@ impl Lisp {
         self.mark_window_display_accurate(root, false);
         self.set_window_update_flags(root, true);
         self.frame_mut(f).flags.garbaged = false;
-    }
-
-    pub fn update_frame(&mut self, f: Value, _inhibit_scrolling: bool) {
-        if self.frame(f).flags.glyphs_initialized_p {
-            unreachable!("update_frame needs glyph matrices");
-        }
     }
 
     fn set_window_update_flags(&mut self, mut w: Value, on_p: bool) {

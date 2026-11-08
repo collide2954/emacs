@@ -40,7 +40,7 @@ pub struct TerminalHooks {
     pub default_font_parameter: Option<DefaultFontParameterHook>,
     pub set_window_size: Option<WindowSizeHook>,
     pub frame_visible_invisible: Option<fn(&mut Lisp, Value, bool)>,
-    pub delete_frame: Option<fn(&mut Lisp, Value)>,
+    pub delete_frame: Option<fn(&mut Lisp, Value) -> LispResult<()>>,
     pub delete_terminal: Option<fn(&mut Lisp, Value) -> LispResult<()>>,
     pub read_socket: Option<ReadSocketHook>,
     pub update_begin: Option<fn(&mut Lisp, Value)>,
@@ -350,8 +350,9 @@ impl Lisp {
     }
 }
 
-fn initial_free_frame_resources(lisp: &mut Lisp, f: Value) {
+fn initial_free_frame_resources(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     lisp.free_frame_faces(f);
+    Ok(())
 }
 
 fn delete_initial_terminal(lisp: &mut Lisp, terminal: Value) -> LispResult<()> {

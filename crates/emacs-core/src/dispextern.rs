@@ -155,6 +155,13 @@ pub enum TextCursorKind {
     Hbar,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EmacsCursorKind {
+    Text,
+    Nontext,
+    Hand,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Run {
     pub desired_y: i32,
@@ -272,7 +279,7 @@ pub struct RedisplayInterface {
     pub destroy_fringe_bitmap: Option<fn(&mut Lisp, usize)>,
     pub compute_glyph_string_overhangs: Option<GlyphStringHook>,
     pub draw_glyph_string: Option<GlyphStringHook>,
-    pub define_frame_cursor: Option<fn(&mut Lisp, Value, i32)>,
+    pub define_frame_cursor: Option<fn(&mut Lisp, Value, EmacsCursorKind)>,
     pub clear_frame_area: Option<FrameAreaHook>,
     pub clear_under_internal_border: Option<fn(&mut Lisp, Value)>,
     pub draw_window_cursor: Option<DrawWindowCursorHook>,

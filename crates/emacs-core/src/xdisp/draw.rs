@@ -1286,8 +1286,11 @@ impl Lisp {
     }
 
     fn row_partially_visible_at_top_p(&mut self, w: Value, row: GlyphRowRef) -> bool {
-        let y = self.glyph_row(row).y;
-        i64::from(y) < self.top_lines_height(w)
+        let (y, height, visible_height) = {
+            let r = self.glyph_row(row);
+            (r.y, r.height, r.visible_height)
+        };
+        height != visible_height && i64::from(y) < self.top_lines_height(w)
     }
 
     pub fn get_phys_cursor_geometry(

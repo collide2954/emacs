@@ -1149,6 +1149,14 @@ impl Lisp {
         }
     }
 
+    pub(crate) fn window_has_vertical_scroll_bar_on_right(&self, w: Value) -> bool {
+        self.window_vertical_scroll_bar_type(w) == VerticalScrollBarType::Right
+    }
+
+    pub(crate) fn frame_has_vertical_scroll_bars(&self, f: Value) -> bool {
+        self.frame(f).vertical_scroll_bar_type != VerticalScrollBarType::None
+    }
+
     pub(crate) fn window_has_vertical_scroll_bar(&self, w: Value) -> bool {
         self.window_vertical_scroll_bar_type(w) != VerticalScrollBarType::None
     }

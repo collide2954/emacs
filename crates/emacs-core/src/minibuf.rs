@@ -751,7 +751,7 @@ impl Lisp {
             w.cursor.hpos = 0;
             w.cursor.x = 0;
             w.flags.must_be_updated_p = true;
-            self.update_frame(sf, true);
+            self.update_frame(sf, true)?;
             let f = self.window(mw).frame;
             self.flush_frame(f);
         }

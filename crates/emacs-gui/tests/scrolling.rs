@@ -98,6 +98,7 @@ fn make_display_current(lisp: &mut Lisp, w: Value) {
     lisp.mark_window_display_accurate(root, true);
     lisp.windows.windows_or_buffers_changed = 0;
     lisp.windows.update_mode_lines = 0;
+    lisp.frame_mut(f).flags.cursor_type_changed = false;
 }
 
 #[test]

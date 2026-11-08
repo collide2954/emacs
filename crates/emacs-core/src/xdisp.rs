@@ -1,4 +1,5 @@
 pub mod append;
+pub mod cursor;
 pub mod draw;
 pub mod elements;
 pub mod geom;
@@ -417,30 +418,6 @@ impl Lisp {
             if self.frame(sf).flags.glyphs_initialized_p {
                 unreachable!("truncating the echo area needs with_echo_area_buffer");
             }
-        }
-    }
-
-    pub fn gui_update_cursor(&mut self, f: Value, on_p: bool) {
-        let root = self.frame(f).root_window;
-        self.update_cursor_in_window_tree(root, on_p);
-    }
-
-    fn update_cursor_in_window_tree(&mut self, mut w: Value, on_p: bool) {
-        while !w.is_nil() {
-            let contents = self.window(w).contents;
-            if self.is_window(contents) {
-                self.update_cursor_in_window_tree(contents, on_p);
-            } else {
-                self.update_window_cursor(w, on_p);
-            }
-            w = self.window(w).next;
-        }
-    }
-
-    fn update_window_cursor(&mut self, w: Value, on: bool) {
-        let f = self.window(w).frame;
-        if self.frame(f).flags.glyphs_initialized_p {
-            unreachable!("display_and_set_cursor (on = {on}) needs glyph matrices");
         }
     }
 }
