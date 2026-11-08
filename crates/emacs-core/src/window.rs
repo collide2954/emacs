@@ -195,6 +195,7 @@ pub struct Windows {
     pub window_select_count: i64,
     pub windows_or_buffers_changed: i64,
     pub update_mode_lines: i64,
+    pub window_change_record_frames: bool,
 }
 
 impl Default for Windows {
@@ -210,6 +211,7 @@ impl Default for Windows {
             window_select_count: 0,
             windows_or_buffers_changed: 0,
             update_mode_lines: 0,
+            window_change_record_frames: false,
         }
     }
 }
@@ -3648,4 +3650,378 @@ pub(crate) fn f_current_window_configuration(lisp: &mut Lisp, args: &[Value]) ->
 fn f_window_configuration_equal_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let equal = lisp.compare_window_configurations(args[0], args[1])?;
     Ok(lisp.bool(equal))
+}
+
+impl Lisp {
+    pub(crate) fn window_sub_list(&mut self, window: Value, windows: Value) -> Value {
+        let mut windows = windows;
+        let mut window = window;
+        while !window.is_nil() {
+            let contents = self.window(window).contents;
+            if self.is_window(contents) {
+                windows = self.window_sub_list(contents, windows);
+            } else {
+                windows = self.cons(window, windows);
+            }
+            window = self.window(window).next;
+        }
+        windows
+    }
+
+    fn window_change_record_windows(
+        &mut self,
+        window: Value,
+        stamp: i64,
+        number: i64,
+    ) -> LispResult<i64> {
+        let mut number = number;
+        let mut w = window;
+        while !w.is_nil() {
+            let contents = self.window(w).contents;
+            if self.is_window(contents) {
+                number = self.window_change_record_windows(contents, stamp, number)?;
+            } else {
+                number += 1;
+                let body_width = self.window_body_width(w, WindowBodyUnit::Pixels)?;
+                let body_height = self.window_body_height(w, WindowBodyUnit::Pixels)?;
+                let win = self.window_mut(w);
+                win.change_stamp = stamp;
+                win.old_buffer = win.contents;
+                win.old_pixel_width = win.pixel_width;
+                win.old_pixel_height = win.pixel_height;
+                win.old_body_pixel_width = body_width;
+                win.old_body_pixel_height = body_height;
+            }
+            w = self.window(w).next;
+        }
+        Ok(number)
+    }
+
+    fn window_change_record(&mut self) -> LispResult<()> {
+        if self.windows.window_change_record_frames {
+            for f in self.frames.list.clone() {
+                let selected = self.frame(f).selected_window;
+                let fr = self.frame_mut(f);
+                fr.old_selected_window = selected;
+                fr.change_stamp += 1;
+                if fr.change_stamp == 0 {
+                    fr.change_stamp = 1;
+                }
+                let (root, stamp) = (fr.root_window, fr.change_stamp);
+                let n = self.window_change_record_windows(root, stamp, 0)?;
+                let fr = self.frame_mut(f);
+                fr.number_of_windows = n;
+                fr.flags.window_change = false;
+                fr.flags.window_state_change = false;
+            }
+        }
+        self.windows.old_selected_window = self.windows.selected_window;
+        self.frames.old_selected_frame = self.frames.selected_frame;
+        Ok(())
+    }
+
+    fn run_window_change_functions_locally(
+        &mut self,
+        symbol: Value,
+        buffer: Value,
+        window: Value,
+    ) -> LispResult<()> {
+        if self.buffer_local_get(buffer, symbol).is_some() {
+            let mut funs = self.buffer_local_value(symbol, buffer);
+            crate::buffer::f_set_buffer(self, &[buffer])?;
+            let base = self.stack.len();
+            self.stack.push(funs);
+            while funs.is_cons() {
+                let fun = self.xcar(funs);
+                if fun != sym::T {
+                    self.windows.window_change_record_frames = true;
+                    self.safe_calln(fun, &[window])?;
+                }
+                funs = self.xcdr(funs);
+            }
+            self.stack.truncate(base);
+        }
+        Ok(())
+    }
+
+    fn run_window_change_functions_globally(
+        &mut self,
+        symbol: Value,
+        frame: Value,
+    ) -> LispResult<()> {
+        let mut funs = crate::data::f_default_value(self, &[symbol])?;
+        let base = self.stack.len();
+        self.stack.push(funs);
+        while funs.is_cons() {
+            let fun = self.xcar(funs);
+            if fun != sym::T {
+                self.windows.window_change_record_frames = true;
+                self.safe_calln(fun, &[frame])?;
+            }
+            funs = self.xcdr(funs);
+        }
+        self.stack.truncate(base);
+        Ok(())
+    }
+
+    fn run_funs(&mut self, funs: Value) -> LispResult<()> {
+        let base = self.stack.len();
+        self.stack.push(funs);
+        let mut funs = funs;
+        while funs.is_cons() {
+            let fun = self.xcar(funs);
+            if fun != sym::T {
+                self.funcall(fun, &[])?;
+            }
+            funs = self.xcdr(funs);
+        }
+        self.stack.truncate(base);
+        Ok(())
+    }
+
+    pub fn run_window_configuration_change_hook(&mut self, f: Value) -> LispResult<()> {
+        let count = self.specpdl_index();
+        let global_wcch =
+            crate::data::f_default_value(self, &[sym::WINDOW_CONFIGURATION_CHANGE_HOOK])?;
+        let base = self.stack.len();
+        self.stack.push(global_wcch);
+        let frame = f;
+        if self.find_symbol_value(sym::RUN_HOOKS).is_nil()
+            || !self.frame(f).flags.can_set_window_size
+            || !self.frame(f).flags.after_make_frame
+        {
+            self.stack.truncate(base);
+            return Ok(());
+        }
+        let selected_buffer = self.window(self.windows.selected_window).contents;
+        if self.current_buffer != selected_buffer {
+            self.record_unwind_current_buffer();
+            crate::buffer::f_set_buffer(self, &[selected_buffer])?;
+        }
+        if self.frames.selected_frame != f {
+            let sf = self.frames.selected_frame;
+            self.record_unwind(select_frame_norecord, sf);
+            select_frame_norecord(self, frame)?;
+        }
+        let windows = f_window_list(self, &[frame, sym::LAMBDA, Value::NIL])?;
+        self.stack.push(windows);
+        let mut tail = windows;
+        while tail.is_cons() {
+            let window = self.xcar(tail);
+            let buffer = self.window(window).contents;
+            let local = crate::data::f_local_variable_p(
+                self,
+                &[sym::WINDOW_CONFIGURATION_CHANGE_HOOK, buffer],
+            )?;
+            if !local.is_nil() {
+                let inner_count = self.specpdl_index();
+                let sw = self.windows.selected_window;
+                self.record_unwind(select_window_norecord, sw);
+                select_window_norecord(self, window)?;
+                let funs = crate::buffer::f_buffer_local_value(
+                    self,
+                    &[sym::WINDOW_CONFIGURATION_CHANGE_HOOK, buffer],
+                )?;
+                self.run_funs(funs)?;
+                self.unbind_to(inner_count)?;
+            }
+            tail = self.xcdr(tail);
+        }
+        self.run_funs(global_wcch)?;
+        self.stack.truncate(base);
+        self.unbind_to(count)
+    }
+
+    pub fn run_window_change_functions(&mut self) -> LispResult<()> {
+        let selected_frame_change = self.frames.selected_frame != self.frames.old_selected_frame;
+        let mut run_window_state_change_hook = false;
+        let count = self.specpdl_index();
+        self.windows.window_change_record_frames = false;
+        self.record_unwind(window_change_record_unwind, Value::NIL);
+        self.specbind(sym::INHIBIT_REDISPLAY, sym::T)?;
+        for frame in self.frames.list.clone() {
+            let f = frame;
+            if !self.frame_live_p(f) {
+                continue;
+            }
+            let root = self.frame(f).root_window;
+            let frame_window_change = self.frame(f).flags.window_change;
+            let mut frame_buffer_change = false;
+            let mut frame_size_change = false;
+            let old_selected_frame = self.frames.old_selected_frame;
+            let frame_selected_change = selected_frame_change
+                && (frame == old_selected_frame || frame == self.frames.selected_frame);
+            let frame_selected_window_change =
+                self.frame(f).old_selected_window != self.frame(f).selected_window;
+            let frame_window_state_change = self.frame(f).flags.window_state_change;
+            let fl = &self.frame(f).flags;
+            if !fl.can_set_window_size
+                || !fl.after_make_frame
+                || fl.tooltip
+                || !(frame_window_change
+                    || frame_selected_change
+                    || frame_selected_window_change
+                    || frame_window_state_change)
+            {
+                continue;
+            }
+            let list = self.window_sub_list(root, Value::NIL);
+            let windows = crate::fns::f_nreverse(self, &[list])?;
+            let base = self.stack.len();
+            self.stack.push(windows);
+            let mut number_of_windows = 0;
+            let mut tail = windows;
+            while tail.is_cons() {
+                let window = self.xcar(tail);
+                tail = self.xcdr(tail);
+                let count1 = self.specpdl_index();
+                number_of_windows += 1;
+                if !self.window_live_p(window) {
+                    continue;
+                }
+                let buffer = self.window(window).contents;
+                let (old_buffer, change_stamp) = {
+                    let win = self.window(window);
+                    (win.old_buffer, win.change_stamp)
+                };
+                let window_buffer_change = frame_window_change
+                    && (buffer != old_buffer || change_stamp != self.frame(f).change_stamp);
+                let window_size_change = frame_window_change
+                    && (window_buffer_change || {
+                        let (pw, ph, opw, oph, obw, obh) = {
+                            let win = self.window(window);
+                            (
+                                win.pixel_width,
+                                win.pixel_height,
+                                win.old_pixel_width,
+                                win.old_pixel_height,
+                                win.old_body_pixel_width,
+                                win.old_body_pixel_height,
+                            )
+                        };
+                        pw != opw
+                            || ph != oph
+                            || self.window_body_width(window, WindowBodyUnit::Pixels)? != obw
+                            || self.window_body_height(window, WindowBodyUnit::Pixels)? != obh
+                    });
+                frame_buffer_change = frame_buffer_change || window_buffer_change;
+                frame_size_change = frame_size_change || window_size_change;
+                self.record_unwind_current_buffer();
+                if window_buffer_change {
+                    if self.is_buffer(old_buffer) && self.buffer_live_p(old_buffer) {
+                        self.run_window_change_functions_locally(
+                            sym::WINDOW_BUFFER_CHANGE_FUNCTIONS,
+                            old_buffer,
+                            window,
+                        )?;
+                    }
+                    self.run_window_change_functions_locally(
+                        sym::WINDOW_BUFFER_CHANGE_FUNCTIONS,
+                        buffer,
+                        window,
+                    )?;
+                }
+                if window_size_change && self.window_live_p(window) {
+                    self.run_window_change_functions_locally(
+                        sym::WINDOW_SIZE_CHANGE_FUNCTIONS,
+                        buffer,
+                        window,
+                    )?;
+                }
+                let selection_change = (frame_selected_change
+                    && (window == self.windows.old_selected_window
+                        || window == self.windows.selected_window))
+                    || (frame_selected_window_change
+                        && (window == self.frame(f).old_selected_window
+                            || window == self.frame(f).selected_window));
+                if selection_change && self.window_live_p(window) {
+                    self.run_window_change_functions_locally(
+                        sym::WINDOW_SELECTION_CHANGE_FUNCTIONS,
+                        buffer,
+                        window,
+                    )?;
+                }
+                let selection_change = (frame_selected_change
+                    && (window == self.windows.old_selected_window
+                        || window == self.windows.selected_window))
+                    || (frame_selected_window_change
+                        && (window == self.frame(f).old_selected_window
+                            || window == self.frame(f).selected_window));
+                if (window_buffer_change || window_size_change || selection_change)
+                    && self.window_live_p(window)
+                {
+                    self.run_window_change_functions_locally(
+                        sym::WINDOW_STATE_CHANGE_FUNCTIONS,
+                        buffer,
+                        window,
+                    )?;
+                }
+                self.unbind_to(count1)?;
+            }
+            self.stack.truncate(base);
+            let window_deleted = number_of_windows < self.frame(f).number_of_windows;
+            if (frame_buffer_change || window_deleted) && self.frame_live_p(f) {
+                self.run_window_change_functions_globally(
+                    sym::WINDOW_BUFFER_CHANGE_FUNCTIONS,
+                    frame,
+                )?;
+            }
+            if frame_size_change && self.frame_live_p(f) {
+                self.run_window_change_functions_globally(
+                    sym::WINDOW_SIZE_CHANGE_FUNCTIONS,
+                    frame,
+                )?;
+            }
+            if (frame_selected_change || frame_selected_window_change) && self.frame_live_p(f) {
+                self.run_window_change_functions_globally(
+                    sym::WINDOW_SELECTION_CHANGE_FUNCTIONS,
+                    frame,
+                )?;
+            }
+            if (frame_selected_change
+                || frame_selected_window_change
+                || frame_buffer_change
+                || window_deleted
+                || frame_size_change
+                || frame_window_state_change)
+                && self.frame_live_p(f)
+            {
+                self.run_window_change_functions_globally(
+                    sym::WINDOW_STATE_CHANGE_FUNCTIONS,
+                    frame,
+                )?;
+                run_window_state_change_hook = true;
+                self.windows.window_change_record_frames = true;
+            }
+            if (frame_size_change || window_deleted) && self.frame_live_p(f) {
+                self.run_window_configuration_change_hook(f)?;
+            }
+        }
+        if run_window_state_change_hook
+            && !self
+                .find_symbol_value(sym::WINDOW_STATE_CHANGE_HOOK)
+                .is_nil()
+        {
+            self.safe_run_hooks(sym::WINDOW_STATE_CHANGE_HOOK)?;
+        }
+        self.unbind_to(count)
+    }
+}
+
+fn window_change_record_unwind(lisp: &mut Lisp, _: Value) -> LispResult<()> {
+    lisp.window_change_record()
+}
+
+fn select_window_norecord(lisp: &mut Lisp, window: Value) -> LispResult<()> {
+    if lisp.window_live_p(window) {
+        f_select_window(lisp, &[window, sym::T])?;
+    }
+    Ok(())
+}
+
+fn select_frame_norecord(lisp: &mut Lisp, frame: Value) -> LispResult<()> {
+    if lisp.frame_live_p(frame) {
+        crate::frame::f_select_frame(lisp, &[frame, sym::T])?;
+    }
+    Ok(())
 }
