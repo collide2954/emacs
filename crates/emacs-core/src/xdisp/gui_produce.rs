@@ -204,7 +204,12 @@ impl Lisp {
         Ok(Value::fixnum(i64::from(height)))
     }
 
-    fn produce_glyphless_glyph_gui(&mut self, it: &mut It, acronym: Value) -> LispResult<()> {
+    fn produce_glyphless_glyph_gui(
+        &mut self,
+        it: &mut It,
+        for_no_font: bool,
+        acronym: Value,
+    ) -> LispResult<()> {
         let ascii_font = self
             .face_from_id(it.f, it.face_id as usize)
             .map(|face| face.ascii_face)
@@ -219,6 +224,8 @@ impl Lisp {
         let base_height = it.ascent + it.descent;
         let base_width = self.font_object(font).average_width;
         let face_id = self.merge_glyphless_glyph_face(it)? as usize;
+        let mut len = 0;
+        let mut offsets = (0i16, 0i16, 0i16, 0i16);
         match it.glyphless_method {
             GlyphlessMethod::ThinSpace => it.pixel_width = THIN_SPACE_WIDTH,
             GlyphlessMethod::EmptyBox => {
@@ -265,18 +272,34 @@ impl Lisp {
                     }
                     code.push((driver.encode_char)(self, font, i32::from(b)));
                 }
+                len = code.len() as i32;
                 let upper_len = code.len().div_ceil(2);
                 let upper = (driver.text_extents)(self, font, &code[..upper_len]);
                 let lower = (driver.text_extents)(self, font, &code[upper_len..]);
                 let width = upper.width.max(lower.width) + 4;
-                it.pixel_width = if base_width >= width {
-                    base_width
+                let (mut upper_xoff, mut lower_xoff) = (2, 2);
+                if base_width >= width {
+                    it.pixel_width = base_width;
+                    lower_xoff = base_width - 2 - lower.width;
                 } else {
-                    width
-                };
+                    it.pixel_width = width;
+                    if upper.width >= lower.width {
+                        lower_xoff = (width - lower.width) / 2;
+                    } else {
+                        upper_xoff = (width - upper.width) / 2;
+                    }
+                }
                 let height = upper.ascent + upper.descent + lower.ascent + lower.descent + 5;
                 let ascent = -(it.descent - (base_height + height + 1) / 2);
                 let descent = it.descent - (base_height - height) / 2;
+                let lower_yoff = descent - 2 - lower.descent;
+                let upper_yoff = lower_yoff - lower.ascent - 1 - upper.descent;
+                offsets = (
+                    upper_xoff as i16,
+                    upper_yoff as i16,
+                    lower_xoff as i16,
+                    lower_yoff as i16,
+                );
                 if height > base_height {
                     it.ascent = ascent;
                     it.descent = descent;
@@ -286,7 +309,7 @@ impl Lisp {
         it.phys_ascent = it.ascent;
         it.phys_descent = it.descent;
         if it.glyph_row.is_some() {
-            unreachable!("appending glyphless glyphs needs glyph rows");
+            self.append_glyphless_glyph(it, face_id as i32, for_no_font, len, offsets);
         }
         it.nglyphs = 1;
         Self::take_vertical_position_into_account(it);
@@ -307,7 +330,7 @@ impl Lisp {
             } else {
                 Value::NIL
             };
-            return self.produce_glyphless_glyph_gui(it, acronym);
+            return self.produce_glyphless_glyph_gui(it, true, acronym);
         }
         let fb = self.font_bits(font);
         let mut boff = fb.baseline_offset;
@@ -378,8 +401,20 @@ impl Lisp {
                 }
             }
             Self::take_vertical_position_into_account(it);
-            if it.glyph_row.is_some() {
-                unreachable!("appending glyphs needs glyph rows");
+            if let Some(row) = it.glyph_row {
+                if stretched_p {
+                    let ascent = ((it.ascent + it.descent) * fb.ascent) / fb.height;
+                    let (object, width, height) =
+                        (it.object, it.pixel_width, it.ascent + it.descent);
+                    self.append_stretch_glyph(it, object, width, height, ascent);
+                } else {
+                    self.append_glyph(it);
+                }
+                if let Some(m) = pcm
+                    && (m.lbearing < 0 || m.rbearing > m.width)
+                {
+                    self.glyph_row_mut(row).contains_overlapping_glyphs_p = true;
+                }
             }
             if !stretched_p && it.pixel_width == 0 {
                 it.pixel_width = 1;
@@ -507,7 +542,9 @@ impl Lisp {
             it.phys_ascent = it.ascent;
             it.phys_descent = it.descent;
             if it.glyph_row.is_some() {
-                unreachable!("appending stretch glyphs needs glyph rows");
+                let (object, width, height, ascent) =
+                    (it.object, it.pixel_width, it.ascent + it.descent, it.ascent);
+                self.append_stretch_glyph(it, object, width, height, ascent);
             }
         } else {
             it.pixel_width = 0;
@@ -777,6 +814,12 @@ impl Lisp {
             let cmp = &self.compositions.table[id];
             let (pixel_width, ascent, descent, glyph_len) =
                 (cmp.pixel_width, cmp.ascent, cmp.descent, cmp.glyph_len);
+            let overlapping = cmp.lbearing < 0 || cmp.rbearing > cmp.pixel_width;
+            if let Some(row) = it.glyph_row
+                && overlapping
+            {
+                self.glyph_row_mut(row).contains_overlapping_glyphs_p = true;
+            }
             it.pixel_width = pixel_width;
             it.ascent = ascent;
             it.phys_ascent = ascent;
@@ -790,7 +833,7 @@ impl Lisp {
             it.ascent = it.ascent.max(0);
             it.descent = it.descent.max(0);
             if it.glyph_row.is_some() && glyph_len > 0 {
-                unreachable!("appending composite glyphs needs glyph rows");
+                self.append_composite_glyph(it);
             }
         } else if it.what == DisplayElementType::Composition {
             let face = self.face_bits(it.f, it.face_id as usize);
@@ -809,6 +852,11 @@ impl Lisp {
                 it.phys_descent = it.descent;
                 it.pixel_width = self.font_object(face.font).space_width;
             } else {
+                if let Some(row) = it.glyph_row
+                    && (metrics.lbearing < 0 || metrics.rbearing > metrics.width)
+                {
+                    self.glyph_row_mut(row).contains_overlapping_glyphs_p = true;
+                }
                 it.ascent = metrics.ascent;
                 it.phys_ascent = metrics.ascent;
                 it.descent = metrics.descent;
@@ -822,10 +870,10 @@ impl Lisp {
             it.ascent = it.ascent.max(0);
             it.descent = it.descent.max(0);
             if it.glyph_row.is_some() {
-                unreachable!("appending composite glyphs needs glyph rows");
+                self.append_composite_glyph(it);
             }
         } else if it.what == DisplayElementType::Glyphless {
-            self.produce_glyphless_glyph_gui(it, Value::NIL)?;
+            self.produce_glyphless_glyph_gui(it, false, Value::NIL)?;
         } else if it.what == DisplayElementType::Image {
             unreachable!("image glyphs need image.c");
         } else if it.what == DisplayElementType::Stretch {

@@ -50,16 +50,302 @@ pub struct DisplayPos {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum GlyphRowArea {
+    Any,
     LeftMargin,
     #[default]
     Text,
     RightMargin,
 }
 
+pub const LEFT_MARGIN_AREA: usize = 0;
+pub const TEXT_AREA: usize = 1;
+pub const RIGHT_MARGIN_AREA: usize = 2;
+pub const LAST_AREA: usize = 3;
+
+impl GlyphRowArea {
+    pub fn index(self) -> usize {
+        match self {
+            GlyphRowArea::LeftMargin => LEFT_MARGIN_AREA,
+            GlyphRowArea::Text => TEXT_AREA,
+            GlyphRowArea::RightMargin => RIGHT_MARGIN_AREA,
+            GlyphRowArea::Any => unreachable!("ANY_AREA has no glyph index"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum GlyphType {
+    #[default]
+    Char,
+    Composite,
+    Glyphless,
+    Image,
+    Stretch,
+    Xwidget,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum GlyphSlice {
+    #[default]
+    None,
+    Img {
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+    },
+    Cmp {
+        from: i32,
+        to: i32,
+    },
+    Glyphless {
+        upper_xoff: i16,
+        upper_yoff: i16,
+        lower_xoff: i16,
+        lower_yoff: i16,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GlyphU {
+    Ch(u32),
+    Cmp {
+        automatic: bool,
+        id: u32,
+    },
+    ImgId(i32),
+    Stretch {
+        height: u16,
+        ascent: u16,
+    },
+    Glyphless {
+        method: u8,
+        for_no_font: bool,
+        len: u8,
+        ch: u32,
+    },
+}
+
+impl Default for GlyphU {
+    fn default() -> GlyphU {
+        GlyphU::Ch(0)
+    }
+}
+
+impl GlyphU {
+    pub fn val(self) -> u32 {
+        match self {
+            GlyphU::Ch(c) => c,
+            GlyphU::Cmp { automatic, id } => u32::from(automatic) | (id << 1),
+            GlyphU::ImgId(id) => id as u32,
+            GlyphU::Stretch { height, ascent } => u32::from(height) | (u32::from(ascent) << 16),
+            GlyphU::Glyphless {
+                method,
+                for_no_font,
+                len,
+                ch,
+            } => {
+                u32::from(method & 3)
+                    | (u32::from(for_no_font) << 2)
+                    | (u32::from(len & 15) << 3)
+                    | ((ch & 0x1FF_FFFF) << 7)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Glyph {
+    pub charpos: i64,
+    pub object: Value,
+    pub frame: Value,
+    pub pixel_width: i16,
+    pub ascent: i16,
+    pub descent: i16,
+    pub voffset: i16,
+    pub kind: GlyphType,
+    pub multibyte_p: bool,
+    pub left_box_line_p: bool,
+    pub right_box_line_p: bool,
+    pub overlaps_vertically_p: bool,
+    pub padding_p: bool,
+    pub glyph_not_available_p: bool,
+    pub avoid_cursor_p: bool,
+    pub resolved_level: u8,
+    pub bidi_type: u8,
+    pub face_id: u32,
+    pub font_type: u8,
+    pub slice: GlyphSlice,
+    pub u: GlyphU,
+}
+
+impl Glyph {
+    pub fn slice_equal_p(&self, other: &Glyph) -> bool {
+        match self.kind {
+            GlyphType::Image => self.slice == other.slice,
+            GlyphType::Composite => match (self.slice, other.slice) {
+                (GlyphSlice::Cmp { from: a, .. }, GlyphSlice::Cmp { from: b, .. }) => a == b,
+                (a, b) => a == b,
+            },
+            _ => true,
+        }
+    }
+
+    pub fn equal_p(&self, other: &Glyph) -> bool {
+        self.kind == other.kind
+            && self.u.val() == other.u.val()
+            && self.slice_equal_p(other)
+            && self.face_id == other.face_id
+            && self.frame == other.frame
+            && self.padding_p == other.padding_p
+            && self.left_box_line_p == other.left_box_line_p
+            && self.right_box_line_p == other.right_box_line_p
+            && self.voffset == other.voffset
+            && self.pixel_width == other.pixel_width
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct GlyphRow {
+    pub glyphs: Vec<Glyph>,
+    pub area: [usize; LAST_AREA + 1],
+    pub used: [i16; LAST_AREA + 1],
+    pub hash: u32,
+    pub x: i32,
+    pub y: i32,
+    pub pixel_width: i32,
+    pub ascent: i32,
+    pub height: i32,
+    pub phys_ascent: i32,
+    pub phys_height: i32,
+    pub visible_height: i32,
+    pub extra_line_spacing: i32,
+    pub extra_line_spacing_above: i32,
+    pub start: DisplayPos,
+    pub end: DisplayPos,
+    pub minpos: TextPos,
+    pub maxpos: TextPos,
+    pub overlay_arrow_bitmap: i32,
+    pub left_user_fringe_bitmap: u32,
+    pub right_user_fringe_bitmap: u32,
+    pub left_fringe_bitmap: u32,
+    pub right_fringe_bitmap: u32,
+    pub left_user_fringe_face_id: u32,
+    pub right_user_fringe_face_id: u32,
+    pub left_fringe_face_id: u32,
+    pub right_fringe_face_id: u32,
+    pub left_fringe_offset: i32,
+    pub right_fringe_offset: i32,
+    pub fringe_bitmap_periodic_p: bool,
+    pub redraw_fringe_bitmaps_p: bool,
+    pub enabled_p: bool,
+    pub truncated_on_left_p: bool,
+    pub truncated_on_right_p: bool,
+    pub continued_p: bool,
+    pub displays_text_p: bool,
+    pub ends_at_zv_p: bool,
+    pub fill_line_p: bool,
+    pub indicate_empty_line_p: bool,
+    pub contains_overlapping_glyphs_p: bool,
+    pub full_width_p: bool,
     pub mode_line_p: bool,
+    pub tab_line_p: bool,
+    pub overlapped_p: bool,
+    pub ends_in_middle_of_char_p: bool,
+    pub starts_in_middle_of_char_p: bool,
+    pub overlapping_p: bool,
+    pub mouse_face_p: bool,
+    pub ends_in_newline_from_string_p: bool,
+    pub exact_window_width_line_p: bool,
+    pub cursor_in_fringe_p: bool,
+    pub ends_in_ellipsis_p: bool,
+    pub indicate_bob_p: bool,
+    pub indicate_top_line_p: bool,
+    pub indicate_eob_p: bool,
+    pub indicate_bottom_line_p: bool,
     pub reversed_p: bool,
+    pub stipple_p: bool,
+    pub continuation_lines_width: i32,
+    pub clip: Option<(i32, i32, i32, i32)>,
+}
+
+impl GlyphRow {
+    pub fn area_glyphs(&self, area: usize) -> &[Glyph] {
+        let start = self.area[area];
+        &self.glyphs[start..start + self.used[area] as usize]
+    }
+
+    pub fn area_capacity(&self, area: usize) -> usize {
+        self.area[area + 1].saturating_sub(self.area[area])
+    }
+
+    pub fn bottom_y(&self) -> i32 {
+        self.y + self.height
+    }
+
+    pub fn start_charpos(&self) -> i64 {
+        self.minpos.charpos
+    }
+
+    pub fn end_charpos(&self) -> i64 {
+        self.maxpos.charpos
+    }
+
+    pub fn continuation_line_p(&self) -> bool {
+        self.continuation_lines_width > 0
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct GlyphMatrix {
+    pub rows: Vec<GlyphRow>,
+    pub nrows: i32,
+    pub matrix_x: i32,
+    pub matrix_y: i32,
+    pub matrix_w: i32,
+    pub matrix_h: i32,
+    pub window_pixel_left: i32,
+    pub window_pixel_top: i32,
+    pub window_height: i32,
+    pub window_width: i32,
+    pub window_vscroll: i32,
+    pub left_margin_glyphs: i32,
+    pub right_margin_glyphs: i32,
+    pub no_scrolling_p: bool,
+    pub tab_line_p: bool,
+    pub header_line_p: bool,
+    pub buffer: Value,
+    pub begv: i64,
+    pub zv: i64,
+}
+
+impl GlyphMatrix {
+    pub fn mode_line_row(&self) -> usize {
+        (self.nrows - 1) as usize
+    }
+
+    pub fn header_line_row(&self) -> usize {
+        usize::from(self.tab_line_p)
+    }
+
+    pub fn first_text_row(&self) -> usize {
+        if self.rows[0].mode_line_p {
+            if self.rows[1].mode_line_p { 2 } else { 1 }
+        } else {
+            0
+        }
+    }
+
+    pub fn trace(&self, out: &mut Vec<Value>) {
+        out.push(self.buffer);
+        for row in self.rows.iter().take(self.nrows.max(0) as usize) {
+            if row.enabled_p {
+                for area in LEFT_MARGIN_AREA..LAST_AREA {
+                    out.extend(row.area_glyphs(area).iter().map(|g| g.object));
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

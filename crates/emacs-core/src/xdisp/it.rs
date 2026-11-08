@@ -91,18 +91,39 @@ impl Lisp {
         if !self.find_symbol_value(sym::FACE_REMAPPING_ALIST).is_nil() {
             remapped_base_face_id = self.lookup_basic_face(Some(w), f, base_face_id)?;
         }
-        if row.is_none()
-            && [
-                MODE_LINE_ACTIVE_FACE_ID,
-                MODE_LINE_INACTIVE_FACE_ID,
-                TAB_LINE_ACTIVE_FACE_ID,
-                TAB_LINE_INACTIVE_FACE_ID,
-                HEADER_LINE_ACTIVE_FACE_ID,
-                HEADER_LINE_INACTIVE_FACE_ID,
-            ]
-            .contains(&base_face_id)
-        {
-            unreachable!("init_iterator for a mode line needs the window's desired matrix");
+        let mut row = row;
+        if row.is_none() {
+            let line_row = |lisp: &Lisp, vpos: usize| {
+                GlyphRowRef::Window {
+                    window: w,
+                    desired: true,
+                    vpos,
+                }
+                .then_valid(lisp)
+            };
+            if base_face_id == MODE_LINE_ACTIVE_FACE_ID
+                || base_face_id == MODE_LINE_INACTIVE_FACE_ID
+            {
+                let vpos = self
+                    .window_matrix(w, crate::dispnew::matrix::WhichMatrix::Desired)
+                    .map(|m| m.mode_line_row());
+                row = vpos.and_then(|v| line_row(self, v));
+            } else if base_face_id == TAB_LINE_ACTIVE_FACE_ID
+                || base_face_id == TAB_LINE_INACTIVE_FACE_ID
+            {
+                row = line_row(self, 0);
+            } else if base_face_id == HEADER_LINE_ACTIVE_FACE_ID
+                || base_face_id == HEADER_LINE_INACTIVE_FACE_ID
+            {
+                let tab_line_p = self.window_wants_tab_line(w);
+                if let Some(m) =
+                    self.window_matrix_mut(w, crate::dispnew::matrix::WhichMatrix::Desired)
+                {
+                    m.tab_line_p = tab_line_p;
+                    let vpos = m.header_line_row();
+                    row = line_row(self, vpos);
+                }
+            }
         }
         *it = It::default();
         it.current.overlay_string_index = -1;

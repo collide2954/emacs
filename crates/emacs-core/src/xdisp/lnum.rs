@@ -1,9 +1,10 @@
 use crate::bidi::BidiType;
-use crate::dispextern::{DisplayElementType, It, MOVE_TO_POS, MOVE_TO_Y, TextPos};
+use crate::dispextern::{
+    DisplayElementType, GlyphRowRef, It, MOVE_TO_POS, MOVE_TO_Y, TEXT_AREA, TextPos,
+};
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::symbols as sym;
-use crate::value::Value;
 use crate::xfaces::DEFAULT_FACE_ID;
 
 const SCROLL_LIMIT: i32 = 100;
@@ -68,22 +69,6 @@ impl Lisp {
         } else {
             i64::from(tem_it.vpos)
         })
-    }
-
-    fn required_matrix_height(&mut self, w: Value) -> i64 {
-        let f = self.window(w).frame;
-        if self.frame_window_p(f) {
-            let ch_height = i64::from(
-                self.display_info(self.frame(f).terminal)
-                    .smallest_font_height,
-            );
-            let window_pixel_height = self.window_box_height(w) + self.window(w).vscroll.abs();
-            return ((window_pixel_height + ch_height - 1) / ch_height)
-                * self.window(w).nrows_scale_factor
-                + 2
-                + 2;
-        }
-        self.window(w).total_lines
     }
 
     pub(super) fn maybe_produce_line_number(&mut self, it: &mut It) -> LispResult<()> {
@@ -214,7 +199,7 @@ impl Lisp {
                     lnum_width_limit
                 };
             }
-            let nrows = self.required_matrix_height(it.window);
+            let nrows = self.desired_matrix_nrows(it.window);
             let current_absolute =
                 self.find_symbol_value(sym::DISPLAY_LINE_NUMBERS_CURRENT_ABSOLUTE);
             let max_lnum = if current_absolute.is_nil() && (relative || visual) {
@@ -247,7 +232,16 @@ impl Lisp {
         let mut lnum_buf = pint2str(i64::from(it.lnum_width) + 1, lnum_to_display);
         lnum_buf.push(b' ');
         let mut tem_it = It::default();
-        self.init_iterator(&mut tem_it, it.window, -1, -1, None, DEFAULT_FACE_ID)?;
+        self.init_iterator(
+            &mut tem_it,
+            it.window,
+            -1,
+            -1,
+            Some(GlyphRowRef::Scratch),
+            DEFAULT_FACE_ID,
+        )?;
+        self.xdisp.scratch_glyph_row.reversed_p = false;
+        self.xdisp.scratch_glyph_row.used[TEXT_AREA] = 0;
         tem_it.position = TextPos::new(0, 0);
         tem_it.avoid_cursor_p = true;
         tem_it.bidi_p = true;
@@ -278,7 +272,6 @@ impl Lisp {
                         as i32;
             }
         }
-        let mut glyph_widths = Vec::new();
         for &p in &lnum_buf {
             let c = if beyond_zv
                 || (!visual
@@ -293,10 +286,6 @@ impl Lisp {
             tem_it.len = 1;
             tem_it.position = TextPos::new(-1, -1);
             self.produce_glyphs_macro(&mut tem_it)?;
-            if tem_it.nglyphs > 0 {
-                let width = tem_it.pixel_width / tem_it.nglyphs;
-                glyph_widths.extend(std::iter::repeat_n(width, tem_it.nglyphs as usize));
-            }
             if tem_it.current_x >= width_limit {
                 it.lnum_width = 0;
                 it.lnum_pixel_width = 0;
@@ -304,20 +293,32 @@ impl Lisp {
             }
         }
         it.lnum_pixel_width = tem_it.current_x;
-        for width in glyph_widths {
-            it.current_x += width;
+        let scratch = self.xdisp.scratch_glyph_row.area_glyphs(TEXT_AREA).to_vec();
+        for g in scratch {
+            it.current_x += i32::from(g.pixel_width);
             if it.current_x > it.first_visible_x {
                 it.hpos += 1;
             }
-        }
-        if it.glyph_row.is_some() {
-            unreachable!("copying line-number glyphs needs glyph rows");
+            if let Some(row) = it.glyph_row {
+                let r = self.glyph_row_mut(row);
+                let index = r.area[TEXT_AREA] + r.used[TEXT_AREA] as usize;
+                r.glyphs[index] = g;
+                r.used[TEXT_AREA] += 1;
+            }
         }
         if !beyond_zv {
-            it.max_ascent = it.max_ascent.max(tem_it.max_ascent);
-            it.max_descent = it.max_descent.max(tem_it.max_descent);
-            it.max_phys_ascent = it.max_phys_ascent.max(tem_it.max_phys_ascent);
-            it.max_phys_descent = it.max_phys_descent.max(tem_it.max_phys_descent);
+            if let Some(row) = it.glyph_row {
+                let r = self.glyph_row(row);
+                it.max_ascent = r.ascent.max(tem_it.max_ascent);
+                it.max_descent = (r.height - r.ascent).max(tem_it.max_descent);
+                it.max_phys_ascent = r.phys_ascent.max(tem_it.max_phys_ascent);
+                it.max_phys_descent = (r.phys_height - r.phys_ascent).max(tem_it.max_phys_descent);
+            } else {
+                it.max_ascent = it.max_ascent.max(tem_it.max_ascent);
+                it.max_descent = it.max_descent.max(tem_it.max_descent);
+                it.max_phys_ascent = it.max_phys_ascent.max(tem_it.max_phys_ascent);
+                it.max_phys_descent = it.max_phys_descent.max(tem_it.max_phys_descent);
+            }
         }
         it.line_number_produced_p = true;
         Ok(())

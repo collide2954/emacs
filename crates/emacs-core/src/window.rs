@@ -1,3 +1,4 @@
+use crate::dispextern::GlyphMatrix;
 use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::frame::VerticalScrollBarType;
@@ -123,6 +124,8 @@ pub struct Window {
     pub mini: bool,
     pub horizontal: bool,
     pub flags: WindowFlags,
+    pub current_matrix: Option<Box<GlyphMatrix>>,
+    pub desired_matrix: Option<Box<GlyphMatrix>>,
 }
 
 impl Window {
@@ -156,6 +159,12 @@ impl Window {
             self.cursor_type,
             self.mode_line_help_echo,
         ]);
+        for matrix in [&self.current_matrix, &self.desired_matrix]
+            .into_iter()
+            .flatten()
+        {
+            matrix.trace(out);
+        }
     }
 }
 
@@ -1011,6 +1020,8 @@ impl Lisp {
             mini: false,
             horizontal: false,
             flags: WindowFlags::default(),
+            current_matrix: None,
+            desired_matrix: None,
         };
         self.windows.window_list = Value::NIL;
         self.heap.vectorlike(Vectorlike::Window(Box::new(w)))

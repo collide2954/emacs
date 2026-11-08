@@ -1,5 +1,6 @@
 use crate::bidi::BidiDir;
 use crate::character;
+use crate::dispextern::TEXT_AREA;
 use crate::dispextern::{
     DisplayElementType, GlyphRowArea, GlyphRowRef, GlyphlessMethod, It, ItMethod, LineWrap, TextPos,
 };
@@ -16,8 +17,8 @@ const DISP_TRUNC_GLYPH_SLOT: usize = 0;
 const DISP_CONTINUE_GLYPH_SLOT: usize = 1;
 
 impl Lisp {
-    pub(super) fn glyph_row_ref(&self, _row: GlyphRowRef) -> &crate::dispextern::GlyphRow {
-        unreachable!("glyph rows need glyph matrices")
+    pub(super) fn glyph_row_ref(&self, row: GlyphRowRef) -> &crate::dispextern::GlyphRow {
+        self.glyph_row(row)
     }
 
     fn it_displaying_whitespace(&self, it: &It) -> bool {
@@ -174,8 +175,8 @@ impl Lisp {
         Ok(())
     }
 
-    fn set_glyph_row_reversed_p(&mut self, _row: GlyphRowRef, _reversed: bool) {
-        unreachable!("glyph rows need glyph matrices")
+    fn set_glyph_row_reversed_p(&mut self, row: GlyphRowRef, reversed: bool) {
+        self.glyph_row_mut(row).reversed_p = reversed;
     }
 
     fn frame_rif_produce_glyphs(
@@ -616,7 +617,18 @@ impl Lisp {
             width -= i32::from(window_p);
         }
         if width > 0 && height > 0 && it.glyph_row.is_some() {
-            unreachable!("appending stretch glyphs needs glyph rows");
+            let mut object = if it.sp > 0 {
+                it.stack[(it.sp - 1) as usize].string
+            } else {
+                it.string
+            };
+            if !object.is_string() {
+                object = self.window(it.window).contents;
+            }
+            if !window_p {
+                unreachable!("tty frames have no glyph matrices");
+            }
+            self.append_stretch_glyph(it, object, width, height, ascent);
         }
         it.pixel_width = width;
         if window_p {
@@ -639,8 +651,40 @@ impl Lisp {
         Ok(lface_id)
     }
 
-    fn append_glyph_tty(&mut self, _it: &mut It) {
-        unreachable!("appending glyphs needs glyph rows")
+    fn append_glyph_tty(&mut self, it: &mut It) {
+        let area = it.area.index();
+        let r = self.glyph_row_mut(it.glyph_row.expect("glyph row"));
+        let mut glyph = r.area[area] + r.used[area] as usize;
+        let mut end = r.area[area + 1];
+        if r.reversed_p && area == TEXT_AREA {
+            let move_by = (it.pixel_width.max(0) as usize).min(end.saturating_sub(glyph));
+            let start = r.area[area];
+            r.glyphs.copy_within(start..glyph, start + move_by);
+            glyph = start;
+            end = glyph + move_by;
+        }
+        let mut i = 0;
+        while i < it.pixel_width && glyph < end {
+            let g = &mut r.glyphs[glyph];
+            g.kind = crate::dispextern::GlyphType::Char;
+            g.pixel_width = 1;
+            g.u = crate::dispextern::GlyphU::Ch(it.char_to_display as u32);
+            g.face_id = it.face_id as u32;
+            g.avoid_cursor_p = it.avoid_cursor_p;
+            g.padding_p = i > 0;
+            g.charpos = it.position.charpos;
+            g.object = it.object;
+            if it.bidi_p {
+                g.resolved_level = it.bidi_it.resolved_level as u8;
+                g.bidi_type = it.bidi_it.type_ as u8;
+            } else {
+                g.resolved_level = 0;
+                g.bidi_type = 0;
+            }
+            r.used[area] += 1;
+            glyph += 1;
+            i += 1;
+        }
     }
 
     pub fn produce_glyphs_tty(&mut self, it: &mut It) -> LispResult<()> {
@@ -933,8 +977,43 @@ impl Lisp {
                 glyph_face = new_id as i32;
             }
         }
-        if self.frame_window_p(temp_it.f) && temp_it.glyph_row.is_some() {
-            unreachable!("stretch padding before special glyphs needs glyph rows");
+        if self.frame_window_p(temp_it.f)
+            && let Some(row) = temp_it.glyph_row
+        {
+            let (used, reversed) = {
+                let r = self.glyph_row(row);
+                (r.used[crate::dispextern::TEXT_AREA], r.reversed_p)
+            };
+            let fringe = if reversed {
+                self.window_left_fringe_width(temp_it.window)
+            } else {
+                self.window_right_fringe_width(temp_it.window)
+            };
+            if used > 0 && fringe == 0 {
+                let stretch_width = temp_it.last_visible_x - temp_it.current_x;
+                if stretch_width > 0 {
+                    let face_font = self
+                        .face_from_id(temp_it.f, temp_it.face_id as usize)
+                        .expect("face is not realized")
+                        .font;
+                    let font = if face_font.is_nil() {
+                        self.frame(temp_it.f).font
+                    } else {
+                        face_font
+                    };
+                    let fo = self.font_object(font);
+                    let stretch_ascent =
+                        ((temp_it.ascent + temp_it.descent) * fo.ascent) / fo.height;
+                    let height = temp_it.ascent + temp_it.descent;
+                    self.append_stretch_glyph(
+                        &temp_it,
+                        Value::NIL,
+                        stretch_width,
+                        height,
+                        stretch_ascent,
+                    );
+                }
+            }
         }
         temp_it.dp = Value::NIL;
         temp_it.what = DisplayElementType::Character;

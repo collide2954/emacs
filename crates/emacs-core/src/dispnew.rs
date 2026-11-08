@@ -1,3 +1,5 @@
+pub mod matrix;
+
 use std::io::Write;
 
 use num_traits::{Signed, ToPrimitive};

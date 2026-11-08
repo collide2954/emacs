@@ -1,3 +1,4 @@
+pub mod append;
 pub mod elements;
 pub mod geom;
 pub mod gui_produce;
@@ -300,10 +301,21 @@ impl Lisp {
         }
     }
 
-    fn estimated_line_height(&mut self, w: Value, active: usize, inactive: usize) -> i64 {
+    fn estimated_line_height(
+        &mut self,
+        w: Value,
+        (active, inactive): (usize, usize),
+        row: fn(&crate::dispextern::GlyphMatrix) -> usize,
+    ) -> i64 {
         let f = self.window(w).frame;
-        if self.frame(f).flags.glyphs_initialized_p {
-            unreachable!("window_box_height needs the window's current matrix");
+        if let Some(matrix) = self.window(w).current_matrix.as_deref()
+            && !matrix.rows.is_empty()
+            && matrix.nrows > 0
+        {
+            let r = &matrix.rows[row(matrix)];
+            if r.mode_line_p {
+                return i64::from(r.height);
+            }
         }
         let face_id = self.current_line_active_face_id(w, active, inactive);
         self.estimate_mode_line_height(f, face_id)
@@ -320,8 +332,11 @@ impl Lisp {
             } else {
                 self.estimated_line_height(
                     w,
-                    crate::xfaces::MODE_LINE_ACTIVE_FACE_ID,
-                    crate::xfaces::MODE_LINE_INACTIVE_FACE_ID,
+                    (
+                        crate::xfaces::MODE_LINE_ACTIVE_FACE_ID,
+                        crate::xfaces::MODE_LINE_INACTIVE_FACE_ID,
+                    ),
+                    crate::dispextern::GlyphMatrix::mode_line_row,
                 )
             };
         }
@@ -332,8 +347,11 @@ impl Lisp {
             } else {
                 self.estimated_line_height(
                     w,
-                    crate::xfaces::TAB_LINE_ACTIVE_FACE_ID,
-                    crate::xfaces::TAB_LINE_INACTIVE_FACE_ID,
+                    (
+                        crate::xfaces::TAB_LINE_ACTIVE_FACE_ID,
+                        crate::xfaces::TAB_LINE_INACTIVE_FACE_ID,
+                    ),
+                    |_| 0,
                 )
             };
         }
@@ -344,8 +362,11 @@ impl Lisp {
             } else {
                 self.estimated_line_height(
                     w,
-                    crate::xfaces::HEADER_LINE_ACTIVE_FACE_ID,
-                    crate::xfaces::HEADER_LINE_INACTIVE_FACE_ID,
+                    (
+                        crate::xfaces::HEADER_LINE_ACTIVE_FACE_ID,
+                        crate::xfaces::HEADER_LINE_INACTIVE_FACE_ID,
+                    ),
+                    crate::dispextern::GlyphMatrix::header_line_row,
                 )
             };
         }
@@ -474,6 +495,7 @@ pub struct Xdisp {
     pub last_glyphless_glyph_frame: Value,
     pub last_glyphless_glyph_face_id: i64,
     pub last_glyphless_glyph_merged_face_id: i32,
+    pub scratch_glyph_row: crate::dispextern::GlyphRow,
 }
 
 impl Default for Xdisp {
@@ -499,6 +521,7 @@ impl Default for Xdisp {
             last_glyphless_glyph_frame: Value::NIL,
             last_glyphless_glyph_face_id: 1 << reseat::FACE_ID_BITS,
             last_glyphless_glyph_merged_face_id: 0,
+            scratch_glyph_row: crate::dispextern::GlyphRow::default(),
         }
     }
 }
@@ -723,6 +746,7 @@ pub fn init_xdisp(lisp: &mut Lisp) {
         mw.pixel_width = mw.total_cols * g.column_width;
         mw.total_lines = 1;
         mw.pixel_height = mw.total_lines * g.line_height;
+        lisp.xdisp.scratch_glyph_row = append::scratch_glyph_row();
         let dot = Value::fixnum(i64::from(b'.'));
         lisp.xdisp.default_invis_vector = lisp.vector(vec![dot; 3]);
     }

@@ -1196,7 +1196,7 @@ impl Lisp {
         g.left_fringe_width + g.right_fringe_width
     }
 
-    fn frame_tool_bar_top_height(&self, f: Value) -> i64 {
+    pub(crate) fn frame_tool_bar_top_height(&self, f: Value) -> i64 {
         let fr = self.frame(f);
         if fr.tool_bar_position == sym::TOP {
             fr.geometry.tool_bar_height
@@ -1205,7 +1205,7 @@ impl Lisp {
         }
     }
 
-    fn frame_tool_bar_top_lines(&self, f: Value) -> i64 {
+    pub(crate) fn frame_tool_bar_top_lines(&self, f: Value) -> i64 {
         let fr = self.frame(f);
         if fr.tool_bar_position == sym::TOP {
             fr.geometry.tool_bar_lines

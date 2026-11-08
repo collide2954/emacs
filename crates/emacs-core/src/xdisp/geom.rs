@@ -27,6 +27,7 @@ impl Lisp {
                 }
                 GlyphRowArea::LeftMargin => width = self.window_left_margin_width(w),
                 GlyphRowArea::RightMargin => width = self.window_right_margin_width(w),
+                GlyphRowArea::Any => {}
             }
         }
         width.max(0)
@@ -58,6 +59,7 @@ impl Lisp {
                     x += self.window_left_fringe_width(w);
                 }
             }
+            GlyphRowArea::Any => {}
         }
         x.min(self.window(w).pixel_width)
     }
