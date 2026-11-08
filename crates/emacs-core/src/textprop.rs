@@ -997,7 +997,7 @@ impl Lisp {
     }
 }
 
-fn f_text_properties_at(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_text_properties_at(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let obj = lisp.decode_obj(args[1])?;
     let pos = lisp.validate_position(obj, args[0])?;
     let (_, hi) = lisp.obj_limits(obj);
@@ -1202,7 +1202,7 @@ pub(crate) fn f_previous_single_char_property_change(
     single_char_property_change(lisp, args, false)
 }
 
-fn f_add_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_add_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let changed = lisp.add_text_properties(args[0], args[1], args[2], args[3], false)?;
     Ok(lisp.bool(changed))
 }
@@ -1213,7 +1213,7 @@ pub(crate) fn f_put_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult
     Ok(Value::NIL)
 }
 
-fn f_set_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_set_text_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.set_text_properties(args[0], args[1], args[2], args[3])?;
     Ok(sym::T)
 }

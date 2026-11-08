@@ -94,7 +94,7 @@ impl Lisp {
         -1
     }
 
-    fn compute_line_metrics(&mut self, it: &mut It) {
+    pub(crate) fn compute_line_metrics(&mut self, it: &mut It) {
         let window_p = self.frame_window_p(it.f);
         let line_height = self.frame(it.f).geometry.line_height as i32;
         if window_p {
@@ -336,7 +336,7 @@ impl Lisp {
         }
     }
 
-    fn extend_face_to_end_of_line(&mut self, it: &mut It) -> LispResult<()> {
+    pub(crate) fn extend_face_to_end_of_line(&mut self, it: &mut It) -> LispResult<()> {
         let f = it.f;
         let w = it.window;
         let window_p = self.frame_window_p(f);
@@ -662,7 +662,7 @@ impl Lisp {
         Ok(())
     }
 
-    fn unproduce_glyphs(&mut self, it: &It, n: i32) {
+    pub(crate) fn unproduce_glyphs(&mut self, it: &It, n: i32) {
         let r = self.it_row_mut(it);
         let used = r.used[TEXT_AREA] as usize;
         let n = (n.max(0) as usize).min(used);
@@ -752,7 +752,7 @@ impl Lisp {
         self.it_row_mut(it).maxpos = maxpos;
     }
 
-    fn insert_left_trunc_glyphs(&mut self, it: &mut It) -> LispResult<()> {
+    pub(crate) fn insert_left_trunc_glyphs(&mut self, it: &mut It) -> LispResult<()> {
         let mut truncate_it = it.clone();
         truncate_it.current_x = 0;
         truncate_it.wrap_prefix_width = 0;

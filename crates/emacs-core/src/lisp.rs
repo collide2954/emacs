@@ -1154,6 +1154,11 @@ impl Lisp {
         roots.extend_from_slice(&self.xdisp.echo_area_buffer);
         roots.push(self.xdisp.redisplay_ticks_window);
         roots.push(self.xdisp.default_invis_vector);
+        roots.push(self.xdisp.mode_line_proptrans_alist);
+        roots.push(self.xdisp.mode_line_string_list);
+        roots.push(self.xdisp.mode_line_string_face);
+        roots.push(self.xdisp.mode_line_string_face_prop);
+        roots.push(self.xdisp.mode_line_unwind_vector);
         self.bidi.roots(&mut roots);
         self.keyboard.roots(&mut roots);
         roots.push(self.fileio.annotation_buffers);

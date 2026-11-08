@@ -3125,7 +3125,7 @@ fn f_eql(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(lisp.eql(args[0], args[1])))
 }
 
-fn f_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(lisp.equal(args[0], args[1])?))
 }
 
@@ -3218,7 +3218,7 @@ fn f_nconc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(val)
 }
 
-fn f_mapconcat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_mapconcat(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (function, sequence, separator) = (args[0], args[1], args[2]);
     let results = lisp.mapcar_vec(function, sequence)?;
     let base = lisp.stack.len();

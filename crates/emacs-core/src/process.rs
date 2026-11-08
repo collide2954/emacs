@@ -82,7 +82,7 @@ fn f_processp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-fn f_get_buffer_process(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_get_buffer_process(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = args[0];
     if buffer.is_nil() {
         return Ok(Value::NIL);

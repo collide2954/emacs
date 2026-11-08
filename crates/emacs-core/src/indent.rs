@@ -56,7 +56,7 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar_bool(sym::INDENT_TABS_MODE, true);
 }
 
-fn sanitize_char_width(width: i64) -> i64 {
+pub(crate) fn sanitize_char_width(width: i64) -> i64 {
     if (0..=1000).contains(&width) {
         width
     } else {

@@ -1168,13 +1168,13 @@ fn f_setcar(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(args[1])
 }
 
-fn f_setcdr(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_setcdr(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let cell = lisp.check_cons(args[0])?;
     lisp.heap.set_cdr(cell, args[1]);
     Ok(args[1])
 }
 
-fn f_boundp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_boundp(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let symbol = lisp.maybe_remove_pos_from_symbol(args[0]);
     let symbol = lisp.check_symbol(symbol)?;
     Ok(bool_value(lisp.find_symbol_value(symbol) != sym::UNBOUND))

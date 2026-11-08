@@ -8,6 +8,7 @@ pub mod it;
 pub mod iterate;
 pub mod line;
 pub mod lnum;
+pub mod modeline;
 pub mod move_it;
 pub mod next;
 pub mod produce;
@@ -27,6 +28,7 @@ use crate::value::Value;
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("invisible-p", 1, 1, f_invisible_p),
     Subr::fixed("get-display-property", 2, 4, it::f_get_display_property),
+    Subr::fixed("format-mode-line", 1, 4, modeline::f_format_mode_line),
     Subr::fixed("tab-bar-height", 0, 2, f_tab_bar_height),
     Subr::fixed("tool-bar-height", 0, 2, f_tool_bar_height),
     Subr::fixed("set-buffer-redisplay", 4, 4, f_set_buffer_redisplay),
@@ -485,6 +487,16 @@ pub struct Xdisp {
     pub this_line_pixel_height: i32,
     pub this_line_vpos: i32,
     pub this_line_start_x: i32,
+    pub mode_line_target: modeline::ModeLineTarget,
+    pub mode_line_noprop_buf: Vec<u8>,
+    pub mode_line_proptrans_alist: Value,
+    pub mode_line_string_list: Value,
+    pub mode_line_elt_no: i64,
+    pub mode_line_string_face: Value,
+    pub mode_line_string_face_prop: Value,
+    pub mode_line_unwind_vector: Value,
+    pub line_number_displayed: bool,
+    pub dont_resize_frames: i32,
 }
 
 impl Default for Xdisp {
@@ -519,6 +531,16 @@ impl Default for Xdisp {
             this_line_pixel_height: 0,
             this_line_vpos: 0,
             this_line_start_x: 0,
+            mode_line_target: modeline::ModeLineTarget::Display,
+            mode_line_noprop_buf: Vec::new(),
+            mode_line_proptrans_alist: Value::NIL,
+            mode_line_string_list: Value::NIL,
+            mode_line_elt_no: 0,
+            mode_line_string_face: Value::NIL,
+            mode_line_string_face_prop: Value::NIL,
+            mode_line_unwind_vector: Value::NIL,
+            line_number_displayed: false,
+            dont_resize_frames: 0,
         }
     }
 }
@@ -685,18 +707,7 @@ impl Lisp {
 
     pub fn current_line_active_face_id(&self, w: Value, active: usize, inactive: usize) -> usize {
         let selected = self.windows.selected_window;
-        let minibuf_selected = self.windows.minibuf_selected_window;
-        if !self.var_true(sym::MODE_LINE_IN_NON_SELECTED_WINDOWS)
-            || w == selected
-            || (self.minibuf.minibuf_level > 0
-                && !minibuf_selected.is_nil()
-                && selected == self.windows.minibuf_window
-                && w == minibuf_selected)
-        {
-            active
-        } else {
-            inactive
-        }
+        self.line_active_face_id_3(w, selected, w, active, inactive)
     }
 
     pub fn message_with_string(&mut self, m: &str, string: Value, log: bool) -> LispResult<()> {
