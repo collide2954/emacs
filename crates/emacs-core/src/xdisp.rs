@@ -17,6 +17,7 @@ pub mod reseat;
 pub mod reuse;
 pub mod scroll;
 pub mod stack;
+pub mod visible;
 
 use crate::character;
 use crate::error::LispResult;

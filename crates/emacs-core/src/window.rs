@@ -373,6 +373,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-total-width", 0, 2, f_window_total_width),
     Subr::fixed("window-body-width", 0, 2, f_window_body_width),
     Subr::fixed("window-body-height", 0, 2, f_window_body_height),
+    Subr::fixed("pos-visible-in-window-p", 0, 3, f_pos_visible_in_window_p),
     Subr::fixed("window-line-height", 0, 2, f_window_line_height),
     Subr::fixed("window-new-total", 0, 1, f_window_new_total),
     Subr::fixed("window-normal-size", 0, 2, f_window_normal_size),
@@ -1070,7 +1071,7 @@ impl Lisp {
         self.adjust_window_count(w, 1);
     }
 
-    fn window_frame_column_width(&self, w: Value) -> i64 {
+    pub(crate) fn window_frame_column_width(&self, w: Value) -> i64 {
         self.frame(self.window(w).frame).geometry.column_width
     }
 
@@ -2264,6 +2265,51 @@ impl Lisp {
         let text = &self.buffer(win.contents).text;
         win.last_modified < text.modiff || win.last_overlay_modified < text.overlay_modiff
     }
+}
+
+fn f_pos_visible_in_window_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (pos, window, partially) = (arg(args, 0), arg(args, 1), arg(args, 2));
+    let w = lisp.decode_live_window(window)?;
+    let contents = lisp.window(w).contents;
+    let top = lisp.marker(lisp.window(w).start).charpos as i64;
+    let posint = if pos == sym::T {
+        -1
+    } else if !pos.is_nil() {
+        lisp.fix_position(pos)?
+    } else if w == lisp.windows.selected_window {
+        lisp.cur().pt as i64
+    } else {
+        lisp.marker(lisp.window(w).pointm).charpos as i64
+    };
+    let (begv, zv) = {
+        let b = lisp.buffer(contents);
+        (b.begv as i64, b.zv as i64)
+    };
+    let mut in_window = Value::NIL;
+    let mut visible = None;
+    if (pos == sym::T || (posint >= top && posint <= zv)) && top >= begv && top <= zv {
+        visible = lisp.pos_visible_p(w, posint)?;
+    }
+    let mut fully_p = true;
+    if let Some(v) = visible {
+        fully_p = v.rtop == 0 && v.rbot == 0;
+        if !partially.is_nil() || fully_p {
+            in_window = sym::T;
+        }
+    }
+    if let Some(v) = visible
+        && !in_window.is_nil()
+        && !partially.is_nil()
+    {
+        let mut part = Value::NIL;
+        if !fully_p {
+            let items = [v.rtop, v.rbot, v.rowh, v.vpos].map(|n| Value::fixnum(i64::from(n)));
+            part = lisp.list(&items);
+        }
+        let y = lisp.cons(Value::fixnum(i64::from(v.y)), part);
+        in_window = lisp.cons(Value::fixnum(i64::from(v.x)), y);
+    }
+    Ok(in_window)
 }
 
 fn f_window_line_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {

@@ -1012,7 +1012,7 @@ pub(crate) fn f_get_text_property(lisp: &mut Lisp, args: &[Value]) -> LispResult
     Ok(lisp.lookup_char_property(plist, args[1]))
 }
 
-fn f_get_char_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_get_char_property(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.get_char_property(args[0], args[1], args[2])
 }
 

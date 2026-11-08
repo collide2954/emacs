@@ -1522,7 +1522,12 @@ impl Lisp {
         }
     }
 
-    fn display_mode_line(&mut self, w: Value, face_id: usize, format: Value) -> LispResult<i32> {
+    pub(crate) fn display_mode_line(
+        &mut self,
+        w: Value,
+        face_id: usize,
+        format: Value,
+    ) -> LispResult<i32> {
         self.with_gc_deferred(|lisp| lisp.display_mode_line_1(w, face_id, format))
     }
 
