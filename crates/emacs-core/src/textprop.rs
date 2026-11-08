@@ -410,7 +410,9 @@ impl Lisp {
             self.barf_if_buffer_read_only(start)?;
         }
         self.signal_before_change(start, end)?;
-        self.cur_mut().text.modiff += 1;
+        let t = &mut self.cur_mut().text;
+        t.compute_unchanged(start as i64 - 1, end as i64);
+        t.modiff += 1;
         Ok(())
     }
 

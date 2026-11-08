@@ -236,6 +236,36 @@ fn try_window_truncates_long_lines() {
 }
 
 #[test]
+fn marking_window_display_accurate() {
+    on_big_stack(|| {
+        let (mut lisp, f) = gui_frame();
+        let w = try_window_on(&mut lisp, f, "(insert \"ab\\ncd\") (goto-char 2)");
+        let root = lisp.frame(f).root_window;
+        lisp.mark_window_display_accurate(root, true);
+        let b = lisp.window(w).contents;
+        let (modiff, unchanged) = {
+            let t = &lisp.buffer(b).text;
+            (
+                t.modiff,
+                (t.unchanged_modified, t.beg_unchanged, t.end_unchanged),
+            )
+        };
+        assert_eq!(unchanged, (modiff, 5, 0));
+        let win = lisp.window(w);
+        assert_eq!((win.last_point, win.last_cursor_vpos), (2, 0));
+        assert_eq!(win.last_modified, modiff);
+        assert!(win.flags.window_end_valid && !win.flags.update_mode_line);
+        assert!(!win.flags.redisplay);
+        let m = lisp.window_matrix(w, WhichMatrix::Current).unwrap();
+        assert_eq!((m.buffer, m.begv, m.zv), (b, 1, 6));
+        lisp.mark_window_display_accurate(root, false);
+        let win = lisp.window(w);
+        assert_eq!(win.last_modified, 0);
+        assert!(win.flags.redisplay);
+    });
+}
+
+#[test]
 fn glyph_matrices_for_window_redisplay() {
     on_big_stack(|| {
         let (mut lisp, f) = gui_frame();

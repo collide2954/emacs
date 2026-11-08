@@ -15,6 +15,11 @@ pub struct BufferText {
     data: Vec<u8>,
     gap_start: usize,
     gap_len: usize,
+    gpt: usize,
+    pub beg_unchanged: i64,
+    pub end_unchanged: i64,
+    pub unchanged_modified: i64,
+    pub overlay_unchanged_modified: i64,
     pub chars: usize,
     pub multibyte: bool,
     pub props: Vec<PropRun>,
@@ -34,6 +39,11 @@ impl Default for BufferText {
             data: vec![0; 64],
             gap_start: 0,
             gap_len: 64,
+            gpt: 1,
+            beg_unchanged: 0,
+            end_unchanged: 0,
+            unchanged_modified: 1,
+            overlay_unchanged_modified: 1,
             chars: 0,
             multibyte: true,
             props: Vec::new(),
@@ -196,18 +206,68 @@ impl BufferText {
         c
     }
 
-    fn move_gap(&mut self, offset: usize) {
-        if offset < self.gap_start {
-            let n = self.gap_start - offset;
-            self.data
-                .copy_within(offset..self.gap_start, offset + self.gap_len);
-            self.gap_start -= n;
-        } else if offset > self.gap_start {
-            let n = offset - self.gap_start;
-            let src = self.gap_start + self.gap_len;
-            self.data.copy_within(src..src + n, self.gap_start);
-            self.gap_start += n;
+    pub fn gpt(&self) -> usize {
+        self.gpt
+    }
+
+    pub fn compute_unchanged(&mut self, start: i64, end: i64) {
+        let z = (self.chars + 1) as i64;
+        if self.unchanged_modified == self.modiff
+            && self.overlay_unchanged_modified == self.overlay_modiff
+        {
+            self.beg_unchanged = start - 1;
+            self.end_unchanged = z - end;
+        } else {
+            if z - end < self.end_unchanged {
+                self.end_unchanged = z - end;
+            }
+            if start - 1 < self.beg_unchanged {
+                self.beg_unchanged = start - 1;
+            }
         }
+    }
+
+    pub fn move_gap_both(&mut self, charpos: usize, bytepos: usize) {
+        let offset = bytepos - 1;
+        if offset < self.gap_start {
+            self.gap_left(charpos, offset, false);
+        } else if offset > self.gap_start {
+            self.gap_right(charpos, offset);
+        }
+    }
+
+    pub fn move_gap_for_delete(
+        &mut self,
+        from: usize,
+        from_byte: usize,
+        to: usize,
+        to_byte: usize,
+    ) {
+        if from_byte - 1 > self.gap_start {
+            self.gap_right(from, from_byte - 1);
+        }
+        if to_byte - 1 < self.gap_start {
+            self.gap_left(to, to_byte - 1, false);
+        }
+    }
+
+    fn gap_left(&mut self, charpos: usize, offset: usize, newgap: bool) {
+        if !newgap {
+            self.compute_unchanged(charpos as i64, self.gpt as i64);
+        }
+        self.data
+            .copy_within(offset..self.gap_start, offset + self.gap_len);
+        self.gap_start = offset;
+        self.gpt = charpos;
+    }
+
+    fn gap_right(&mut self, charpos: usize, offset: usize) {
+        self.compute_unchanged(charpos as i64, self.gpt as i64);
+        let n = offset - self.gap_start;
+        let src = self.gap_start + self.gap_len;
+        self.data.copy_within(src..src + n, self.gap_start);
+        self.gap_start = offset;
+        self.gpt = charpos;
     }
 
     fn ensure_gap(&mut self, needed: usize) {
@@ -224,24 +284,44 @@ impl BufferText {
     }
 
     pub fn insert_bytes(&mut self, byte_pos: usize, bytes: &[u8], nchars: usize) {
-        let offset = byte_pos - 1;
-        self.move_gap(offset);
+        if byte_pos - 1 != self.gap_start {
+            let charpos = self.byte_to_char(byte_pos);
+            self.move_gap_both(charpos, byte_pos);
+        }
         self.ensure_gap(bytes.len());
         self.data[self.gap_start..self.gap_start + bytes.len()].copy_from_slice(bytes);
         self.gap_start += bytes.len();
         self.gap_len -= bytes.len();
         self.chars += nchars;
+        self.gpt += nchars;
         self.cache.set((1, 1));
+        let z = (self.chars + 1) as i64;
+        if z - (self.gpt as i64) < self.end_unchanged {
+            self.end_unchanged = z - self.gpt as i64;
+        }
     }
 
     pub fn delete_bytes(&mut self, from_byte: usize, to_byte: usize, nchars: usize) {
         let from = from_byte - 1;
         let to = to_byte - 1;
-        self.move_gap(to);
+        let from_char = self.byte_to_char(from_byte);
+        if from > self.gap_start || to < self.gap_start {
+            let to_char = self.byte_to_char(to_byte);
+            self.move_gap_for_delete(from_char, from_byte, to_char, to_byte);
+        }
+        let after_gap = to - self.gap_start;
+        self.gap_len += self.gap_start - from + after_gap;
         self.gap_start = from;
-        self.gap_len += to - from;
+        self.gpt = from_char;
         self.chars -= nchars;
         self.cache.set((1, 1));
+        let (gpt, z) = (self.gpt as i64, (self.chars + 1) as i64);
+        if gpt - 1 < self.beg_unchanged {
+            self.beg_unchanged = gpt - 1;
+        }
+        if z - gpt < self.end_unchanged {
+            self.end_unchanged = z - gpt;
+        }
     }
 
     pub fn set_contents(&mut self, bytes: Vec<u8>, chars: usize, multibyte: bool) {
@@ -250,6 +330,7 @@ impl BufferText {
         self.data.resize(len + 64, 0);
         self.gap_start = len;
         self.gap_len = 64;
+        self.gpt = chars + 1;
         self.chars = chars;
         self.multibyte = multibyte;
         self.cache.set((1, 1));

@@ -1028,9 +1028,58 @@ impl Lisp {
         window.last_overlay_modified = if accurate_p { overlay_modiff } else { 0 };
         window.flags.last_had_star = modiff > save_modiff;
         if accurate_p {
-            unreachable!();
+            let header_line_p = self.window_wants_header_line(w);
+            let tab_line_p = self.window_wants_tab_line(w);
+            let last_point = if w == self.windows.selected_window {
+                self.buffer(b).pt as i64
+            } else {
+                self.marker(self.window(w).pointm).charpos as i64
+            };
+            let mark = self.buffer(b).mark;
+            let last_mark = if self.marker(mark).buffer == b
+                && !self.buffer_local_value(sym::MARK_ACTIVE, b).is_nil()
+            {
+                self.marker(mark).charpos as i64
+            } else {
+                -1
+            };
+            let buffer = self.buffer_mut(b);
+            buffer.clip_changed = false;
+            buffer.prevent_redisplay_optimizations_p = false;
+            let t = &mut buffer.text;
+            t.redisplay = false;
+            t.unchanged_modified = t.modiff;
+            t.overlay_unchanged_modified = t.overlay_modiff;
+            let gpt = t.gpt() as i64;
+            t.beg_unchanged = gpt - 1;
+            t.end_unchanged = t.chars as i64 + 1 - gpt;
+            let (begv, zv) = (buffer.begv as i64, buffer.zv as i64);
+            let window = self.window_mut(w);
+            let m = window
+                .current_matrix
+                .as_mut()
+                .expect("window has no current matrix");
+            m.buffer = b;
+            m.begv = begv;
+            m.zv = zv;
+            m.header_line_p = header_line_p;
+            m.tab_line_p = tab_line_p;
+            window.last_cursor_vpos = window.cursor.vpos;
+            window.flags.last_cursor_off_p = window.flags.cursor_off_p;
+            window.last_point = last_point;
+            window.last_mark = last_mark;
+            let end_vpos = window.window_end_vpos;
+            let m = window.current_matrix.as_ref().expect("current matrix");
+            if end_vpos < i64::from(m.nrows) {
+                let row = &m.rows[end_vpos as usize];
+                if !row.enabled_p || row.displays_text_p || end_vpos == 0 {
+                    window.flags.window_end_valid = true;
+                }
+            }
+            window.flags.update_mode_line = false;
+            window.flags.preserve_vscroll_p = false;
         }
-        window.flags.redisplay = !accurate_p;
+        self.window_mut(w).flags.redisplay = !accurate_p;
     }
 
     pub fn mark_window_display_accurate(&mut self, mut window: Value, accurate_p: bool) {

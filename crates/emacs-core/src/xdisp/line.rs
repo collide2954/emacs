@@ -1597,10 +1597,7 @@ impl Lisp {
         } else {
             self.find_row_edges(it, mm.min_pos, mm.min_bpos, mm.max_pos, mm.max_bpos);
         }
-        let displays_text = {
-            let r = self.glyph_row(row);
-            r.enabled_p && r.displays_text_p
-        };
+        let displays_text = self.glyph_row(row).displays_text_p;
         if displays_text || !self.xdisp.overlay_arrow_seen {
             let overlay_arrow_string = self.overlay_arrow_at_row(it);
             if !overlay_arrow_string.is_nil() {
@@ -1720,8 +1717,7 @@ impl Lisp {
             }
         }
         it.start = self.glyph_row(row).end;
-        let r = self.glyph_row(row);
-        Ok(r.enabled_p && r.displays_text_p)
+        Ok(self.glyph_row(row).displays_text_p)
     }
 
     pub(super) fn row_for_charpos_p(&mut self, row: &GlyphRow, charpos: i64) -> LispResult<bool> {
@@ -1820,7 +1816,7 @@ impl Lisp {
         if row.mode_line_p {
             return Ok(false);
         }
-        if row.enabled_p && row.displays_text_p {
+        if row.displays_text_p {
             if !rev {
                 while glyph < end && at(glyph).object.is_nil() && at(glyph).charpos < 0 {
                     x += pw(glyph);

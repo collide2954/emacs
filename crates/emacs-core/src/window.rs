@@ -48,6 +48,7 @@ pub struct WindowFlags {
     pub suspend_auto_hscroll: bool,
     pub preserve_vscroll_p: bool,
     pub cursor_off_p: bool,
+    pub last_cursor_off_p: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -125,6 +126,8 @@ pub struct Window {
     pub window_end_pos: i64,
     pub window_end_bytepos: i64,
     pub window_end_vpos: i64,
+    pub last_point: i64,
+    pub last_mark: i64,
     pub vscroll: i64,
     pub last_modified: i64,
     pub last_overlay_modified: i64,
@@ -1021,6 +1024,8 @@ impl Lisp {
             tab_line_height: -1,
             window_end_pos: 0,
             window_end_bytepos: 0,
+            last_point: 0,
+            last_mark: 0,
             window_end_vpos: 0,
             vscroll: 0,
             last_modified: 0,

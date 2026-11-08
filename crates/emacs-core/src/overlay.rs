@@ -453,7 +453,6 @@ impl Lisp {
                 ov.start = ov.end;
             }
         }
-        self.buffer_mut(buffer).text.overlay_modiff += 1;
     }
 
     pub fn adjust_overlays_for_delete(&mut self, buffer: Value, from: usize, to: usize) {
@@ -485,14 +484,32 @@ impl Lisp {
                 self.drop_overlay(o);
             }
         }
+    }
+
+    fn modify_overlay(&mut self, buffer: Value, start: usize, end: usize) {
+        let (start, end) = if start > end {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        self.buffer_mut(buffer)
+            .text
+            .compute_unchanged(start as i64, end as i64);
+        self.bset_redisplay(buffer);
         self.buffer_mut(buffer).text.overlay_modiff += 1;
     }
 
     fn drop_overlay(&mut self, o: Value) {
         let b = self.overlay(o).buffer;
-        if self.is_buffer(b) {
-            self.buffer_mut(b).overlays.retain(|&x| x != o);
+        if !self.is_buffer(b) {
+            return;
         }
+        let ov = self.overlay(o);
+        if !ov.plist.is_nil() {
+            let (start, end) = (ov.start, ov.end);
+            self.modify_overlay(b, start, end);
+        }
+        self.buffer_mut(b).overlays.retain(|&x| x != o);
         self.overlay_mut(o).buffer = Value::NIL;
     }
 
@@ -562,6 +579,10 @@ fn f_move_overlay(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let b = b.clamp(1, z) as usize;
     let e = e.clamp(1, z) as usize;
     let old = lisp.overlay(overlay).buffer;
+    let (o_beg, o_end) = {
+        let ov = lisp.overlay(overlay);
+        (ov.start, ov.end)
+    };
     if old != buffer {
         if lisp.is_buffer(old) {
             lisp.buffer_mut(old).overlays.retain(|&x| x != overlay);
@@ -572,6 +593,19 @@ fn f_move_overlay(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     ov.buffer = buffer;
     ov.start = b;
     ov.end = e;
+    if lisp.overlay(overlay).plist.is_nil() {
+    } else if buffer != old {
+        if lisp.is_buffer(old) {
+            lisp.modify_overlay(old, o_beg, o_end);
+        }
+        lisp.modify_overlay(buffer, b, e);
+    } else if o_beg == b {
+        lisp.modify_overlay(buffer, o_end, e);
+    } else if o_end == e {
+        lisp.modify_overlay(buffer, o_beg, b);
+    } else {
+        lisp.modify_overlay(buffer, o_beg.min(b), o_end.max(e));
+    }
     if b == e
         && !lisp
             .plist_get_eq(lisp.overlay(overlay).plist, sym::EVAPORATE)
@@ -584,7 +618,18 @@ fn f_move_overlay(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_delete_overlay(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let overlay = lisp.check_overlay(args[0])?;
+    let b = lisp.overlay(overlay).buffer;
+    if !lisp.is_buffer(b) {
+        return Ok(Value::NIL);
+    }
     lisp.drop_overlay(overlay);
+    let plist = lisp.overlay(overlay).plist;
+    if lisp.windows.windows_or_buffers_changed == 0
+        && (!lisp.plist_get_eq(plist, sym::BEFORE_STRING).is_nil()
+            || !lisp.plist_get_eq(plist, sym::AFTER_STRING).is_nil())
+    {
+        lisp.buffer_mut(b).prevent_redisplay_optimizations_p = true;
+    }
     Ok(Value::NIL)
 }
 
@@ -592,6 +637,11 @@ pub(crate) fn f_delete_all_overlays(lisp: &mut Lisp, args: &[Value]) -> LispResu
     let buffer = lisp.decode_buffer(args[0])?;
     let overlays = std::mem::take(&mut lisp.buffer_mut(buffer).overlays);
     for o in overlays {
+        let (start, end) = {
+            let ov = lisp.overlay(o);
+            (ov.start, ov.end)
+        };
+        lisp.modify_overlay(buffer, start, end);
         lisp.overlay_mut(o).buffer = Value::NIL;
     }
     Ok(Value::NIL)
@@ -692,18 +742,40 @@ pub(crate) fn f_overlay_get(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_overlay_put(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (o, prop, value) = (args[0], args[1], args[2]);
     let o = lisp.check_overlay(o)?;
-    let plist = lisp.overlay(o).plist;
-    let new = lisp.plist_put_eq(plist, prop, value)?;
-    lisp.overlay_mut(o).plist = new;
-    if prop == sym::EVAPORATE && !value.is_nil() {
-        let ov = lisp.overlay(o);
-        if ov.start == ov.end && !ov.buffer.is_nil() {
-            lisp.drop_overlay(o);
-        }
-    }
     let buffer = lisp.overlay(o).buffer;
+    let plist = lisp.overlay(o).plist;
+    let mut tail = plist;
+    let mut changed = None;
+    while tail.is_cons() && lisp.xcdr(tail).is_cons() {
+        if lisp.xcar(tail) == prop {
+            let cell = lisp.xcdr(tail);
+            changed = Some(lisp.xcar(cell) != value);
+            lisp.heap.set_car(cell, value);
+            break;
+        }
+        tail = lisp.xcdr(lisp.xcdr(tail));
+    }
+    let changed = match changed {
+        Some(changed) => changed,
+        None => {
+            let rest = lisp.cons(value, plist);
+            let new = lisp.cons(prop, rest);
+            lisp.overlay_mut(o).plist = new;
+            !value.is_nil()
+        }
+    };
     if lisp.is_buffer(buffer) {
-        lisp.buffer_mut(buffer).text.overlay_modiff += 1;
+        if changed {
+            let (start, end) = {
+                let ov = lisp.overlay(o);
+                (ov.start, ov.end)
+            };
+            lisp.modify_overlay(buffer, start, end);
+        }
+        let ov = lisp.overlay(o);
+        if prop == sym::EVAPORATE && !value.is_nil() && ov.start == ov.end {
+            f_delete_overlay(lisp, &[o])?;
+        }
     }
     Ok(value)
 }

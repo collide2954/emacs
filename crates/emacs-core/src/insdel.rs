@@ -332,6 +332,7 @@ impl Lisp {
             let b = self.cur();
             (b.pt, b.pt_byte)
         };
+        self.cur_mut().text.move_gap_both(pt, pt_byte);
         self.record_insert(pt, nchars);
         self.modify_text();
         {
@@ -369,6 +370,7 @@ impl Lisp {
         } else {
             bytes.len()
         };
+        self.cur_mut().text.move_gap_both(pos, pos_byte);
         self.record_insert(pos, nchars);
         {
             let t = &mut self.cur_mut().text;
@@ -391,8 +393,15 @@ impl Lisp {
         }
     }
 
+    fn move_gap_for_delete(&mut self, from: usize, to: usize) {
+        let t = &mut self.cur_mut().text;
+        let (from_byte, to_byte) = (t.char_to_byte(from), t.char_to_byte(to));
+        t.move_gap_for_delete(from, from_byte, to, to_byte);
+    }
+
     pub fn del_range_2(&mut self, from: usize, to: usize) -> Value {
         let buffer = self.current_buffer;
+        self.move_gap_for_delete(from, to);
         let deleted = self.buffer_substring_value(from, to, true);
         self.stack.push(deleted);
         self.record_delete(from, deleted, true);
@@ -467,6 +476,7 @@ impl Lisp {
             return Ok(self.empty_multibyte);
         }
         let buffer = self.current_buffer;
+        self.move_gap_for_delete(from, to);
         let deleted = self.buffer_substring_value(from, to, true);
         self.stack.push(deleted);
         self.record_delete(from, deleted, true);
