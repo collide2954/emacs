@@ -112,6 +112,24 @@ pub fn pgtk_set_window_size(
     Ok(())
 }
 
+fn flip_cr_context_and_queue_draw(lisp: &Lisp, f: Value) {
+    let key = frame_key(lisp, f) as u64;
+    crate::with_display(|display| display.flush(key));
+}
+
+fn pgtk_frame_up_to_date(lisp: &mut Lisp, f: Value) {
+    if lisp.frame_live_p(f) && f == lisp.mouse_hl_info(f).mouse_face_mouse_frame {
+        unreachable!("FRAME_MOUSE_UPDATE needs note_mouse_highlight");
+    }
+    if !lisp.buffer_flipping_blocked_p() {
+        flip_cr_context_and_queue_draw(lisp, f);
+    }
+}
+
+fn pgtk_buffer_flipping_unblocked_hook(lisp: &mut Lisp, f: Value) {
+    flip_cr_context_and_queue_draw(lisp, f);
+}
+
 pub fn frame_title(lisp: &Lisp, f: Value) -> String {
     let fr = lisp.frame(f);
     let name = if fr.title.is_nil() { fr.name } else { fr.title };
@@ -603,6 +621,8 @@ pub fn pgtk_term_init(
     hooks.update_end = Some(crate::pgtkdraw::pgtk_update_end);
     hooks.implicit_set_name = Some(crate::pgtkfns::pgtk_implicitly_set_name);
     hooks.clear_frame = Some(crate::pgtkfns::pgtk_clear_frame);
+    hooks.frame_up_to_date = Some(pgtk_frame_up_to_date);
+    hooks.buffer_flipping_unblocked = Some(pgtk_buffer_flipping_unblocked_hook);
     lisp.terminal_mut(terminal).rif = Some(&crate::pgtkdraw::PGTK_REDISPLAY_INTERFACE);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =
