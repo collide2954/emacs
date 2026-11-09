@@ -675,6 +675,15 @@ impl Lisp {
         Ok(copy)
     }
 
+    pub(crate) fn map_keymap_canonical(
+        &mut self,
+        map: Value,
+        fun: &mut dyn FnMut(&mut Lisp, Value, Value) -> LispResult<()>,
+    ) -> LispResult<()> {
+        let map = self.safe_call(false, &[sym::KEYMAP_CANONICALIZE, map])?;
+        self.map_keymap_internal(map, fun).map(|_| ())
+    }
+
     fn map_keymap_internal(
         &mut self,
         map: Value,
@@ -2552,7 +2561,7 @@ fn f_command_remapping(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.command_remapping(args[0], position, keymaps)
 }
 
-fn f_key_binding(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_key_binding(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let arg = |i: usize| args.get(i).copied().unwrap_or(Value::NIL);
     lisp.key_binding(arg(0), arg(1), arg(2), arg(3))
 }
@@ -2649,7 +2658,7 @@ fn f_accessible_keymaps(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.accessible_keymaps(args[0], prefix)
 }
 
-fn f_key_description(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_key_description(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let prefix = args.get(1).copied().unwrap_or(Value::NIL);
     lisp.key_description(args[0], prefix)
 }
@@ -2732,7 +2741,7 @@ fn f_text_char_description(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.string_from_chars(&chars, false))
 }
 
-fn f_where_is_internal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_where_is_internal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let arg = |i: usize| args.get(i).copied().unwrap_or(Value::NIL);
     lisp.where_is_internal(arg(0), arg(1), arg(2), arg(3), arg(4))
 }

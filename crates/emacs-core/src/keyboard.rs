@@ -13,6 +13,7 @@ use crate::value::Value;
 pub mod cmdloop;
 pub mod events;
 pub mod keyseq;
+pub mod menu;
 pub mod reader;
 
 pub const UP_MODIFIER: i64 = 1;
@@ -405,6 +406,7 @@ pub struct Keyboard {
     pub read_key_sequence_remapped: Value,
     pub num_input_events: u64,
     pub last_point_position: usize,
+    pub menu: menu::MenuState,
 }
 
 impl Default for Keyboard {
@@ -450,6 +452,7 @@ impl Default for Keyboard {
             read_key_sequence_remapped: Value::NIL,
             num_input_events: 0,
             last_point_position: 0,
+            menu: menu::MenuState::default(),
         }
     }
 }
@@ -472,6 +475,7 @@ impl Keyboard {
             self.read_key_sequence_cmd,
             self.read_key_sequence_remapped,
         ]);
+        self.menu.roots(out);
         out.extend_from_slice(&self.raw_keybuf);
         for event in &self.kbd_buffer {
             event.trace(out);
