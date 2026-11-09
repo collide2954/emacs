@@ -394,6 +394,7 @@ pub struct Buffer {
     pub clip_changed: bool,
     pub last_window_start: usize,
     pub window_count: usize,
+    pub display_error_modiff: i64,
     pub point_marker: Value,
     pub modtime: (i64, i64),
     pub modtime_size: i64,
@@ -900,6 +901,7 @@ impl Lisp {
             clip_changed: false,
             last_window_start: 1,
             window_count: 0,
+            display_error_modiff: 0,
             point_marker: Value::NIL,
             modtime: (0, -2),
             modtime_size: -1,
@@ -1097,6 +1099,7 @@ impl Lisp {
         buf.auto_save_failure_time = 0;
         buf.overlays.clear();
         buf.last_selected_window = Value::NIL;
+        buf.display_error_modiff = 0;
     }
 
     pub fn record_buffer(&mut self, buffer: Value) -> LispResult<()> {

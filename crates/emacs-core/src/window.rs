@@ -1824,6 +1824,7 @@ impl Lisp {
         if window == self.windows.selected_window {
             self.buffer_mut(buffer).last_selected_window = window;
         }
+        self.buffer_mut(buffer).display_error_modiff = 0;
         let count = self
             .buffer_local_get(buffer, sym::BUFFER_DISPLAY_COUNT)
             .unwrap_or(Value::NIL);

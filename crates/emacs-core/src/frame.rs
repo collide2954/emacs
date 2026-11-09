@@ -82,6 +82,8 @@ pub struct FrameFlags {
     pub horizontal_scroll_bars: bool,
     pub inhibit_clear_image_cache: bool,
     pub glyphs_initialized_p: bool,
+    pub already_hscrolled_p: bool,
+    pub updated_p: bool,
 }
 
 #[derive(Clone, Debug, Default)]

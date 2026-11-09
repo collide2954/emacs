@@ -6,10 +6,12 @@ pub mod elements;
 pub mod geom;
 pub mod gui_produce;
 pub mod hscroll;
+pub mod internal;
 pub mod it;
 pub mod iterate;
 pub mod line;
 pub mod lnum;
+pub mod menu_bar;
 pub mod modeline;
 pub mod move_it;
 pub mod next;
@@ -280,32 +282,6 @@ impl Lisp {
         self.redisplay_internal()
     }
 
-    pub(crate) fn redisplay_internal(&mut self) -> LispResult<()> {
-        if self.xdisp.redisplaying_p {
-            return Ok(());
-        }
-        let sf = self.frames.selected_frame;
-        if (self.frame(sf).output_method == crate::terminal::OutputMethod::Initial
-            && !self.plain_value(sym::REDISPLAY_SKIP_INITIAL_FRAME).is_nil())
-            || !self.plain_value(sym::INHIBIT_REDISPLAY).is_nil()
-        {
-            return Ok(());
-        }
-        let w = self.windows.selected_window;
-        let fr = self.window(w).frame;
-        if !self.frame(fr).flags.glyphs_initialized_p {
-            return Ok(());
-        }
-        unreachable!("redisplay_internal needs glyph matrices")
-    }
-
-    pub fn redisplay_preserve_echo_area(&mut self, _from_where: i32) -> LispResult<()> {
-        self.redisplay_internal()?;
-        let sf = self.frames.selected_frame;
-        self.flush_frame(sf);
-        Ok(())
-    }
-
     pub fn flush_frame(&mut self, f: Value) {
         let t = self.frame(f).terminal;
         if self.is_terminal(t)
@@ -468,6 +444,11 @@ pub struct Xdisp {
     pub display_last_displayed_message_p: bool,
     pub message_enable_multibyte: bool,
     pub with_echo_area_save_vector: Value,
+    pub redisplay_counter: i64,
+    pub clear_face_cache_count: i32,
+    pub clear_image_cache_count: i32,
+    pub displayed_buffer: Value,
+    pub buffer_flip_blocked_depth: i32,
 }
 
 impl Default for Xdisp {
@@ -519,6 +500,11 @@ impl Default for Xdisp {
             display_last_displayed_message_p: false,
             message_enable_multibyte: false,
             with_echo_area_save_vector: Value::NIL,
+            redisplay_counter: 0,
+            clear_face_cache_count: 0,
+            clear_image_cache_count: 0,
+            displayed_buffer: Value::NIL,
+            buffer_flip_blocked_depth: 0,
         }
     }
 }
@@ -1491,12 +1477,16 @@ impl Lisp {
         }
         let base = self.stack.len();
         self.stack.extend_from_slice(args);
-        let r = self.condition_case_internal(
+        let redisplay_counter_before = self.xdisp.redisplay_counter;
+        let mut r = self.condition_case_internal(
             sym::T,
             |l| l.funcall(args[0], &args[1..]),
             |l, error| l.safe_eval_handler(error, args),
         );
         self.stack.truncate(base);
+        if redisplay_counter_before != self.xdisp.redisplay_counter {
+            r = crate::keyboard::cmdloop::f_top_level(self, &[]);
+        }
         self.unbind_to_value(count, r)
     }
 

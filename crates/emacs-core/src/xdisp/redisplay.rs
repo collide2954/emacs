@@ -37,7 +37,7 @@ impl Lisp {
             && (w.update_mode_lines == 0 || w.update_mode_lines == crate::xdisp::REDISPLAY_SOME)
     }
 
-    fn needs_no_redisplay(&self, w: Value) -> bool {
+    pub(super) fn needs_no_redisplay(&self, w: Value) -> bool {
         let win = self.window(w);
         let buffer = self.buffer(win.contents);
         let f = self.frame(win.frame);
@@ -50,7 +50,7 @@ impl Lisp {
             && self.window_point(w) == win.last_point
     }
 
-    fn mode_line_update_needed(&mut self, w: Value) -> LispResult<bool> {
+    pub(super) fn mode_line_update_needed(&mut self, w: Value) -> LispResult<bool> {
         let displayed = self.window(w).column_number_displayed;
         if displayed == -1 {
             return Ok(false);
@@ -112,7 +112,7 @@ impl Lisp {
         Ok(false)
     }
 
-    fn reconsider_clip_changes(&mut self, w: Value) -> LispResult<()> {
+    pub(super) fn reconsider_clip_changes(&mut self, w: Value) -> LispResult<()> {
         let b = self.window(w).contents;
         let window_end_valid = self.window(w).flags.window_end_valid;
         let (matrix_buffer, matrix_zv, matrix_begv) = self

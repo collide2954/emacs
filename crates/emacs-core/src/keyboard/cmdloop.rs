@@ -557,7 +557,7 @@ fn f_recursive_edit(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     lisp.recursive_edit()
 }
 
-fn f_top_level(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_top_level(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Err(lisp.throw(sym::TOP_LEVEL, Value::NIL))
 }
 

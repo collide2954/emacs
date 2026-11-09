@@ -387,7 +387,7 @@ impl Lisp {
         Ok(())
     }
 
-    fn record_in_backtrace(&mut self, function: Value, nargs: usize) {
+    pub(crate) fn record_in_backtrace(&mut self, function: Value, nargs: usize) {
         let start = self.stack.len() - nargs;
         self.specpdl.push(SpecBinding::Backtrace {
             function,
