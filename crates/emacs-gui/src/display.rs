@@ -123,6 +123,14 @@ impl Display {
         }
     }
 
+    pub fn set_fullscreen(&self, frame: u64, on: bool) {
+        self.send(Command::SetFullscreen { frame, on });
+    }
+
+    pub fn set_maximized(&self, frame: u64, on: bool) {
+        self.send(Command::SetMaximized { frame, on });
+    }
+
     pub fn close_frame(&mut self, frame: u64) {
         self.surfaces.remove(&frame);
         self.shown.remove(&frame);

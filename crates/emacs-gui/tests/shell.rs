@@ -93,3 +93,43 @@ fn shell_tracks_frames_and_forwards_events() {
     let _ = shell.update(Message::Lisp(Command::CloseFrame { frame: 5 }));
     assert_eq!(shell.window_of(5), None);
 }
+
+#[test]
+fn an_opened_window_is_configured_and_then_mapped() {
+    let mut shell = Shell::boot();
+    let (tx, rx) = mpsc::channel();
+    let _ = shell.update(Message::Connected(tx));
+    let _ = shell.update(Message::Lisp(Command::OpenFrame {
+        frame: 3,
+        title: "t".into(),
+        width: 100,
+        height: 50,
+    }));
+    let id = shell.window_of(3).expect("window for frame");
+    let _ = shell.update(Message::Window(
+        id,
+        window::Event::Opened {
+            position: None,
+            size: Size::new(100.0, 50.0),
+        },
+    ));
+    let notices: Vec<Notice> = rx.try_iter().collect();
+    assert_eq!(
+        notices,
+        [
+            Notice::Configure {
+                frame: 3,
+                width: 100,
+                height: 50,
+                scale: 1.0,
+            },
+            Notice::Map { frame: 3 },
+        ]
+    );
+    let _ = shell.update(Message::Lisp(Command::SetMaximized { frame: 3, on: true }));
+    let _ = shell.update(Message::Lisp(Command::SetFullscreen {
+        frame: 3,
+        on: false,
+    }));
+    let _ = shell.update(Message::Lisp(Command::SetMaximized { frame: 9, on: true }));
+}

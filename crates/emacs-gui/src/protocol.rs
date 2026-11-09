@@ -23,6 +23,14 @@ pub enum Command {
         height: u32,
         pixels: Vec<u8>,
     },
+    SetFullscreen {
+        frame: u64,
+        on: bool,
+    },
+    SetMaximized {
+        frame: u64,
+        on: bool,
+    },
     CloseFrame {
         frame: u64,
     },
@@ -37,5 +45,8 @@ pub enum Notice {
         width: u32,
         height: u32,
         scale: f32,
+    },
+    Map {
+        frame: u64,
     },
 }

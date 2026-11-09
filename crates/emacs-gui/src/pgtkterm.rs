@@ -6,6 +6,7 @@ use emacs_core::character::{CHAR_ALT, CHAR_CTL, CHAR_HYPER, CHAR_META, CHAR_SUPE
 use emacs_core::editfns::f_system_name;
 use emacs_core::error::LispResult;
 use emacs_core::fns::f_provide;
+use emacs_core::frame::Fullscreen;
 use emacs_core::keyboard::f_set_input_interrupt_mode;
 use emacs_core::lisp::Lisp;
 use emacs_core::object::Weakness;
@@ -63,6 +64,7 @@ pub struct PgtkOutput {
     pub widget: bool,
     pub drag_dest_targets: Option<Vec<Vec<u8>>>,
     pub focus_state: i32,
+    pub has_been_visible: bool,
 }
 
 thread_local! {
@@ -456,9 +458,75 @@ fn focus_event(lisp: &mut Lisp, input: InputEvent, is_enter: bool) -> LispResult
     Ok(())
 }
 
+fn set_fullscreen_state(lisp: &mut Lisp, f: Value) -> LispResult<()> {
+    if !with_output(lisp, f, |o| o.widget) {
+        return Ok(());
+    }
+    let key = frame_key(lisp, f) as u64;
+    match lisp.frame(f).want_fullscreen {
+        Fullscreen::None => {
+            crate::with_display(|d| {
+                d.set_fullscreen(key, false);
+                d.set_maximized(key, false);
+            });
+            lisp.store_frame_param(f, sym::FULLSCREEN, Value::NIL)?;
+        }
+        Fullscreen::Both => {
+            crate::with_display(|d| {
+                d.set_maximized(key, false);
+                d.set_fullscreen(key, true);
+            });
+            lisp.store_frame_param(f, sym::FULLSCREEN, sym::FULLBOTH)?;
+        }
+        Fullscreen::Maximized => {
+            crate::with_display(|d| {
+                d.set_fullscreen(key, false);
+                d.set_maximized(key, true);
+            });
+            lisp.store_frame_param(f, sym::FULLSCREEN, sym::MAXIMIZED)?;
+        }
+        Fullscreen::Width | Fullscreen::Height => {
+            crate::with_display(|d| d.set_fullscreen(key, false));
+        }
+    }
+    lisp.frame_mut(f).want_fullscreen = Fullscreen::None;
+    Ok(())
+}
+
+fn pgtk_fullscreen_hook(lisp: &mut Lisp, f: Value) -> LispResult<()> {
+    if lisp.frame(f).flags.visible {
+        set_fullscreen_state(lisp, f)?;
+    }
+    Ok(())
+}
+
+fn map_event(lisp: &mut Lisp, id: u64) -> LispResult<()> {
+    let Some(f) = pgtk_any_window_to_frame(lisp, id) else {
+        return Ok(());
+    };
+    let iconified = lisp.frame(f).flags.iconified;
+    if !with_output(lisp, f, |o| o.has_been_visible) {
+        set_fullscreen_state(lisp, f)?;
+    }
+    lisp.set_frame_visible(f, true);
+    lisp.set_frame_iconified(f, false)?;
+    with_output(lisp, f, |o| o.has_been_visible = true);
+    if iconified {
+        evq_enqueue(
+            lisp,
+            KbdEvent {
+                kind: EventKind::Deiconify,
+                frame_or_window: f,
+                ..KbdEvent::default()
+            },
+        );
+    }
+    Ok(())
+}
+
 fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
-    if let Notice::Input(input) = notice {
-        match input.kind {
+    match notice {
+        Notice::Input(input) => match input.kind {
             EventKind::AsciiKeystroke
             | EventKind::MultibyteCharKeystroke
             | EventKind::NonAsciiKeystroke => key_press_event(lisp, input),
@@ -466,7 +534,9 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             EventKind::FocusIn => focus_event(lisp, input, true)?,
             EventKind::FocusOut => focus_event(lisp, input, false)?,
             _ => {}
-        }
+        },
+        Notice::Map { frame } => map_event(lisp, frame)?,
+        Notice::Configure { .. } => {}
     }
     Ok(())
 }
@@ -622,6 +692,7 @@ pub fn pgtk_term_init(
     hooks.implicit_set_name = Some(crate::pgtkfns::pgtk_implicitly_set_name);
     hooks.clear_frame = Some(crate::pgtkfns::pgtk_clear_frame);
     hooks.frame_up_to_date = Some(pgtk_frame_up_to_date);
+    hooks.fullscreen = Some(pgtk_fullscreen_hook);
     hooks.buffer_flipping_unblocked = Some(pgtk_buffer_flipping_unblocked_hook);
     lisp.terminal_mut(terminal).rif = Some(&crate::pgtkdraw::PGTK_REDISPLAY_INTERFACE);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);

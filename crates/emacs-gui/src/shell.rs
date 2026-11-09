@@ -173,6 +173,21 @@ impl Shell {
                 }
                 Task::none()
             }
+            Command::SetFullscreen { frame, on } => match self.window_of(frame) {
+                Some(id) => window::set_mode(
+                    id,
+                    if on {
+                        window::Mode::Fullscreen
+                    } else {
+                        window::Mode::Windowed
+                    },
+                ),
+                None => Task::none(),
+            },
+            Command::SetMaximized { frame, on } => match self.window_of(frame) {
+                Some(id) => window::maximize(id, on),
+                None => Task::none(),
+            },
             Command::CloseFrame { frame } => match self.frames.remove(&frame) {
                 Some(id) => {
                     self.views.remove(&id);
@@ -189,7 +204,14 @@ impl Shell {
             return;
         };
         match event {
-            window::Event::Opened { size, .. } | window::Event::Resized(size) => {
+            window::Event::Opened { size, .. } => {
+                if let Some(view) = self.views.get_mut(&id) {
+                    view.size = size;
+                }
+                self.configure(id);
+                self.notify(Notice::Map { frame });
+            }
+            window::Event::Resized(size) => {
                 if let Some(view) = self.views.get_mut(&id) {
                     view.size = size;
                 }

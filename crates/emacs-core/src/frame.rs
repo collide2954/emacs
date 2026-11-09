@@ -2238,6 +2238,26 @@ impl Lisp {
         }
     }
 
+    pub fn set_frame_visible(&mut self, f: Value, v: bool) {
+        if v {
+            if !self.frame(f).flags.visible {
+                self.redisplay_other_windows();
+            }
+            if self.frame(f).flags.garbaged {
+                self.frames.frame_garbaged = true;
+            }
+        }
+        self.frame_mut(f).flags.visible = v;
+    }
+
+    pub fn set_frame_iconified(&mut self, f: Value, i: bool) -> LispResult<()> {
+        self.frame_mut(f).flags.iconified = i;
+        if self.frame_window_p(f) {
+            self.gui_consider_frame_title(f)?;
+        }
+        Ok(())
+    }
+
     pub fn store_frame_param(&mut self, f: Value, prop: Value, mut val: Value) -> LispResult<()> {
         if prop == sym::MINIBUFFER {
             if self.is_window(val) {
