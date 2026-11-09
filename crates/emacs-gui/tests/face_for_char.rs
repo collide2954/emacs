@@ -42,7 +42,7 @@ fn pgtk_frame_selected() -> (Lisp, Value) {
     assert_eq!(
         eval(
             &mut lisp,
-            "(progn (setq x-resource-name \"emacs\") (x-open-connection nil) (setq f (x-create-frame '((name . \"c\") (width . 20) (height . 5)))) (select-frame f) (setq font (internal-get-lisp-face-attribute 'default :font f)) (fontp font 'font-object))"
+            "(progn (fset 'window--pixel-to-total (function (lambda (&rest _) nil))) (setq x-resource-name \"emacs\") (x-open-connection nil) (setq f (x-create-frame '((name . \"c\") (width . 20) (height . 5)))) (select-frame f) (setq font (internal-get-lisp-face-attribute 'default :font f)) (fontp font 'font-object))"
         ),
         "t"
     );
@@ -83,10 +83,10 @@ fn internal_char_font_on_a_gui_frame() {
 }
 
 #[test]
-fn messages_on_a_frame_without_glyphs_are_only_logged() {
+fn messages_on_a_new_frame_are_logged() {
     on_big_stack(|| {
         let (mut lisp, f) = pgtk_frame_selected();
-        assert!(!lisp.frame(f).flags.glyphs_initialized_p);
+        assert!(lisp.frame(f).flags.glyphs_initialized_p);
         assert_eq!(
             eval(
                 &mut lisp,

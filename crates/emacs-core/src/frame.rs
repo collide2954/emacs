@@ -1608,6 +1608,19 @@ impl Lisp {
         g.pixel_height = new_native_height;
         g.total_cols = g.pixel_width / g.column_width;
         g.total_lines = g.pixel_height / g.line_height;
+        let w = self.frame(f).selected_window;
+        let (text_area_x, text_area_y, text_area_width, text_area_height) =
+            self.window_box(w, crate::dispextern::GlyphRowArea::Text);
+        let cursor = &mut self.window_mut(w).cursor;
+        if cursor.x >= text_area_x + text_area_width {
+            cursor.hpos = 0;
+            cursor.x = 0;
+        }
+        if cursor.y >= text_area_y + text_area_height {
+            cursor.vpos = 0;
+            cursor.y = 0;
+        }
+        self.adjust_frame_glyphs(f);
         self.set_frame_garbaged(f);
         self.frame_mut(f).flags.resized_p = true;
         let frames = self.frames.list.clone();
