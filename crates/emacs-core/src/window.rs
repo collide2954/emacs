@@ -378,6 +378,8 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-body-height", 0, 2, f_window_body_height),
     Subr::fixed("pos-visible-in-window-p", 0, 3, f_pos_visible_in_window_p),
     Subr::fixed("window-line-height", 0, 2, f_window_line_height),
+    Subr::fixed("window-vscroll", 0, 2, f_window_vscroll),
+    Subr::fixed("set-window-vscroll", 2, 4, f_set_window_vscroll),
     Subr::fixed("window-new-total", 0, 1, f_window_new_total),
     Subr::fixed("window-normal-size", 0, 2, f_window_normal_size),
     Subr::fixed("window-new-normal", 0, 1, f_window_new_normal),
@@ -2504,6 +2506,56 @@ fn f_window_line_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (_, y, height) = row_at(lisp, row);
     let crop = 0.max(y + height - max_y);
     Ok(list4i(lisp, [height + 0.min(y) - crop, i, y, crop]))
+}
+
+fn f_window_vscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (window, pixels_p) = (arg(args, 0), arg(args, 1));
+    let w = lisp.decode_live_window(window)?;
+    let f = lisp.window(w).frame;
+    if !lisp.frame_window_p(f) {
+        return Ok(Value::fixnum(0));
+    }
+    let y = -lisp.window(w).vscroll;
+    if !pixels_p.is_nil() {
+        return Ok(Value::fixnum(y));
+    }
+    let lh = lisp.frame(f).geometry.line_height;
+    Ok(if y % lh != 0 {
+        lisp.float(y as f64 / lh as f64)
+    } else {
+        Value::fixnum(y / lh)
+    })
+}
+
+fn f_set_window_vscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (window, vscroll, pixels_p, preserve_vscroll_p) =
+        (arg(args, 0), args[1], arg(args, 2), arg(args, 3));
+    let w = lisp.decode_live_window(window)?;
+    let f = lisp.window(w).frame;
+    if !(vscroll.is_fixnum() || vscroll.is_float() || lisp.is_bignum(vscroll)) {
+        return Err(lisp.wrong_type(sym::NUMBERP, vscroll));
+    }
+    if lisp.frame_window_p(f) {
+        let old_dy = lisp.window(w).vscroll;
+        let amount = lisp.xfloatint(vscroll);
+        let scaled = if pixels_p.is_nil() {
+            lisp.frame(f).geometry.line_height as f64 * amount
+        } else {
+            amount
+        };
+        let vscroll = (-scaled as i64).min(0);
+        lisp.window_mut(w).vscroll = vscroll;
+        if vscroll != old_dy {
+            if vscroll < 0 && vscroll < old_dy {
+                lisp.adjust_frame_glyphs(f);
+            }
+            let contents = lisp.window(w).contents;
+            lisp.buffer_mut(contents).prevent_redisplay_optimizations_p = true;
+            lisp.wset_redisplay(w);
+        }
+        lisp.window_mut(w).flags.preserve_vscroll_p = !preserve_vscroll_p.is_nil();
+    }
+    f_window_vscroll(lisp, &[window, pixels_p])
 }
 
 fn f_window_body_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {

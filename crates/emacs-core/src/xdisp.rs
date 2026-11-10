@@ -33,6 +33,7 @@ use crate::value::Value;
 
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("invisible-p", 1, 1, f_invisible_p),
+    Subr::fixed("line-pixel-height", 0, 0, f_line_pixel_height),
     Subr::fixed("get-display-property", 2, 4, it::f_get_display_property),
     Subr::fixed("format-mode-line", 1, 4, modeline::f_format_mode_line),
     Subr::fixed("tab-bar-height", 0, 2, f_tab_bar_height),
@@ -221,6 +222,31 @@ fn f_bidi_find_overridden_directionality(lisp: &mut Lisp, args: &[Value]) -> Lis
         Value::fixnum(found)
     } else {
         Value::NIL
+    })
+}
+
+fn f_line_pixel_height(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    lisp.with_gc_deferred(|lisp| {
+        let w = lisp.windows.selected_window;
+        let contents = lisp.window(w).contents;
+        let old_buffer = (contents != lisp.current_buffer).then_some(lisp.current_buffer);
+        if old_buffer.is_some() {
+            lisp.set_buffer_internal(contents);
+        }
+        let pt = crate::dispextern::TextPos::new(lisp.cur().pt as i64, lisp.cur().pt_byte as i64);
+        let itdata = lisp.bidi_shelve_cache();
+        let mut it = crate::dispextern::It::default();
+        lisp.start_display(&mut it, w, pt)?;
+        lisp.move_it_by_lines(&mut it, 0)?;
+        it.vpos = 0;
+        it.current_y = 0;
+        lisp.xdisp.last_height = 0;
+        let result = Value::fixnum(i64::from(lisp.line_bottom_y(&it)?));
+        if let Some(old) = old_buffer {
+            lisp.set_buffer_internal(old);
+        }
+        lisp.bidi_unshelve_cache(itdata, false);
+        Ok(result)
     })
 }
 

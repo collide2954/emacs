@@ -367,6 +367,7 @@ pub struct EmacsColor {
 }
 
 pub const SUBRS: &[Subr] = &[
+    Subr::fixed("face-font", 1, 3, f_face_font),
     Subr::fixed("internal-make-lisp-face", 1, 2, f_internal_make_lisp_face),
     Subr::fixed("internal-lisp-face-p", 1, 2, f_internal_lisp_face_p),
     Subr::fixed(
@@ -3667,6 +3668,37 @@ fn f_merge_face_attribute(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         lisp.merge_face_heights(value1, value2, value1)
     } else {
         Ok(value1)
+    }
+}
+
+fn f_face_font(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (face, frame, character) = (args[0], arg(args, 1), arg(args, 2));
+    if frame == sym::T {
+        let mut result = Value::NIL;
+        let lface = lisp.lface_from_face_name(None, face, true)?;
+        let weight = lisp.lface_aref(lface, LFACE_WEIGHT_INDEX);
+        if !unspecifiedp(weight) && weight != sym::NORMAL {
+            result = lisp.cons(sym::BOLD, result);
+        }
+        let slant = lisp.lface_aref(lface, LFACE_SLANT_INDEX);
+        if !unspecifiedp(slant) && slant != sym::NORMAL {
+            result = lisp.cons(sym::ITALIC, result);
+        }
+        return Ok(result);
+    }
+    let f = lisp.decode_live_frame(frame)?;
+    let face_id = lisp.lookup_named_face(None, f, face, true)?;
+    if face_id < 0 || lisp.face_from_id(f, face_id as usize).is_none() {
+        return Ok(Value::NIL);
+    }
+    let mut face_id = face_id as usize;
+    if lisp.frame_window_p(f) && !character.is_nil() {
+        let c = lisp.check_character(character)?;
+        face_id = lisp.face_for_char(f, face_id, c, -1, Value::NIL)?;
+    }
+    match lisp.face_from_id(f, face_id).map(|face| face.font) {
+        Some(font) if !font.is_nil() => Ok(lisp.font_aref(font, crate::font::FONT_NAME_INDEX)),
+        _ => Ok(Value::NIL),
     }
 }
 
