@@ -13,6 +13,8 @@ use crate::xfaces::DEFAULT_FACE_ID;
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("scroll-up", 0, 1, f_scroll_up).interactive("^P"),
     Subr::fixed("scroll-down", 0, 1, f_scroll_down).interactive("^P"),
+    Subr::fixed("recenter", 0, 2, f_recenter).interactive("P\np"),
+    Subr::fixed("move-to-window-line", 1, 1, f_move_to_window_line).interactive("P"),
 ];
 
 fn arg(args: &[Value], i: usize) -> Value {
@@ -678,6 +680,227 @@ impl Lisp {
         }
         self.unbind_to(count)
     }
+}
+
+impl Lisp {
+    fn displayed_window_lines(&mut self, w: Value) -> LispResult<i64> {
+        self.with_gc_deferred(|lisp| lisp.displayed_window_lines_1(w))
+    }
+
+    fn displayed_window_lines_1(&mut self, w: Value) -> LispResult<i64> {
+        let height = self.window_box_height(w) as i32;
+        let contents = self.window(w).contents;
+        let old_buffer = (contents != self.current_buffer).then_some(self.current_buffer);
+        if old_buffer.is_some() {
+            self.set_buffer_internal(contents);
+        }
+        let start = {
+            let m = self.marker(self.window(w).start);
+            let (charpos, bytepos) = (m.charpos as i64, m.bytepos as i64);
+            let b = self.cur();
+            if charpos < b.begv as i64 {
+                TextPos::new(b.begv as i64, b.begv_byte as i64)
+            } else if charpos > b.zv as i64 {
+                TextPos::new(b.zv as i64, b.zv_byte as i64)
+            } else {
+                TextPos::new(charpos, bytepos)
+            }
+        };
+        let itdata = self.bidi_shelve_cache();
+        let count = self.specpdl_index();
+        self.record_unwind(crate::indent::unwind_display_working_on_window, Value::NIL);
+        self.xdisp.display_working_on_window_p = true;
+        let mut it = It::default();
+        self.start_display(&mut it, w, start)?;
+        self.move_it_vertically(&mut it, height)?;
+        let bottom_y = self.line_bottom_y(&it)?;
+        self.unbind_to(count)?;
+        self.bidi_unshelve_cache(itdata, false);
+        if bottom_y < height {
+            let uy = self.frame(it.f).geometry.line_height as i32;
+            it.vpos += (height - bottom_y + uy - 1) / uy;
+        } else if bottom_y == height {
+            it.vpos += 1;
+        }
+        if let Some(old) = old_buffer {
+            self.set_buffer_internal(old);
+        }
+        Ok(i64::from(it.vpos))
+    }
+
+    fn recenter(&mut self, arg: Value, redisplay: Value) -> LispResult {
+        let w = self.windows.selected_window;
+        let buf = self.window(w).contents;
+        if buf != self.current_buffer {
+            return Err(self.error("`recenter'ing a window that does not display current-buffer"));
+        }
+        self.buffer_mut(buf).display_error_modiff = 0;
+        let f = self.window(w).frame;
+        let mut center_p = false;
+        let mut iarg: i64 = 0;
+        if arg.is_nil() {
+            let recenter_redisplay = self.find_symbol_value(sym::RECENTER_REDISPLAY);
+            if !redisplay.is_nil()
+                && !recenter_redisplay.is_nil()
+                && (recenter_redisplay != sym::TTY
+                    || !crate::term::f_tty_type(self, &[self.frames.selected_frame])?.is_nil())
+            {
+                for composition in &mut self.compositions.table {
+                    composition.font = Value::NIL;
+                }
+                self.frame_mut(f).flags.minimize_tab_bar_window_p = true;
+                crate::dispnew::f_redraw_frame(self, &[f])?;
+                self.set_frame_garbaged(f);
+            }
+            center_p = true;
+        } else if arg.is_cons() {
+            center_p = true;
+        } else {
+            let arg = crate::callint::f_prefix_numeric_value(self, &[arg])?;
+            iarg = self.check_fixnum(arg)?;
+        }
+        let this_scroll_margin = i64::from(self.window_scroll_margin(w, MarginUnit::InLines));
+        let (charpos, bytepos);
+        if self.frame(f).output_method != crate::terminal::OutputMethod::Initial
+            && !self.cur().long_line_optimizations_p
+        {
+            let count = self.specpdl_index();
+            self.record_unwind(crate::indent::unwind_display_working_on_window, Value::NIL);
+            self.xdisp.display_working_on_window_p = true;
+            let (pt_charpos, pt_bytepos) = self.pt_both();
+            let pt = TextPos::new(pt_charpos, pt_bytepos);
+            let mut it = It::default();
+            let itdata = self.bidi_shelve_cache();
+            if center_p {
+                self.start_display(&mut it, w, pt)?;
+                let half = (self.window_box_height(w) / 2) as i32;
+                self.move_it_vertically_backward(&mut it, half)?;
+            } else if iarg < 0 {
+                let mut h = self.window_box_height(w) as i32;
+                let ht = self.window_internal_height(w);
+                let mut nlines = (-iarg).clamp(this_scroll_margin + 1, ht - this_scroll_margin);
+                self.start_display(&mut it, w, pt)?;
+                self.move_it_by_lines(&mut it, 0)?;
+                it.current_y = 0;
+                it.vpos = 0;
+                self.move_it_by_lines(&mut it, nlines)?;
+                if i64::from(it.vpos) == nlines {
+                    h -= it.current_y;
+                } else {
+                    h -= self.line_bottom_y(&it)?;
+                    it.vpos += 1;
+                }
+                let mut extra_line_spacing = it.max_extra_line_spacing;
+                if i64::from(it.vpos) < nlines {
+                    nlines -= i64::from(it.vpos);
+                    extra_line_spacing = it.extra_line_spacing;
+                    let lh = self.frame(it.f).geometry.line_height as i32;
+                    h -= nlines as i32 * (lh + extra_line_spacing);
+                }
+                if h <= 0 {
+                    self.bidi_unshelve_cache(itdata, false);
+                    self.unbind_to(count)?;
+                    return Ok(Value::NIL);
+                }
+                self.start_display(&mut it, w, pt)?;
+                it.current_y = 0;
+                self.move_it_vertically_backward(&mut it, h)?;
+                h += extra_line_spacing;
+                while -it.current_y > h && it.what != DisplayElementType::Eob {
+                    self.move_it_by_lines(&mut it, 1)?;
+                }
+            } else {
+                let ht = self.window_internal_height(w);
+                let nlines = iarg.clamp(this_scroll_margin, ht - this_scroll_margin - 1);
+                self.start_display(&mut it, w, pt)?;
+                self.move_it_by_lines(&mut it, 0)?;
+                if nlines > 0 {
+                    it.current_y = 0;
+                    it.vpos = 0;
+                    self.move_it_by_lines(&mut it, -nlines)?;
+                }
+            }
+            charpos = it.charpos();
+            bytepos = it.bytepos();
+            self.bidi_unshelve_cache(itdata, false);
+            self.unbind_to(count)?;
+        } else {
+            let ht = self.window_internal_height(w);
+            if center_p {
+                iarg = ht / 2;
+            } else if iarg < 0 {
+                iarg += ht;
+            }
+            iarg = iarg.clamp(this_scroll_margin, ht - this_scroll_margin - 1);
+            let (pt, pt_byte) = self.pt_both();
+            let pos = self.vmotion(pt, pt_byte, -iarg, w)?;
+            charpos = pos.bufpos;
+            bytepos = pos.bytepos;
+        }
+        let (start, contents) = (self.window(w).start, self.window(w).contents);
+        self.set_marker_position(start, charpos as usize, contents);
+        let win = self.window_mut(w);
+        win.vscroll = 0;
+        win.flags.preserve_vscroll_p = false;
+        win.flags.window_end_valid = false;
+        win.flags.optional_new_start = true;
+        let begv_byte = self.cur().begv_byte as i64;
+        self.window_mut(w).flags.start_at_line_beg =
+            bytepos == begv_byte || self.cur().text.byte_at(bytepos as usize - 1) == b'\n';
+        self.wset_redisplay(w);
+        Ok(Value::NIL)
+    }
+
+    fn move_to_window_line(&mut self, arg: Value) -> LispResult {
+        let w = self.windows.selected_window;
+        let contents = self.window(w).contents;
+        if !(self.is_buffer(contents) && contents == self.current_buffer) {
+            return Err(self.error("move-to-window-line called from unrelated buffer"));
+        }
+        let window = w;
+        let start = self.marker(self.window(w).start).charpos as i64;
+        let (begv, zv) = (self.cur().begv as i64, self.cur().zv as i64);
+        if start < begv || start > zv {
+            let height = self.window_internal_height(w);
+            crate::indent::f_vertical_motion(
+                self,
+                &[Value::fixnum(-(height / 2)), window, Value::NIL],
+            )?;
+            let (pt, start_marker) = (self.cur().pt, self.window(w).start);
+            self.set_marker_position(start_marker, pt, contents);
+            let bolp = crate::editfns::f_bolp(self, &[])?;
+            let win = self.window_mut(w);
+            win.flags.start_at_line_beg = !bolp.is_nil();
+            win.flags.force_start = true;
+            win.flags.preserve_vscroll_p = false;
+        } else {
+            let start_marker = self.window(w).start;
+            crate::editfns::f_goto_char(self, &[start_marker])?;
+        }
+        let lines = self.displayed_window_lines(w)?;
+        let mut arg = if arg.is_nil() {
+            Value::fixnum(lines / 2)
+        } else {
+            let n = crate::callint::f_prefix_numeric_value(self, &[arg])?;
+            let mut iarg = n.as_fixnum().unwrap_or(0);
+            if iarg < 0 {
+                iarg += lines;
+            }
+            Value::fixnum(iarg)
+        };
+        if self.window(w).vscroll != 0 {
+            arg = Value::fixnum(arg.as_fixnum().unwrap_or(0) + 1);
+        }
+        crate::indent::f_vertical_motion(self, &[arg, window, Value::NIL])
+    }
+}
+
+fn f_recenter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    lisp.recenter(arg(args, 0), arg(args, 1))
+}
+
+fn f_move_to_window_line(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    lisp.move_to_window_line(args[0])
 }
 
 fn f_scroll_up(lisp: &mut Lisp, args: &[Value]) -> LispResult {

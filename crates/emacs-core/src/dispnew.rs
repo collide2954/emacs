@@ -29,7 +29,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("redraw-frame", 0, 1, f_redraw_frame),
 ];
 
-fn f_redraw_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_redraw_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(args[0])?;
     lisp.redraw_frame(f);
     Ok(Value::NIL)

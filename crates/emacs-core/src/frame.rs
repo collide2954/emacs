@@ -84,6 +84,7 @@ pub struct FrameFlags {
     pub glyphs_initialized_p: bool,
     pub already_hscrolled_p: bool,
     pub updated_p: bool,
+    pub minimize_tab_bar_window_p: bool,
 }
 
 #[derive(Clone, Debug, Default)]

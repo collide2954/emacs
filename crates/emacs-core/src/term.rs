@@ -64,7 +64,7 @@ fn f_tty_display_color_cells(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     }
 }
 
-fn f_tty_type(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_tty_type(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     match lisp.decode_tty_terminal(args[0])? {
         None => Ok(Value::NIL),
         Some(t) => match t {},
