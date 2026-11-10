@@ -1042,7 +1042,8 @@ impl Lisp {
                                 && !self
                                     .is_number(self.plain_value(sym::MINIBUFFER_MESSAGE_TIMEOUT))
                             {
-                                unreachable!("resizing the mini-window needs resize_mini_window");
+                                let mw = self.windows.minibuf_window;
+                                self.resize_mini_window(mw, false)?;
                             }
                         } else {
                             let function = self.plain_value(sym::CLEAR_MESSAGE_FUNCTION);

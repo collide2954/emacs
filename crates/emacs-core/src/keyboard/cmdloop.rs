@@ -159,7 +159,21 @@ impl Lisp {
                 && self.windows.minibuf_window == self.xdisp.echo_area_window
                 && self.is_number(self.plain_value(sym::MINIBUFFER_MESSAGE_TIMEOUT))
             {
-                unreachable!("the minibuffer message timeout needs resize_mini_window");
+                let count = self.specpdl_index();
+                self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+                let timeout = self.plain_value(sym::MINIBUFFER_MESSAGE_TIMEOUT);
+                self.sit_for(timeout, false, 2)?;
+                self.message3(Value::NIL)?;
+                self.safe_run_hooks(sym::ECHO_AREA_CLEAR_HOOK)?;
+                let mw = self.windows.minibuf_window;
+                self.resize_mini_window(mw, false)?;
+                self.unbind_to(count)?;
+                if !self.plain_value(sym::QUIT_FLAG).is_nil() {
+                    self.set_plain_value(sym::QUIT_FLAG, Value::NIL);
+                    let quit_char = Value::fixnum(self.keyboard.quit_char);
+                    let events = self.list(&[quit_char]);
+                    self.set_plain_value(sym::UNREAD_COMMAND_EVENTS, events);
+                }
             }
             self.set_plain_value(sym::THIS_COMMAND, Value::NIL);
             self.set_plain_value(sym::REAL_THIS_COMMAND, Value::NIL);
