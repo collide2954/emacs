@@ -8,7 +8,7 @@ use crate::value::Value;
 const DISP_INFINITY: i32 = 10_000_000;
 
 impl Lisp {
-    fn matrix_bottom_text_row(&self, w: Value, which: WhichMatrix) -> usize {
+    pub(crate) fn matrix_bottom_text_row(&self, w: Value, which: WhichMatrix) -> usize {
         let m = self.window_matrix(w, which).expect("glyph matrix");
         m.nrows as usize - usize::from(self.window_wants_mode_line(w))
     }

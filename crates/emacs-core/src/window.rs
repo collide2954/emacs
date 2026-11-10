@@ -1,4 +1,5 @@
 use crate::dispextern::GlyphMatrix;
+use crate::dispnew::matrix::WhichMatrix;
 use crate::doprnt::Arg;
 use crate::error::LispResult;
 use crate::frame::VerticalScrollBarType;
@@ -2412,8 +2413,97 @@ fn f_window_line_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     {
         return Ok(Value::NIL);
     }
-    let _ = line;
-    unreachable!("window-line-height needs the current glyph matrix")
+    let list4i = |lisp: &mut Lisp, items: [i64; 4]| lisp.list(&items.map(Value::fixnum));
+    let current = WhichMatrix::Current;
+    let row_at = |lisp: &Lisp, i: usize| {
+        let r = &lisp.window_matrix(w, current).expect("current matrix").rows[i];
+        (r.enabled_p, i64::from(r.y), i64::from(r.height))
+    };
+    let (mut row, mut i, max_y);
+    if line.is_nil() {
+        let vpos = lisp.window(w).cursor.vpos;
+        let nrows = i64::from(
+            lisp.window_matrix(w, current)
+                .expect("current matrix")
+                .nrows,
+        );
+        if vpos < 0 || vpos >= nrows || !row_at(lisp, vpos as usize).0 {
+            return Ok(Value::NIL);
+        }
+        row = vpos as usize;
+        i = vpos;
+        max_y = lisp.window_text_bottom_y(w);
+    } else {
+        if line == sym::TAB_LINE {
+            if !lisp.window_wants_tab_line(w) {
+                return Ok(Value::NIL);
+            }
+            let (enabled, _, height) = row_at(lisp, 0);
+            return Ok(if enabled {
+                list4i(lisp, [height, 0, 0, 0])
+            } else {
+                Value::NIL
+            });
+        }
+        if line == sym::HEADER_LINE {
+            if !lisp.window_wants_header_line(w) {
+                return Ok(Value::NIL);
+            }
+            let header = lisp
+                .window_matrix(w, current)
+                .expect("current matrix")
+                .header_line_row();
+            let (enabled, _, height) = row_at(lisp, header);
+            return Ok(if enabled {
+                list4i(lisp, [height, 0, 0, 0])
+            } else {
+                Value::NIL
+            });
+        }
+        if line == sym::MODE_LINE {
+            let mode = lisp
+                .window_matrix(w, current)
+                .expect("current matrix")
+                .mode_line_row();
+            let (enabled, _, height) = row_at(lisp, mode);
+            if !enabled {
+                return Ok(Value::NIL);
+            }
+            let y = lisp.window_tab_line_height(w)
+                + lisp.window_header_line_height(w)
+                + lisp.window_text_bottom_y(w);
+            return Ok(list4i(lisp, [height, 0, y, 0]));
+        }
+        let mut n = lisp.check_fixnum(line)?;
+        row = lisp
+            .window_matrix(w, current)
+            .expect("current matrix")
+            .first_text_row();
+        let end_row = lisp.matrix_bottom_text_row(w, current);
+        max_y = lisp.window_text_bottom_y(w);
+        i = 0;
+        while (n < 0 || i < n) && row <= end_row && {
+            let (enabled, y, height) = row_at(lisp, row);
+            enabled && y + height < max_y
+        } {
+            row += 1;
+            i += 1;
+        }
+        if row > end_row || !row_at(lisp, row).0 {
+            return Ok(Value::NIL);
+        }
+        n += 1;
+        if n < 0 {
+            if -n > i {
+                return Ok(Value::NIL);
+            }
+            row = (row as i64 + n) as usize;
+            i += n;
+        }
+    }
+    let (_, y, height) = row_at(lisp, row);
+    let crop = 0.max(y + height - max_y);
+    Ok(list4i(lisp, [height + 0.min(y) - crop, i, y, crop]))
 }
 
 fn f_window_body_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
