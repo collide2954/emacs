@@ -1347,7 +1347,7 @@ impl Lisp {
         Ok(retval)
     }
 
-    pub(crate) fn frame_size_history_extra(&mut self, f: Value, parameter: Value, sizes: [i64; 6]) {
+    pub fn frame_size_history_extra(&mut self, f: Value, parameter: Value, sizes: [i64; 6]) {
         let history = self.plain_value(sym::FRAME_SIZE_HISTORY);
         if !history.is_cons() {
             return;

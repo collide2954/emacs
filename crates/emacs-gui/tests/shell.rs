@@ -51,8 +51,8 @@ fn shell_tracks_frames_and_forwards_events() {
         configures.last(),
         Some(&Notice::Configure {
             frame: 5,
-            width: 120,
-            height: 80,
+            width: 60,
+            height: 40,
             scale: 2.0,
         })
     );

@@ -722,6 +722,13 @@ impl Lisp {
         Ok(())
     }
 
+    pub fn cancel_mouse_face(&mut self, f: Value) {
+        let window = self.mouse_hl_info(f).mouse_face_window;
+        if !window.is_nil() && self.window(window).frame == f {
+            self.mouse_hl_info_mut(f).reset();
+        }
+    }
+
     pub fn clear_mouse_face(&mut self, f: Value) -> LispResult<bool> {
         let hlinfo = *self.mouse_hl_info(f);
         let cleared = !hlinfo.mouse_face_hidden && !hlinfo.mouse_face_window.is_nil();

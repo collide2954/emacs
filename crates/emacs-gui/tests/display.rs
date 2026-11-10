@@ -55,7 +55,7 @@ fn open_and_present_frame() {
 }
 
 #[test]
-fn notices_resize_surfaces_and_pass_input() {
+fn notices_pass_through_and_surfaces_resize_on_request() {
     let (mut display, _commands, notices) = setup();
     display.open_frame(2, "f", 4, 4, 0);
     notices
@@ -79,8 +79,13 @@ fn notices_resize_surfaces_and_pass_input() {
     assert_eq!(read.len(), 2);
     assert_eq!(read[1], Notice::Input(input));
     let surface = display.surface(2).expect("surface");
-    assert_eq!((surface.width(), surface.height()), (10, 6));
+    assert_eq!((surface.width(), surface.height()), (4, 4));
     assert_eq!(display.read_notices(None).expect("connected"), Vec::new());
+    assert!(display.resize_surface(2, 10, 6));
+    let surface = display.surface(2).expect("surface");
+    assert_eq!((surface.width(), surface.height()), (10, 6));
+    assert!(!display.resize_surface(2, 10, 6));
+    assert!(!display.resize_surface(9, 10, 6));
 }
 
 #[test]

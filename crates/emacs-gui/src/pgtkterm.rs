@@ -458,6 +458,67 @@ fn focus_event(lisp: &mut Lisp, input: InputEvent, is_enter: bool) -> LispResult
     Ok(())
 }
 
+fn xg_frame_resized(lisp: &mut Lisp, f: Value, width: i64, height: i64) -> LispResult<()> {
+    let g = &lisp.frame(f).geometry;
+    let (pixel_width, pixel_height, new_width, new_height) =
+        (g.pixel_width, g.pixel_height, g.new_width, g.new_height);
+    let new_size_p = lisp.frame(f).flags.new_size_p;
+    let pending = |n: i64| if new_size_p { n } else { -1 };
+    let sizes = [
+        pixel_width,
+        pixel_height,
+        width,
+        height,
+        pending(new_width),
+        pending(new_height),
+    ];
+    if width != pixel_width
+        || height != pixel_height
+        || (new_size_p
+            && ((new_width >= 0 && width != new_width)
+                || (new_height >= 0 && height != new_height)))
+    {
+        if lisp.plain_value(sym::FRAME_SIZE_HISTORY).is_cons() {
+            let label = lisp.string("xg_frame_resized, changed");
+            lisp.frame_size_history_extra(f, label, sizes);
+        }
+        if let Some(clear) = lisp.frame_rif(f).clear_under_internal_border {
+            clear(lisp, f);
+        }
+        lisp.change_frame_size(f, width, height, false, true)?;
+        lisp.set_frame_garbaged(f);
+        lisp.cancel_mouse_face(f);
+    } else if lisp.plain_value(sym::FRAME_SIZE_HISTORY).is_cons() {
+        let label = lisp.string("xg_frame_resized, unchanged");
+        lisp.frame_size_history_extra(f, label, sizes);
+    }
+    Ok(())
+}
+
+fn pgtk_cr_update_surface_desired_size(
+    lisp: &mut Lisp,
+    f: Value,
+    width: i64,
+    height: i64,
+    force: bool,
+) {
+    let key = frame_key(lisp, f) as u64;
+    let changed = crate::with_display(|display| {
+        display.resize_surface(key, width.max(1) as u32, height.max(1) as u32)
+    }) == Some(true);
+    if changed || force {
+        lisp.set_frame_garbaged(f);
+    }
+}
+
+fn size_allocate(lisp: &mut Lisp, id: u64, width: u32, height: u32) -> LispResult<()> {
+    if let Some(f) = pgtk_any_window_to_frame(lisp, id) {
+        xg_frame_resized(lisp, f, i64::from(width), i64::from(height))?;
+        pgtk_cr_update_surface_desired_size(lisp, f, i64::from(width), i64::from(height), false);
+    }
+    Ok(())
+}
+
 fn set_fullscreen_state(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     if !with_output(lisp, f, |o| o.widget) {
         return Ok(());
@@ -536,7 +597,12 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             _ => {}
         },
         Notice::Map { frame } => map_event(lisp, frame)?,
-        Notice::Configure { .. } => {}
+        Notice::Configure {
+            frame,
+            width,
+            height,
+            ..
+        } => size_allocate(lisp, frame, width, height)?,
     }
     Ok(())
 }

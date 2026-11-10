@@ -90,8 +90,8 @@ impl Shell {
         if let Some(view) = self.views.get(&id) {
             self.notify(Notice::Configure {
                 frame: view.frame,
-                width: (view.size.width * view.scale).round() as u32,
-                height: (view.size.height * view.scale).round() as u32,
+                width: view.size.width.round() as u32,
+                height: view.size.height.round() as u32,
                 scale: view.scale,
             });
         }
@@ -156,10 +156,7 @@ impl Shell {
                 width,
                 height,
             } => match self.window_of(frame) {
-                Some(id) => {
-                    let scale = self.views.get(&id).map_or(1.0, |v| v.scale);
-                    window::resize(id, Size::new(width as f32 / scale, height as f32 / scale))
-                }
+                Some(id) => window::resize(id, Size::new(width as f32, height as f32)),
                 None => Task::none(),
             },
             Command::Present {
@@ -267,10 +264,14 @@ impl Shell {
                 scale,
                 ..
             }) => image(handle.clone())
-                .width(Length::Fixed(*width as f32 / scale))
-                .height(Length::Fixed(*height as f32 / scale))
+                .width(Length::Fixed(*width as f32))
+                .height(Length::Fixed(*height as f32))
                 .content_fit(ContentFit::Fill)
-                .filter_method(FilterMethod::Nearest)
+                .filter_method(if scale.fract() == 0.0 {
+                    FilterMethod::Nearest
+                } else {
+                    FilterMethod::Linear
+                })
                 .into(),
             _ => space().into(),
         }

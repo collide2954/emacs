@@ -164,19 +164,16 @@ impl Display {
                 }
             }
         }
-        for notice in &out {
-            if let Notice::Configure {
-                frame,
-                width,
-                height,
-                ..
-            } = *notice
-                && let Some(surface) = self.surfaces.get_mut(&frame)
-                && (surface.width(), surface.height()) != (width, height)
-            {
-                surface.resize(width, height);
-            }
-        }
         Ok(out)
+    }
+
+    pub fn resize_surface(&mut self, frame: u64, width: u32, height: u32) -> bool {
+        match self.surfaces.get_mut(&frame) {
+            Some(surface) if (surface.width(), surface.height()) != (width, height) => {
+                surface.resize(width, height);
+                true
+            }
+            _ => false,
+        }
     }
 }
