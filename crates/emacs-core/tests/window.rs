@@ -296,6 +296,68 @@ fn set_window_start_and_point() {
 }
 
 #[test]
+fn window_resize_primitives() {
+    check(&[
+        (
+            "(progn (setq r (frame-root-window) m (minibuffer-window) rh (window-pixel-height r) rw (window-pixel-width r) rt (window-total-height r) tm (window-top-line r) mh (window-pixel-height m)) mh)",
+            "1",
+        ),
+        ("(set-window-new-pixel r 10)", "10"),
+        ("(set-window-new-pixel r 3 t)", "13"),
+        ("(window-new-pixel r)", "13"),
+        (
+            "(set-window-new-pixel r -14 t)",
+            "error: (args-out-of-range -14 -13 2147483634)",
+        ),
+        ("(set-window-new-total nil 5)", "5"),
+        ("(set-window-new-total nil 2 t)", "7"),
+        (
+            "(set-window-new-total nil 'x)",
+            "error: (wrong-type-argument fixnump x)",
+        ),
+        ("(set-window-new-normal nil 'ignore)", "ignore"),
+        ("(window-new-normal)", "ignore"),
+        (
+            "(set-window-new-normal 'x)",
+            "error: (wrong-type-argument window-valid-p x)",
+        ),
+        ("(window-resize-apply)", "nil"),
+        (
+            "(progn (set-window-new-pixel r 0) (window-resize-apply))",
+            "nil",
+        ),
+        (
+            "(progn (set-window-new-pixel r rh) (set-window-new-normal r 0.5) (list (window-resize-apply) (= (window-pixel-height r) rh) (window-normal-size r)))",
+            "(t t 0.5)",
+        ),
+        (
+            "(progn (set-window-new-pixel r rw) (set-window-new-normal r 'ignore) (list (window-resize-apply nil t) (= (window-pixel-width r) rw) (window-normal-size r t)))",
+            "(t t 1.0)",
+        ),
+        (
+            "(resize-mini-window-internal r)",
+            "error: (error \"Not a valid minibuffer window\")",
+        ),
+        (
+            "(progn (set-window-new-pixel r (- rh 2)) (set-window-new-pixel m 2) (resize-mini-window-internal m))",
+            "error: (error \"Cannot resize mini window\")",
+        ),
+        (
+            "(progn (set-window-new-pixel m (+ mh 2)) (list (resize-mini-window-internal m) (- rh (window-pixel-height r)) (- rt (window-total-height r)) (window-pixel-height m) (window-total-height m) (= (window-pixel-top m) (+ (window-pixel-top r) (window-pixel-height r))) (= (window-top-line m) (+ tm (window-total-height r)))))",
+            "(t 2 2 3 3 t t)",
+        ),
+        (
+            "(progn (set-window-new-total r rt) (set-window-new-total m 1) (list (window-resize-apply-total) (= (window-total-height r) rt) tm (= (window-top-line r) (frame-parameter nil 'menu-bar-lines)) (window-total-height m) (= (window-top-line m) (+ (window-top-line r) rt))))",
+            "(t t 0 t 1 t)",
+        ),
+        (
+            "(progn (set-window-new-total r 7) (set-window-new-total m 9) (list (window-resize-apply-total nil t) (window-total-width r) (window-total-width m)))",
+            "(t 7 9)",
+        ),
+    ]);
+}
+
+#[test]
 fn window_fringes_scroll_bars_and_margins_on_a_tty() {
     check(&[
         ("(set-window-fringes nil 3 4 t t)", "nil"),

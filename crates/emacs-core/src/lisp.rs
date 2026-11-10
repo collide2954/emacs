@@ -213,6 +213,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::frame::SUBRS,
     crate::window::SUBRS,
     crate::window::scroll::SUBRS,
+    crate::window::resize::SUBRS,
     crate::minibuf::SUBRS,
     crate::font::SUBRS,
     crate::fontset::SUBRS,
