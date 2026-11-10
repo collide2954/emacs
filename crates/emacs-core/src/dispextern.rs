@@ -355,6 +355,24 @@ pub enum GlyphRowArea {
     RightMargin,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WindowPart {
+    Nothing,
+    Text,
+    ModeLine,
+    VerticalBorder,
+    HeaderLine,
+    TabLine,
+    LeftFringe,
+    RightFringe,
+    LeftMargin,
+    RightMargin,
+    VerticalScrollBar,
+    HorizontalScrollBar,
+    RightDivider,
+    BottomDivider,
+}
+
 pub const LEFT_MARGIN_AREA: usize = 0;
 pub const TEXT_AREA: usize = 1;
 pub const RIGHT_MARGIN_AREA: usize = 2;

@@ -1,4 +1,4 @@
-use crate::dispextern::GlyphMatrix;
+use crate::dispextern::{GlyphMatrix, GlyphRowArea, WindowPart};
 use crate::dispnew::matrix::WhichMatrix;
 use crate::doprnt::Arg;
 use crate::error::LispResult;
@@ -379,6 +379,8 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("pos-visible-in-window-p", 0, 3, f_pos_visible_in_window_p),
     Subr::fixed("window-line-height", 0, 2, f_window_line_height),
     Subr::fixed("window-vscroll", 0, 2, f_window_vscroll),
+    Subr::fixed("coordinates-in-window-p", 2, 2, f_coordinates_in_window_p),
+    Subr::fixed("window-at", 2, 3, f_window_at),
     Subr::fixed("set-window-vscroll", 2, 4, f_set_window_vscroll),
     Subr::fixed("window-new-total", 0, 1, f_window_new_total),
     Subr::fixed("window-normal-size", 0, 2, f_window_normal_size),
@@ -1174,6 +1176,206 @@ impl Lisp {
         } else {
             self.frame(win.frame).geometry.config_scroll_bar_width
         }
+    }
+
+    pub(crate) fn window_right_scroll_bar_area_width(&self, w: Value) -> i64 {
+        if self.window_has_vertical_scroll_bar_on_right(w) {
+            self.window_config_scroll_bar_width(w)
+        } else {
+            0
+        }
+    }
+
+    pub fn window_bottom_edge_y(&self, w: Value) -> i64 {
+        let border = if self.window_bar_window_p(w) {
+            0
+        } else {
+            self.frame_internal_border_width(self.window(w).frame)
+        };
+        border + self.window(w).pixel_top + self.window(w).pixel_height
+    }
+
+    pub fn window_box_right_edge_x(&self, w: Value) -> i64 {
+        self.frame_internal_border_width(self.window(w).frame)
+            + self.window(w).pixel_left
+            + self.window(w).pixel_width
+            - self.window_right_divider_width(w)
+            - self.window_right_scroll_bar_area_width(w)
+    }
+
+    pub fn coordinates_in_window(&mut self, w: Value, x: i64, y: i64) -> WindowPart {
+        let f = self.window(w).frame;
+        let ux = self.frame(f).geometry.column_width;
+        let mut left_x = self.window_left_edge_x(w);
+        let mut right_x = self.window_right_edge_x(w);
+        let top_y = self.window_top_edge_y(w);
+        let bottom_y = self.window_bottom_edge_y(w);
+        let grabbable_width = ux;
+        if y < top_y || y >= bottom_y || x < left_x || x >= right_x {
+            return WindowPart::Nothing;
+        }
+        let bottom_divider = self.window_bottom_divider_width(w);
+        let right_divider = self.window_right_divider_width(w);
+        if bottom_divider > 0 && y >= bottom_y - bottom_divider && y <= bottom_y {
+            return WindowPart::BottomDivider;
+        } else if !self.window_rightmost_p(w)
+            && right_divider > 0
+            && x >= right_x - right_divider
+            && x <= right_x
+        {
+            return WindowPart::RightDivider;
+        }
+        let mode_line_height = self.current_mode_line_height(w);
+        if self.window_has_horizontal_scroll_bar(w)
+            && y >= bottom_y
+                - self.window_scroll_bar_area_height(w)
+                - mode_line_height
+                - bottom_divider
+            && y <= bottom_y - mode_line_height - bottom_divider
+        {
+            return WindowPart::HorizontalScrollBar;
+        }
+        let mut part = WindowPart::Nothing;
+        if self.window_wants_mode_line(w)
+            && y >= bottom_y - mode_line_height - bottom_divider
+            && y <= bottom_y - bottom_divider
+        {
+            part = WindowPart::ModeLine;
+        } else if self.window_wants_tab_line(w) && y < top_y + self.current_tab_line_height(w) {
+            part = WindowPart::TabLine;
+        } else if self.window_wants_header_line(w) {
+            let tab = if self.window_wants_tab_line(w) {
+                self.current_tab_line_height(w)
+            } else {
+                0
+            };
+            if y < top_y + self.current_header_line_height(w) + tab {
+                part = WindowPart::HeaderLine;
+            }
+        }
+        if part != WindowPart::Nothing {
+            let on_left = self.window_has_vertical_scroll_bar_on_left(w);
+            if right_divider == 0
+                && ((on_left
+                    && self.window(w).pixel_left != 0
+                    && (x - left_x).abs() < grabbable_width)
+                    || (!on_left
+                        && !self.window_rightmost_p(w)
+                        && (x - right_x).abs() < grabbable_width))
+            {
+                return WindowPart::VerticalBorder;
+            }
+            return part;
+        }
+        if self.window(w).flags.pseudo_window_p {
+            left_x = 0;
+            right_x = self.window(w).pixel_width - 1;
+        } else {
+            left_x = self.window_box_left_edge_x(w);
+            right_x = self.window_box_right_edge_x(w) - 1;
+        }
+        if x < left_x || x > right_x {
+            return WindowPart::VerticalScrollBar;
+        }
+        let lmargin_width = self.window_box_width(w, GlyphRowArea::LeftMargin);
+        let rmargin_width = self.window_box_width(w, GlyphRowArea::RightMargin);
+        let text_left = self.window_box_left(w, GlyphRowArea::Text);
+        let text_right = text_left + self.window_box_width(w, GlyphRowArea::Text);
+        if self.frame_window_p(f) {
+            if !self.window(w).flags.pseudo_window_p
+                && right_divider == 0
+                && !self.window_has_vertical_scroll_bar(w)
+                && !self.window_rightmost_p(w)
+                && (x - right_x).abs() < grabbable_width
+            {
+                return WindowPart::VerticalBorder;
+            }
+        } else if !self.window(w).flags.pseudo_window_p
+            && right_divider == 0
+            && !self.window_rightmost_p(w)
+            && x > right_x - ux
+        {
+            return WindowPart::VerticalBorder;
+        }
+        let outside = self.window_has_fringes_outside_margins(w);
+        if x < text_left {
+            let in_margin = if outside {
+                x >= left_x + self.window_left_fringe_width(w)
+            } else {
+                x < left_x + lmargin_width
+            };
+            return if lmargin_width > 0 && in_margin {
+                WindowPart::LeftMargin
+            } else {
+                WindowPart::LeftFringe
+            };
+        }
+        if x >= text_right {
+            let in_margin = if outside {
+                x < right_x - self.window_right_fringe_width(w)
+            } else {
+                x >= right_x - rmargin_width
+            };
+            return if rmargin_width > 0 && in_margin {
+                WindowPart::RightMargin
+            } else {
+                WindowPart::RightFringe
+            };
+        }
+        WindowPart::Text
+    }
+
+    fn foreach_window_containing(
+        &mut self,
+        w: Value,
+        x: i64,
+        y: i64,
+    ) -> Option<(Value, WindowPart)> {
+        let mut w = w;
+        while !w.is_nil() {
+            let contents = self.window(w).contents;
+            if self.is_window(contents) {
+                if let Some(found) = self.foreach_window_containing(contents, x, y) {
+                    return Some(found);
+                }
+            } else {
+                let part = self.coordinates_in_window(w, x, y);
+                if part != WindowPart::Nothing {
+                    return Some((w, part));
+                }
+            }
+            w = self.window(w).next;
+        }
+        None
+    }
+
+    pub fn window_from_coordinates(
+        &mut self,
+        f: Value,
+        x: i64,
+        y: i64,
+        part: &mut WindowPart,
+        tab_bar_p: bool,
+    ) -> Value {
+        let root = self.frame(f).root_window;
+        let mut window = Value::NIL;
+        if self.is_window(root)
+            && let Some((w, found)) = self.foreach_window_containing(root, x, y)
+        {
+            *part = found;
+            window = w;
+        }
+        let tab_bar_window = self.frame(f).tab_bar_window;
+        if window.is_nil()
+            && tab_bar_p
+            && self.is_window(tab_bar_window)
+            && self.window(tab_bar_window).total_lines > 0
+            && self.coordinates_in_window(tab_bar_window, x, y) != WindowPart::Nothing
+        {
+            *part = WindowPart::Text;
+            window = tab_bar_window;
+        }
+        window
     }
 
     pub(crate) fn window_scroll_bar_area_width(&self, w: Value) -> i64 {
@@ -2351,7 +2553,7 @@ impl Lisp {
     }
 }
 
-fn f_pos_visible_in_window_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_pos_visible_in_window_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (pos, window, partially) = (arg(args, 0), arg(args, 1), arg(args, 2));
     let w = lisp.decode_live_window(window)?;
     let contents = lisp.window(w).contents;
@@ -2506,6 +2708,78 @@ fn f_window_line_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (_, y, height) = row_at(lisp, row);
     let crop = 0.max(y + height - max_y);
     Ok(list4i(lisp, [height + 0.min(y) - crop, i, y, crop]))
+}
+
+fn canon_from_pixel(lisp: &mut Lisp, pixels: i64, unit: i64) -> Value {
+    if pixels % unit != 0 {
+        lisp.float(pixels as f64 / unit as f64)
+    } else {
+        Value::fixnum(pixels / unit)
+    }
+}
+
+fn check_number(lisp: &mut Lisp, v: Value) -> LispResult<()> {
+    if v.is_fixnum() || v.is_float() || lisp.is_bignum(v) {
+        Ok(())
+    } else {
+        Err(lisp.wrong_type(sym::NUMBERP, v))
+    }
+}
+
+fn f_coordinates_in_window_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (coordinates, window) = (args[0], arg(args, 1));
+    let w = lisp.decode_live_window(window)?;
+    let f = lisp.window(w).frame;
+    if !coordinates.is_cons() {
+        return Err(lisp.wrong_type(sym::CONSP, coordinates));
+    }
+    let lx = lisp.xcar(coordinates);
+    let ly = lisp.xcdr(coordinates);
+    check_number(lisp, lx)?;
+    check_number(lisp, ly)?;
+    let g = lisp.frame(f).geometry.clone();
+    let mut x =
+        i64::from((lisp.xfloatint(lx) * g.column_width as f64) as i32) + g.internal_border_width;
+    let mut y =
+        i64::from((lisp.xfloatint(ly) * g.line_height as f64) as i32) + g.internal_border_width;
+    Ok(match lisp.coordinates_in_window(w, x, y) {
+        WindowPart::Nothing => Value::NIL,
+        WindowPart::Text => {
+            x -= lisp.window_box_left(w, GlyphRowArea::Text);
+            y -= lisp.window_top_edge_y(w);
+            let cx = canon_from_pixel(lisp, x, g.column_width);
+            let cy = canon_from_pixel(lisp, y, g.line_height);
+            lisp.cons(cx, cy)
+        }
+        WindowPart::ModeLine => sym::MODE_LINE,
+        WindowPart::VerticalBorder => sym::VERTICAL_LINE,
+        WindowPart::HeaderLine => sym::HEADER_LINE,
+        WindowPart::TabLine => sym::TAB_LINE,
+        WindowPart::LeftFringe => sym::LEFT_FRINGE,
+        WindowPart::RightFringe => sym::RIGHT_FRINGE,
+        WindowPart::LeftMargin => sym::LEFT_MARGIN,
+        WindowPart::RightMargin => sym::RIGHT_MARGIN,
+        WindowPart::VerticalScrollBar | WindowPart::HorizontalScrollBar => Value::NIL,
+        WindowPart::RightDivider => sym::RIGHT_DIVIDER,
+        WindowPart::BottomDivider => sym::BOTTOM_DIVIDER,
+    })
+}
+
+fn f_window_at(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (x, y, frame) = (args[0], args[1], arg(args, 2));
+    let f = lisp.decode_live_frame(frame)?;
+    lisp.check_integer(x)?;
+    lisp.check_integer(y)?;
+    let g = lisp.frame(f).geometry.clone();
+    let (xi, yi) = (x.as_fixnum().unwrap_or(0), y.as_fixnum().unwrap_or(0));
+    if xi < 0 || xi > g.pixel_width || yi < 0 || yi > g.pixel_height {
+        return Ok(Value::NIL);
+    }
+    let px =
+        i64::from((lisp.xfloatint(x) * g.column_width as f64) as i32) + g.internal_border_width;
+    let py = i64::from((lisp.xfloatint(y) * g.line_height as f64) as i32) + g.internal_border_width;
+    let mut part = WindowPart::Nothing;
+    Ok(lisp.window_from_coordinates(f, px, py, &mut part, false))
 }
 
 fn f_window_vscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {

@@ -114,11 +114,11 @@ impl Lisp {
         &mut self.display_info_mut(t).mouse_highlight
     }
 
-    fn frame_internal_border_width(&self, f: Value) -> i64 {
+    pub(crate) fn frame_internal_border_width(&self, f: Value) -> i64 {
         self.frame(f).geometry.internal_border_width
     }
 
-    fn window_bar_window_p(&self, w: Value) -> bool {
+    pub(crate) fn window_bar_window_p(&self, w: Value) -> bool {
         let fr = self.frame(self.window(w).frame);
         fr.menu_bar_window == w || fr.tab_bar_window == w || fr.tool_bar_window == w
     }

@@ -14,6 +14,7 @@ pub mod cmdloop;
 pub mod events;
 pub mod keyseq;
 pub mod menu;
+pub mod position;
 pub mod reader;
 
 pub const UP_MODIFIER: i64 = 1;

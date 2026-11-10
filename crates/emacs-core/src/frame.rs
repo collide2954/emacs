@@ -2238,6 +2238,56 @@ impl Lisp {
         }
     }
 
+    pub fn frame_internal_border_part(&self, f: Value, x: i64, y: i64) -> Value {
+        let g = &self.frame(f).geometry;
+        let border = g.internal_border_width;
+        let offset = g.line_height.max(border);
+        let (width, height) = (g.pixel_width, g.pixel_height);
+        let mut part = Value::NIL;
+        if offset < x && x < width - offset {
+            if 0 <= y && y <= border {
+                part = sym::TOP_EDGE;
+            } else if height - border <= y && y <= height {
+                part = sym::BOTTOM_EDGE;
+            }
+        } else if offset < y && y < height - offset {
+            if 0 <= x && x <= border {
+                part = sym::LEFT_EDGE;
+            } else if width - border <= x && x <= width {
+                part = sym::RIGHT_EDGE;
+            }
+        } else {
+            let half_width = width / 2;
+            let half_height = height / 2;
+            if 0 <= x && x <= border {
+                if 0 <= y && y <= half_height {
+                    part = sym::TOP_LEFT_CORNER;
+                } else if half_height < y && y <= height {
+                    part = sym::BOTTOM_LEFT_CORNER;
+                }
+            } else if width - border <= x && x <= width {
+                if 0 <= y && y <= half_height {
+                    part = sym::TOP_RIGHT_CORNER;
+                } else if half_height < y && y <= height {
+                    part = sym::BOTTOM_RIGHT_CORNER;
+                }
+            } else if 0 <= y && y <= border {
+                if 0 <= x && x <= half_width {
+                    part = sym::TOP_LEFT_CORNER;
+                } else if half_width < x && x <= width {
+                    part = sym::TOP_RIGHT_CORNER;
+                }
+            } else if height - border <= y && y <= height {
+                if 0 <= x && x <= half_width {
+                    part = sym::BOTTOM_LEFT_CORNER;
+                } else if half_width < x && x <= width {
+                    part = sym::BOTTOM_RIGHT_CORNER;
+                }
+            }
+        }
+        part
+    }
+
     pub fn set_frame_visible(&mut self, f: Value, v: bool) {
         if v {
             if !self.frame(f).flags.visible {
