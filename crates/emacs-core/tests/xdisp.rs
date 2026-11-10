@@ -21,6 +21,26 @@ fn bar_heights_without_bar_windows() {
 }
 
 #[test]
+fn long_line_optimizations_p_reports_the_current_buffer() {
+    common::on_big_stack(|| {
+        let mut lisp = emacs_core::lisp::Lisp::new();
+        assert_eq!(
+            common::eval(&mut lisp, "(long-line-optimizations-p)"),
+            "nil"
+        );
+        lisp.cur_mut().long_line_optimizations_p = true;
+        assert_eq!(common::eval(&mut lisp, "(long-line-optimizations-p)"), "t");
+        assert_eq!(
+            common::eval(
+                &mut lisp,
+                "(save-current-buffer (set-buffer (get-buffer-create \"other\")) (long-line-optimizations-p))"
+            ),
+            "nil"
+        );
+    });
+}
+
+#[test]
 fn get_display_property() {
     check(&[
         (

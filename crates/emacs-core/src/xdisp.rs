@@ -34,6 +34,12 @@ use crate::value::Value;
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("invisible-p", 1, 1, f_invisible_p),
     Subr::fixed("line-pixel-height", 0, 0, f_line_pixel_height),
+    Subr::fixed(
+        "long-line-optimizations-p",
+        0,
+        0,
+        f_long_line_optimizations_p,
+    ),
     Subr::fixed("get-display-property", 2, 4, it::f_get_display_property),
     Subr::fixed("format-mode-line", 1, 4, modeline::f_format_mode_line),
     Subr::fixed("tab-bar-height", 0, 2, f_tab_bar_height),
@@ -223,6 +229,10 @@ fn f_bidi_find_overridden_directionality(lisp: &mut Lisp, args: &[Value]) -> Lis
     } else {
         Value::NIL
     })
+}
+
+fn f_long_line_optimizations_p(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    Ok(lisp.bool(lisp.cur().long_line_optimizations_p))
 }
 
 fn f_line_pixel_height(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
