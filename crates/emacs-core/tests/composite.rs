@@ -1,6 +1,49 @@
 mod common;
 
-use common::check;
+use common::{check, eval, on_big_stack};
+use emacs_core::composite::CompositionIt;
+use emacs_core::lisp::Lisp;
+use emacs_core::value::Value;
+
+#[test]
+fn long_lines_narrow_the_backward_scans_for_compositions() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(progn (set-buffer \"*scratch*\") (erase-buffer) (insert \"x\" (make-string 3000 ?a) \"y\") (setq unicode-category-table (make-char-table nil 1)) (point))"
+            ),
+            "3003"
+        );
+        let w = lisp.windows.selected_window;
+        let mut cmp_it = CompositionIt {
+            parent_w: w,
+            ..CompositionIt::default()
+        };
+        lisp.composition_compute_stop_pos(&mut cmp_it, 2950, -1, Value::NIL, true)
+            .unwrap();
+        assert_eq!(cmp_it.stop_pos, 1);
+        lisp.cur_mut().long_line_optimizations_p = true;
+        let near = lisp.get_small_narrowing_begv(w, 2950).unwrap();
+        assert!(near > 2 && near < 2950, "{near}");
+        let mut cmp_it = CompositionIt {
+            parent_w: w,
+            ..CompositionIt::default()
+        };
+        lisp.composition_compute_stop_pos(&mut cmp_it, 2950, -1, Value::NIL, true)
+            .unwrap();
+        assert_eq!(cmp_it.stop_pos, near + 1);
+        lisp.cur_mut().long_line_optimizations_p = false;
+        let find = "(progn (set-char-table-range composition-function-table ?a (list (vector \"a+\" 0 'ignore))) (let ((auto-composition-function (function (lambda (f from to font string dir) (copy-sequence (composition-get-gstring from to nil string)))))) (let ((r (find-composition-internal 2950 nil nil nil))) (list (car r) (nth 1 r)))))";
+        assert_eq!(eval(&mut lisp, find), "(2 3002)");
+        lisp.cur_mut().long_line_optimizations_p = true;
+        let pt = lisp.window_point(w);
+        let head = lisp.get_small_narrowing_begv(w, pt).unwrap();
+        assert!(head > 2 && head < 2950, "{head}");
+        assert_eq!(eval(&mut lisp, find), format!("({head} 3002)"));
+    });
+}
 
 #[test]
 fn static_compositions() {

@@ -1285,7 +1285,7 @@ impl Lisp {
                 -1
             };
             if self.cur().long_line_optimizations_p {
-                unreachable!("long-line optimizations are enabled only by redisplay");
+                endpos = self.get_small_narrowing_begv(cmp_it.parent_w, charpos)?;
             }
         }
         cmp_it.id = -1;
@@ -1700,12 +1700,19 @@ impl Lisp {
     ) -> LispResult<Option<(usize, usize, Value)>> {
         let pos = pos as i64;
         let (head, tail) = if string.is_nil() {
-            let head = if backlim < 0 {
+            let mut head = if backlim < 0 {
                 let begv = self.cur().begv;
                 self.find_newline(pos as usize, begv, -1).0 as i64
             } else {
                 backlim
             };
+            if self.cur().long_line_optimizations_p {
+                let point = self.window_point(window);
+                let begv = self.get_small_narrowing_begv(window, point)?;
+                if pos > begv {
+                    head = begv;
+                }
+            }
             (head, self.cur().zv as i64)
         } else {
             (backlim.max(0), self.string_chars(string) as i64)
