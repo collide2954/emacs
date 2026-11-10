@@ -750,7 +750,7 @@ fn f_call_interactively(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.call_interactively(args[0], arg(args, 1), arg(args, 2))
 }
 
-fn f_prefix_numeric_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_prefix_numeric_value(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let raw = args[0];
     Ok(if raw.is_nil() {
         Value::fixnum(1)

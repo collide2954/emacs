@@ -1309,7 +1309,7 @@ impl Lisp {
     }
 }
 
-fn unwind_display_working_on_window(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
+pub(crate) fn unwind_display_working_on_window(lisp: &mut Lisp, _arg: Value) -> LispResult<()> {
     lisp.xdisp.display_working_on_window_p = false;
     Ok(())
 }
@@ -1342,7 +1342,7 @@ fn f_line_number_display_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(i64::from(width)))
 }
 
-fn f_vertical_motion(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_vertical_motion(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (mut lines, window, cur_col) = (args[0], args[1], args[2]);
     let mut lcols = Value::NIL;
     let count = lisp.specpdl.len();

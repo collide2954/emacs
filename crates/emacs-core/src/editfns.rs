@@ -574,7 +574,7 @@ fn f_pos_bol(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.line_beginning(n) as i64))
 }
 
-fn f_line_beginning_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_line_beginning_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = line_count_arg(lisp, args[0])?;
     let charpos = lisp.line_beginning(n) as i64;
     let pt = lisp.cur().pt as i64;
@@ -596,7 +596,7 @@ fn f_pos_eol(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.line_end(n) as i64))
 }
 
-fn f_line_end_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_line_end_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let n = line_count_arg(lisp, args[0])?;
     let end = lisp.line_end(n) as i64;
     let pt = lisp.cur().pt as i64;
@@ -707,7 +707,7 @@ fn f_eobp(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(lisp.bool(b.pt == b.zv))
 }
 
-fn f_bolp(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_bolp(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let b = lisp.cur();
     let (pt, begv) = (b.pt, b.begv);
     Ok(lisp.bool(pt == begv || lisp.char_at_pos(pt - 1) == 10))

@@ -1,3 +1,5 @@
+pub mod scroll;
+
 use crate::dispextern::{GlyphMatrix, GlyphRowArea, WindowPart};
 use crate::dispnew::matrix::WhichMatrix;
 use crate::doprnt::Arg;
@@ -197,6 +199,10 @@ pub struct Windows {
     pub windows_or_buffers_changed: i64,
     pub update_mode_lines: i64,
     pub window_change_record_frames: bool,
+    pub window_scroll_pixel_based_preserve_x: i32,
+    pub window_scroll_pixel_based_preserve_y: i32,
+    pub window_scroll_preserve_hpos: i64,
+    pub window_scroll_preserve_vpos: i64,
 }
 
 impl Default for Windows {
@@ -213,6 +219,10 @@ impl Default for Windows {
             windows_or_buffers_changed: 0,
             update_mode_lines: 0,
             window_change_record_frames: false,
+            window_scroll_pixel_based_preserve_x: -1,
+            window_scroll_pixel_based_preserve_y: -1,
+            window_scroll_preserve_hpos: -1,
+            window_scroll_preserve_vpos: -1,
         }
     }
 }
