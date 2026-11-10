@@ -17,6 +17,14 @@ fn num_processors() {
 }
 
 #[test]
+fn shell_file_name_comes_from_shell() {
+    check(&[(
+        "(equal shell-file-name (or (getenv-internal \"SHELL\") \"/bin/sh\"))",
+        "t",
+    )]);
+}
+
+#[test]
 fn buffer_processes() {
     check(&[
         ("(get-buffer-process (current-buffer))", "nil"),

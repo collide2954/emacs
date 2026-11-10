@@ -289,6 +289,7 @@ pub const ALL_INITS: &[InitFn] = &[
     crate::window::init_window_once,
     crate::w32::init_environment,
     crate::buffer::init_buffer,
+    crate::emacs::init_callproc,
 ];
 
 fn init_emacs_vars(lisp: &mut Lisp) {

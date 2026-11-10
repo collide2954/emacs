@@ -1044,13 +1044,7 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::REPORT_EMACS_BUG_ADDRESS, bug);
     lisp.defvar(sym::DUMP_MODE, Value::NIL);
     lisp.defvar(sym::DYNAMIC_LIBRARY_ALIST, Value::NIL);
-    let shell = if cfg!(windows) {
-        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
-    } else {
-        std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into())
-    };
-    let shell = lisp.string(&normalize_slashes(&shell));
-    lisp.defvar(sym::SHELL_FILE_NAME, shell);
+    lisp.defvar(sym::SHELL_FILE_NAME, Value::NIL);
     let path_var = std::env::var_os("PATH").unwrap_or_default();
     let mut dirs: Vec<Value> = std::env::split_paths(&path_var)
         .map(|p| {
@@ -1101,6 +1095,13 @@ pub fn init_vars(lisp: &mut Lisp) {
         lisp.defvar(symbol, v);
     }
     lisp.defvar(sym::COMMAND_LINE_MAX_LENGTH, Value::fixnum(32768));
+}
+
+pub fn init_callproc(lisp: &mut Lisp) {
+    let sh = std::env::var_os("SHELL")
+        .map_or_else(|| "/bin/sh".into(), |sh| sh.to_string_lossy().into_owned());
+    let sh = lisp.string(&sh);
+    lisp.set_plain_value(sym::SHELL_FILE_NAME, sh);
 }
 
 impl Lisp {
