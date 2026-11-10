@@ -55,7 +55,7 @@ fn redraw_frame() {
 
 fn sit(lisp: &mut Lisp, timeout: &str, reading: bool) -> String {
     let timeout = lisp.read_from_str(timeout).expect("read timeout");
-    match lisp.sit_for(timeout, reading) {
+    match lisp.sit_for(timeout, reading, 0) {
         Ok(value) => lisp.prin1_to_string(value),
         Err(flow) => {
             let condition = lisp.flow_condition(&flow);

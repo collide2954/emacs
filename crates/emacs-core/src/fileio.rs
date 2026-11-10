@@ -3152,7 +3152,7 @@ pub(crate) fn f_do_auto_save(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.record_auto_save();
     if auto_saved && no_message.is_nil() {
         if old_message_p {
-            lisp.sit_for(Value::fixnum(1), false)?;
+            lisp.sit_for(Value::fixnum(1), false, 0)?;
             lisp.restore_message()?;
         } else if !lisp.fileio.auto_save_error_occurred {
             lisp.message1("Auto-saving...done")?;

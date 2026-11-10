@@ -238,6 +238,7 @@ impl Lisp {
         time_limit: i64,
         nsecs: i64,
         read_kbd: i32,
+        do_display: bool,
         wait_for_cell: Value,
     ) -> LispResult<i32> {
         let mut end_time = None;
@@ -274,7 +275,19 @@ impl Lisp {
                 Duration::from_secs(if wait < Wait::Timeout { 0 } else { 100_000 })
             };
             if wait_for_cell.is_nil() {
-                let timer_delay = self.timer_check()?;
+                let mut timer_delay;
+                loop {
+                    let old_timers_run = self.keyboard.timers_run;
+                    timer_delay = self.timer_check()?;
+                    if self.keyboard.timers_run != old_timers_run && do_display {
+                        self.redisplay_preserve_echo_area(14)?;
+                    } else {
+                        break;
+                    }
+                    if self.detect_input_pending()? {
+                        break;
+                    }
+                }
                 if read_kbd != 0 && self.requeued_command_events_pending_p() {
                     break;
                 }
@@ -286,20 +299,29 @@ impl Lisp {
                     }
                 }
             }
-            if !(read_kbd != 0 && self.detect_input_pending()?) {
+            if self.frames.frame_garbaged && do_display {
+                self.redisplay_preserve_echo_area(15)?;
+            }
+            let nfds = if read_kbd != 0 && self.detect_input_pending()? {
+                0
+            } else {
                 match self.window_system {
                     Some(window_system) if read_kbd != 0 || !wait_for_cell.is_nil() => {
-                        (window_system.wait_for_input)(self, timeout);
+                        i32::from((window_system.wait_for_input)(self, timeout))
                     }
-                    _ => std::thread::sleep(timeout),
+                    _ => {
+                        std::thread::sleep(timeout);
+                        0
+                    }
                 }
-            }
-            if wait < Wait::Forever && !timeout_reduced_for_timers {
+            };
+            self.do_pending_window_change(false)?;
+            if wait < Wait::Forever && nfds == 0 && !timeout_reduced_for_timers {
                 break;
             }
-            if read_kbd != 0 && self.detect_input_pending_run_timers()? {
-                self.swallow_events()?;
-                if self.detect_input_pending_run_timers()? {
+            if read_kbd != 0 && self.detect_input_pending_run_timers(do_display)? {
+                self.swallow_events(do_display)?;
+                if self.detect_input_pending_run_timers(do_display)? {
                     break;
                 }
             }
@@ -307,7 +329,7 @@ impl Lisp {
                 break;
             }
             if !wait_for_cell.is_nil() && self.detect_input_pending()? {
-                self.swallow_events()?;
+                self.swallow_events(do_display)?;
                 if self.detect_input_pending()? {
                     break;
                 }

@@ -759,9 +759,14 @@ impl Lisp {
         }
     }
 
-    pub fn swallow_events(&mut self) -> LispResult<()> {
+    pub fn swallow_events(&mut self, do_display: bool) -> LispResult<()> {
         self.process_special_events();
+        let old_timers_run = self.keyboard.timers_run;
         self.get_input_pending(READABLE_EVENTS_DO_TIMERS_NOW)?;
+        if !self.keyboard.input_pending && self.keyboard.timers_run != old_timers_run && do_display
+        {
+            self.redisplay_preserve_echo_area(7)?;
+        }
         Ok(())
     }
 
@@ -822,10 +827,10 @@ impl Lisp {
                         return Ok((Value::NIL, kbp, event_frame, event_kind));
                     }
                     let (sec, nsec) = timespec_sub(end_time, now);
-                    self.wait_reading_process_output(sec, nsec, -1, Value::NIL)?;
+                    self.wait_reading_process_output(sec, nsec, -1, true, Value::NIL)?;
                 }
                 None => {
-                    self.wait_reading_process_output(0, 0, -1, Value::NIL)?;
+                    self.wait_reading_process_output(0, 0, -1, true, Value::NIL)?;
                 }
             }
             if kbp != self.current_kboard {

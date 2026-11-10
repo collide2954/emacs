@@ -669,8 +669,10 @@ impl Lisp {
                     if commandflag >= 0 {
                         let echo_current =
                             self.keyboard.echo_message_buffer == self.xdisp.echo_area_buffer[0];
-                        if self.keyboard.input_pending || self.detect_input_pending_run_timers()? {
-                            self.swallow_events()?;
+                        if self.keyboard.input_pending
+                            || self.detect_input_pending_run_timers(false)?
+                        {
+                            self.swallow_events(false)?;
                         }
                         while !(self.keyboard.input_pending && self.keyboard.input_was_pending) {
                             self.keyboard.input_was_pending = self.keyboard.input_pending;
@@ -684,7 +686,7 @@ impl Lisp {
                             if !self.keyboard.input_pending {
                                 break;
                             }
-                            self.swallow_events()?;
+                            self.swallow_events(false)?;
                         }
                         if commandflag == 0 && echo_current {
                             self.keyboard.echo_message_buffer = self.xdisp.echo_area_buffer[0];
@@ -704,7 +706,7 @@ impl Lisp {
                         && !prev_event.is_nil()
                         && !prev_event.is_cons()
                         && !self.plain_value(sym::UNREAD_COMMAND_EVENTS).is_cons()
-                        && !self.detect_input_pending_run_timers()?
+                        && !self.detect_input_pending_run_timers(false)?
                     {
                         let c = self.read_char_minibuf_menu_prompt(commandflag, map)?;
                         if c == Value::fixnum(-2) {
@@ -733,7 +735,7 @@ impl Lisp {
                             self.echo_now()?;
                         } else {
                             let echo = self.plain_value(sym::ECHO_KEYSTROKES);
-                            match self.with_getcjmp(|l| l.sit_for(echo, true))? {
+                            match self.with_getcjmp(|l| l.sit_for(echo, true, 1))? {
                                 None => {
                                     if let Some(v) = self.read_char_quit(cs)? {
                                         return Ok(v);
@@ -758,7 +760,7 @@ impl Lisp {
                         && self.int_var(sym::NUM_NONMACRO_INPUT_EVENTS)
                             - self.keyboard.last_auto_save
                             > auto_save_interval.max(20)
-                        && !self.detect_input_pending_run_timers()?
+                        && !self.detect_input_pending_run_timers(false)?
                     {
                         let no_message =
                             self.bool(!self.plain_value(sym::AUTO_SAVE_NO_MESSAGE).is_nil());
@@ -798,7 +800,9 @@ impl Lisp {
                             timeout =
                                 timeout.min(crate::value::MOST_POSITIVE_FIXNUM / delay_level * 4);
                             timeout = delay_level * timeout / 4;
-                            match self.with_getcjmp(|l| l.sit_for(Value::fixnum(timeout), true))? {
+                            match self
+                                .with_getcjmp(|l| l.sit_for(Value::fixnum(timeout), true, 1))?
+                            {
                                 None => {
                                     if let Some(v) = self.read_char_quit(cs)? {
                                         return Ok(v);
@@ -822,7 +826,7 @@ impl Lisp {
                                 }
                             }
                         }
-                        if !self.detect_input_pending_run_timers()? {
+                        if !self.detect_input_pending_run_timers(false)? {
                             self.maybe_gc();
                         }
                     }
@@ -923,7 +927,7 @@ impl Lisp {
                     if c.is_nil() {
                         if commandflag >= 0
                             && !self.keyboard.input_pending
-                            && !self.detect_input_pending_run_timers()?
+                            && !self.detect_input_pending_run_timers(false)?
                         {
                             self.redisplay()?;
                         }

@@ -41,7 +41,7 @@ fn with_frame(notices: mpsc::Receiver<Notice>) -> (Lisp, Value) {
     );
     eval(
         &mut lisp,
-        "(progn (setq x-resource-name \"emacs\") (x-open-connection nil) (setq f (x-create-frame '((name . \"i\") (width . 20) (height . 5)))))",
+        "(progn (fset 'window--pixel-to-total (function (lambda (&rest _) nil))) (setq x-resource-name \"emacs\") (x-open-connection nil) (setq f (x-create-frame '((name . \"i\") (width . 20) (height . 5)))))",
     );
     let symbol = lisp.intern("f");
     let f = lisp.find_symbol_value(symbol);
@@ -150,7 +150,7 @@ fn waiting_for_keyboard_input_wakes_up_on_a_notice() {
             tx
         });
         let start = Instant::now();
-        lisp.wait_reading_process_output(20, 0, 1, Value::NIL)
+        lisp.wait_reading_process_output(20, 0, 1, false, Value::NIL)
             .unwrap();
         let elapsed = start.elapsed();
         assert!(elapsed >= Duration::from_millis(150), "{elapsed:?}");

@@ -778,9 +778,13 @@ impl Lisp {
         Ok(self.keyboard.input_pending || self.get_input_pending(0)?)
     }
 
-    pub fn detect_input_pending_run_timers(&mut self) -> LispResult<bool> {
+    pub fn detect_input_pending_run_timers(&mut self, do_display: bool) -> LispResult<bool> {
+        let old_timers_run = self.keyboard.timers_run;
         if !self.keyboard.input_pending {
             self.get_input_pending(READABLE_EVENTS_DO_TIMERS_NOW)?;
+        }
+        if old_timers_run != self.keyboard.timers_run && do_display {
+            self.redisplay_preserve_echo_area(8)?;
         }
         Ok(self.keyboard.input_pending)
     }

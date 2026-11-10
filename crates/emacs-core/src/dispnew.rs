@@ -26,8 +26,18 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("internal-show-cursor", 2, 2, f_internal_show_cursor),
     Subr::fixed("internal-show-cursor-p", 0, 1, f_internal_show_cursor_p),
     Subr::fixed("sleep-for", 1, 2, f_sleep_for),
+    Subr::fixed("redisplay", 0, 1, f_redisplay),
     Subr::fixed("redraw-frame", 0, 1, f_redraw_frame),
 ];
+
+fn f_redisplay(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    lisp.swallow_events(true)?;
+    if !lisp.find_symbol_value(sym::EXECUTING_KBD_MACRO).is_nil() {
+        return Ok(Value::NIL);
+    }
+    lisp.redisplay_preserve_echo_area(2)?;
+    Ok(sym::T)
+}
 
 pub(crate) fn f_redraw_frame(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(args[0])?;
@@ -145,7 +155,7 @@ pub(crate) fn f_sleep_for(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         let mut t = dtotimespec(duration);
         let tend = timespec_add(current_timespec(), t);
         loop {
-            lisp.wait_reading_process_output(t.0, t.1, 0, Value::NIL)?;
+            lisp.wait_reading_process_output(t.0, t.1, 0, false, Value::NIL)?;
             t = timespec_sub(tend, current_timespec());
             if t <= (0, 0) {
                 break;
@@ -156,14 +166,18 @@ pub(crate) fn f_sleep_for(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 impl Lisp {
-    pub fn sit_for(&mut self, timeout: Value, reading: bool) -> LispResult {
+    pub fn sit_for(&mut self, timeout: Value, reading: bool, display_option: i32) -> LispResult {
+        let do_display = display_option > 0;
         let sw = self.windows.selected_window;
         let curbuf_eq_winbuf = self.current_buffer == self.window(sw).contents;
-        self.swallow_events()?;
-        if self.detect_input_pending_run_timers()?
+        self.swallow_events(do_display)?;
+        if self.detect_input_pending_run_timers(do_display)?
             || !self.find_symbol_value(sym::EXECUTING_KBD_MACRO).is_nil()
         {
             return Ok(Value::NIL);
+        }
+        if display_option > 1 {
+            self.redisplay_preserve_echo_area(2)?;
         }
         let (sec, nsec) = if let Some(n) = timeout.as_fixnum() {
             if n <= 0 {
@@ -188,8 +202,13 @@ impl Lisp {
         } else {
             return Err(self.wrong_type(sym::NUMBERP, timeout));
         };
-        let nbytes =
-            self.wait_reading_process_output(sec, nsec, if reading { -1 } else { 1 }, Value::NIL)?;
+        let nbytes = self.wait_reading_process_output(
+            sec,
+            nsec,
+            if reading { -1 } else { 1 },
+            do_display,
+            Value::NIL,
+        )?;
         if reading && curbuf_eq_winbuf {
             let sw = self.windows.selected_window;
             let buffer = self.window(sw).contents;
