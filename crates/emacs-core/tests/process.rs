@@ -25,6 +25,20 @@ fn shell_file_name_comes_from_shell() {
 }
 
 #[test]
+fn exec_directory_follows_exec_path() {
+    check(&[
+        (
+            "(let ((d (car (reverse exec-path)))) (eq (aref d (1- (length d))) ?/))",
+            "nil",
+        ),
+        (
+            "(equal exec-directory (file-name-as-directory (car (reverse exec-path))))",
+            "t",
+        ),
+    ]);
+}
+
+#[test]
 fn buffer_processes() {
     check(&[
         ("(get-buffer-process (current-buffer))", "nil"),

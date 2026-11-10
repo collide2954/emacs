@@ -22,7 +22,8 @@ The Lisp tree under `lisp/` is used unmodified.
 | `crates/emacs-core` | Interpreter, data types, buffers and primitives |
 | `crates/emacs` | The `emacs` binary; its build script generates the charset maps |
 | `crates/emacs-charsets` | Port of `admin/charsets` (`mapconv` and its awk scripts); writes `etc/charsets/*.map`, `cp51932.el` and `eucjp-ms.el` |
-| `crates/emacs-w32` | Safe wrappers around Win32 calls (code pages, locale names, known folders, the registry, the process environment, process probing, no-replace renames, the tick count); empty on other platforms |
+| `crates/emacs-w32` | Safe wrappers around Win32 calls (code pages, locale names, known folders, the registry, the process environment, process probing and creation, program search, short file names, console control handlers, no-replace renames, the tick count); empty on other platforms |
+| `crates/cmdproxy` | Port of `nt/cmdproxy.c`, the `cmdproxy.exe` shell proxy that `shell-file-name` names on Windows; `cargo build` puts it next to `emacs.exe`, where startup looks for it; an empty program elsewhere |
 | `crates/emacs-unix` | Safe wrappers around unix calls std lacks (`kill`, utmpx, `CLOCK_BOOTTIME`, `sysinfo`, the BSD boot-time sysctl, no-replace renames); empty on Windows |
 
 The unix code is type-checked from Windows with `cargo clippy --target

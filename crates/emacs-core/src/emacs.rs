@@ -821,11 +821,7 @@ pub fn path_exec() -> String {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default();
-    let mut dir = normalize_slashes(&dir.to_string_lossy());
-    if !dir.ends_with('/') {
-        dir.push('/');
-    }
-    dir
+    normalize_slashes(&dir.to_string_lossy())
 }
 
 impl Lisp {
@@ -1052,8 +1048,15 @@ pub fn init_vars(lisp: &mut Lisp) {
             lisp.string(&s)
         })
         .collect();
-    let exec_dir = lisp.string(&path_exec());
-    dirs.push(exec_dir);
+    let path_exec = path_exec();
+    let exec_path_dir = lisp.string(&path_exec);
+    dirs.push(exec_path_dir);
+    let exec_dir = if path_exec.ends_with('/') {
+        path_exec
+    } else {
+        format!("{path_exec}/")
+    };
+    let exec_dir = lisp.string(&exec_dir);
     let exec_path = lisp.list(&dirs);
     lisp.defvar(sym::EXEC_PATH, exec_path);
     let suffixes: Vec<Value> = if cfg!(windows) {

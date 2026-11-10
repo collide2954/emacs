@@ -1,11 +1,15 @@
 #![cfg(windows)]
 
-use std::os::windows::ffi::OsStrExt;
+use std::ffi::{OsStr, OsString, c_void};
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::Path;
 use std::ptr::{null, null_mut};
+use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, GetLastError, MAX_PATH, S_OK};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_SUCCESS, GetLastError, HANDLE, MAX_PATH, S_OK, WAIT_OBJECT_0,
+};
 use windows_sys::Win32::Globalization::{
     GetACP, GetLocaleInfoA, GetUserDefaultUILanguage, IsValidCodePage, LOCALE_SABBREVLANGNAME,
     LOCALE_USE_CP_ACP,
@@ -13,16 +17,23 @@ use windows_sys::Win32::Globalization::{
 use windows_sys::Win32::Security::Cryptography::{
     CRYPT_SILENT, CRYPT_VERIFYCONTEXT, CryptAcquireContextA, CryptGenRandom, PROV_RSA_FULL,
 };
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::{
     FindClose, FindFirstFileW, GetFileAttributesA, GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
     WIN32_FIND_DATAW,
 };
+use windows_sys::Win32::Storage::FileSystem::{GetShortPathNameW, SearchPathW};
 use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_COPY_ALLOWED, MoveFileExW};
+use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 use windows_sys::Win32::System::Console::{
     GetConsoleCP, GetConsoleOutputCP, SetConsoleCP, SetConsoleOutputCP,
 };
 use windows_sys::Win32::System::Environment::{
     ExpandEnvironmentStringsA, GetEnvironmentVariableA, SetEnvironmentVariableA,
+};
+use windows_sys::Win32::System::Environment::{
+    FreeEnvironmentStringsA, FreeEnvironmentStringsW, GetCommandLineW, GetEnvironmentStrings,
+    GetEnvironmentStringsW,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleFileNameA;
 use windows_sys::Win32::System::Registry::{
@@ -30,15 +41,22 @@ use windows_sys::Win32::System::Registry::{
     RegQueryValueExA,
 };
 use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+use windows_sys::Win32::System::Threading::{
+    CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess, INFINITE, PROCESS_INFORMATION,
+    STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+};
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
 use windows_sys::Win32::UI::Shell::{CSIDL_APPDATA, SHGetFolderPathA};
 
 pub use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
 };
+pub use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT};
 pub use windows_sys::Win32::System::Registry::{REG_EXPAND_SZ, REG_SZ};
 
 pub const LOCALE_USER_DEFAULT: u32 = 0x0400;
+
+pub const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
 
 unsafe extern "C" {
     fn _getmbcp() -> i32;
@@ -282,4 +300,164 @@ pub fn move_file_no_replace(old: &Path, new: &Path) -> std::io::Result<()> {
         return Err(std::io::Error::last_os_error());
     }
     Ok(())
+}
+
+fn wide_os(s: &OsStr) -> Vec<u16> {
+    s.encode_wide().chain(std::iter::once(0)).collect()
+}
+
+fn from_wide(buf: &[u16]) -> OsString {
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    OsString::from_wide(&buf[..len])
+}
+
+pub fn search_path(
+    path: Option<&OsStr>,
+    file: &OsStr,
+    extension: Option<&OsStr>,
+) -> Option<OsString> {
+    let path = path.map(wide_os);
+    let file = wide_os(file);
+    let extension = extension.map(wide_os);
+    let path = path.as_ref().map_or(null(), |p| p.as_ptr());
+    let extension = extension.as_ref().map_or(null(), |e| e.as_ptr());
+    let mut buf = vec![0u16; MAX_PATH as usize];
+    loop {
+        let n = unsafe {
+            SearchPathW(
+                path,
+                file.as_ptr(),
+                extension,
+                buf.len() as u32,
+                buf.as_mut_ptr(),
+                null_mut(),
+            )
+        } as usize;
+        if n == 0 {
+            return None;
+        }
+        if n < buf.len() {
+            return Some(from_wide(&buf[..n]));
+        }
+        buf.resize(n, 0);
+    }
+}
+
+pub fn short_path_name(path: &OsStr) -> Option<OsString> {
+    let path = wide_os(path);
+    let needed = unsafe { GetShortPathNameW(path.as_ptr(), null_mut(), 0) };
+    if needed == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; needed as usize];
+    let n = unsafe { GetShortPathNameW(path.as_ptr(), buf.as_mut_ptr(), needed) };
+    (n != 0 && n < needed).then(|| from_wide(&buf[..n as usize]))
+}
+
+pub fn command_line() -> OsString {
+    let line = unsafe { GetCommandLineW() };
+    let mut len = 0;
+    while unsafe { *line.add(len) } != 0 {
+        len += 1;
+    }
+    OsString::from_wide(unsafe { std::slice::from_raw_parts(line, len) })
+}
+
+pub fn environment_size() -> usize {
+    let start = unsafe { GetEnvironmentStrings() };
+    if start.is_null() {
+        return 0;
+    }
+    let mut tmp = 0;
+    while unsafe { *start.add(tmp) != 0 || *start.add(tmp + 1) != 0 } {
+        tmp += 1;
+    }
+    unsafe { FreeEnvironmentStringsA(start) };
+    tmp + 2
+}
+
+pub struct Process {
+    process: HANDLE,
+    thread: HANDLE,
+}
+
+impl Process {
+    pub fn handle(&self) -> isize {
+        self.process as isize
+    }
+
+    pub fn wait(&self) -> u32 {
+        unsafe { WaitForSingleObject(self.process, INFINITE) };
+        let mut code = 0u32;
+        unsafe { GetExitCodeProcess(self.process, &mut code) };
+        code
+    }
+}
+
+impl Drop for Process {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.thread);
+            CloseHandle(self.process);
+        }
+    }
+}
+
+pub fn create_process(
+    application: Option<&OsStr>,
+    command_line: &OsStr,
+    directory: &OsStr,
+) -> Option<Process> {
+    let application = application.map(wide_os);
+    let mut command_line = wide_os(command_line);
+    let directory = wide_os(directory);
+    let sec_attrs = SECURITY_ATTRIBUTES {
+        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: null_mut(),
+        bInheritHandle: 0,
+    };
+    let start = STARTUPINFOW {
+        cb: size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut child = PROCESS_INFORMATION::default();
+    let envblock = unsafe { GetEnvironmentStringsW() };
+    let created = unsafe {
+        CreateProcessW(
+            application.as_ref().map_or(null(), |a| a.as_ptr()),
+            command_line.as_mut_ptr(),
+            &sec_attrs,
+            null(),
+            1,
+            CREATE_UNICODE_ENVIRONMENT,
+            envblock as *const c_void,
+            directory.as_ptr(),
+            &start,
+            &mut child,
+        )
+    } != 0;
+    unsafe { FreeEnvironmentStringsW(envblock) };
+    created.then_some(Process {
+        process: child.hProcess,
+        thread: child.hThread,
+    })
+}
+
+pub fn wait_for_handle(handle: isize, milliseconds: u32) -> bool {
+    unsafe { WaitForSingleObject(handle as HANDLE, milliseconds) == WAIT_OBJECT_0 }
+}
+
+pub fn terminate_handle(handle: isize, exit_code: u32) -> bool {
+    unsafe { TerminateProcess(handle as HANDLE, exit_code) != 0 }
+}
+
+static CTRL_HANDLER: OnceLock<fn(u32) -> bool> = OnceLock::new();
+
+extern "system" fn ctrl_handler(event: u32) -> windows_sys::core::BOOL {
+    i32::from(CTRL_HANDLER.get().is_some_and(|handler| handler(event)))
+}
+
+pub fn set_console_ctrl_handler(handler: fn(u32) -> bool) -> bool {
+    let _ = CTRL_HANDLER.set(handler);
+    unsafe { SetConsoleCtrlHandler(Some(ctrl_handler), 1) != 0 }
 }
