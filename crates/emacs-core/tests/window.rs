@@ -358,6 +358,121 @@ fn window_resize_primitives() {
 }
 
 #[test]
+fn run_window_scroll_functions() {
+    check(&[
+        ("(run-window-scroll-functions)", "nil"),
+        (
+            "(run-window-scroll-functions 'x)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+        (
+            "(save-current-buffer (set-buffer (get-buffer-create \"other\")) (let ((window-scroll-functions (list (function (lambda (w s) (setq got (list w s (buffer-name)))))))) (list (run-window-scroll-functions) got (buffer-name))))",
+            "(nil (nil 1 \"*scratch*\") \"other\")",
+        ),
+        (
+            "(let ((window-scroll-functions (list (function (lambda (w s) (setq got (eq w (selected-window)))))))) (run-window-scroll-functions (selected-window)) got)",
+            "t",
+        ),
+    ]);
+}
+
+#[test]
+fn split_and_delete_windows() {
+    check(&[
+        (
+            "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (setq w (selected-window) h (window-pixel-height w) half (/ h 2)) (> half 2))",
+            "t",
+        ),
+        (
+            "(split-window-internal (minibuffer-window) 1 nil 0.5)",
+            "error: (error \"Attempt to split minibuffer window\")",
+        ),
+        (
+            "(split-window-internal w 'x nil 0.5)",
+            "error: (wrong-type-argument fixnump x)",
+        ),
+        (
+            "(split-window-internal w 0 nil 0.5)",
+            "error: (error \"Size of new window too small (after split)\")",
+        ),
+        (
+            "(split-window-internal w 1 'right 0.5)",
+            "error: (error \"Size of new window too small (after split)\")",
+        ),
+        (
+            "(split-window-internal w half nil 0.5 'x)",
+            "error: (wrong-type-argument windowp x)",
+        ),
+        (
+            "(progn (set-window-new-pixel w 0) (split-window-internal w half nil 0.5))",
+            "error: (error \"Resizing old window failed\")",
+        ),
+        (
+            "(progn (set-window-new-pixel w 1) (split-window-internal w half nil 0.5))",
+            "error: (error \"Sum of sizes of old and new window don\u{2019}t fit\")",
+        ),
+        (
+            "(progn (set-window-new-pixel w (- h half)) (set-window-new-normal w 0.5) (setq n (split-window-internal w half nil 0.5) p (window-parent w)) (list (window-live-p n) (eq (window-buffer n) (window-buffer w)) (eq (window-next-sibling w) n) (eq (window-prev-sibling n) w) (eq (window-parent n) p) (eq (frame-root-window) p) (window-live-p p) (window-valid-p p) (eq (window-top-child p) w) (= (window-pixel-height w) (- h half)) (= (window-pixel-height n) half) (= (window-pixel-top n) (+ (window-pixel-top w) (- h half))) (= (window-pixel-height p) h) (window-normal-size w) (window-normal-size n) (= (window-total-height n) half) (eq (selected-window) w) (= (window-pixel-width n) (window-pixel-width w))))",
+            "(t t t t t t nil t t t t t t 0.5 0.5 t t t)",
+        ),
+        (
+            "(split-window-internal w 1 nil 0.5 p)",
+            "error: (error \"REFER is not a live window (does not show a buffer)\")",
+        ),
+        (
+            "(progn (setq wh (window-pixel-height w) a (/ wh 2)) (set-window-new-pixel w (- wh a)) (set-window-new-normal w 0.25) (setq u (split-window-internal w a 'above 0.25)) (list (eq (window-parent u) p) (eq (window-top-child p) u) (eq (window-next-sibling u) w) (eq (window-prev-sibling w) u) (= (window-pixel-top u) (window-pixel-top p)) (= (window-pixel-top w) (+ (window-pixel-top u) a)) (= (window-pixel-top n) (+ (window-pixel-top w) (- wh a))) (window-normal-size u)))",
+            "(t t t t t t t 0.25)",
+        ),
+        (
+            "(progn (setq nw (window-pixel-width n) nh2 (/ nw 2)) (set-window-new-pixel n (- nw nh2)) (set-window-new-normal n 0.5) (setq m (split-window-internal n nh2 'left 0.5) q (window-parent m)) (list (eq (window-parent q) p) (eq (window-left-child q) m) (eq (window-next-sibling m) n) (eq (window-next-sibling w) q) (window-pixel-left m) (= (window-pixel-left n) nh2) (= (window-pixel-width q) nw) (= (window-pixel-height m) (window-pixel-height n)) (= (window-pixel-top m) (window-pixel-top n)) (window-normal-size q) (window-normal-size m t) (window-normal-size n t) (window-combination-limit q) (= (window-total-width m) nh2)))",
+            "(t t t t 0 t t t t 0.5 0.5 0.5 nil t)",
+        ),
+        (
+            "(delete-window-internal (frame-root-window))",
+            "error: (error \"Attempt to delete minibuffer or sole ordinary window\")",
+        ),
+        (
+            "(delete-window-internal (minibuffer-window))",
+            "error: (error \"Attempt to delete minibuffer or sole ordinary window\")",
+        ),
+        (
+            "(progn (setq fw (window-pixel-width p)) (set-window-new-pixel p fw) (set-window-new-pixel u fw) (set-window-new-pixel w fw) (set-window-new-pixel q fw) (set-window-new-pixel n fw) (list (delete-window-internal m) (window-live-p m) (window-valid-p m) (window-valid-p q) (eq (window-next-sibling w) n) (eq (window-parent n) p) (= (window-pixel-width n) fw) (window-pixel-left n) (window-normal-size n) (window-normal-size n t) (hash-table-count window-dead-windows-table) (eq (selected-window) w)))",
+            "(nil nil nil nil t t t 0 0.5 1.0 1 t)",
+        ),
+        ("(delete-window-internal m)", "nil"),
+        (
+            "(progn (set-window-new-pixel p h) (set-window-new-pixel u 1) (list (condition-case err (delete-window-internal u) (error (car (cdr err)))) (eq (window-top-child p) u) (window-live-p u) (eq (window-prev-sibling w) u)))",
+            "(\"Deletion failed\" t t t)",
+        ),
+        (
+            "(progn (set-window-new-pixel p h) (set-window-new-pixel u (+ (window-pixel-height u) (window-pixel-height w))) (set-window-new-pixel n (window-pixel-height n)) (setq uh (window-pixel-height u) wh2 (window-pixel-height w)) (list (delete-window-internal w) (eq (selected-window) u) (eq (frame-selected-window) u) (eq (window-next-sibling u) n) (eq (window-prev-sibling n) u) (= (window-pixel-height u) (+ uh wh2)) (window-live-p w) (eq (current-buffer) (window-buffer u))))",
+            "(nil t t t t t nil t)",
+        ),
+        (
+            "(progn (fset 'window--pixel-to-total (function (lambda (&optional frame horizontal) nil))) (set-buffer (get-buffer-create \"lines\")) (let ((i 0)) (while (< i 60) (insert \"line\\n\") (setq i (1+ i)))) (set-window-buffer n \"lines\") (goto-char (point-min)) (forward-line 30) (setq start30 (point)) (set-window-start n start30) (setq top (- (window-top-line n) (frame-parameter nil 'menu-bar-lines))) (> top 0))",
+            "t",
+        ),
+        (
+            "(progn (setq ph (window-pixel-height p) pt (window-pixel-top p)) (list (delete-other-windows-internal n) (eq (frame-root-window) n) (window-live-p u) (window-valid-p p) (eq (selected-window) n) (= (window-pixel-height n) ph) (= (window-pixel-top n) pt) (= (window-start n) (save-current-buffer (set-buffer \"lines\") (save-excursion (goto-char start30) (forward-line (- top)) (point)))) (eq (window-next-sibling n) (minibuffer-window)) (eq (window-prev-sibling (minibuffer-window)) n) (window-parent n)))",
+            "(nil t nil nil t t t t t t nil)",
+        ),
+        ("(delete-other-windows-internal n)", "nil"),
+        (
+            "(delete-other-windows-internal (minibuffer-window))",
+            "error: (error \"Can\u{2019}t expand minibuffer to full frame\")",
+        ),
+        (
+            "(delete-other-windows-internal n (minibuffer-window))",
+            "error: (error \"Specified root is not an ancestor of specified window\")",
+        ),
+        (
+            "(progn (set-window-new-pixel n (- ph 3)) (set-window-new-normal n 0.5) (setq m2 (split-window-internal n 3 nil 0.5 m)) (list (eq m2 m) (window-live-p m) (eq (window-buffer m) (get-buffer \"*scratch*\")) (hash-table-count window-dead-windows-table) (eq (window-next-sibling n) m) (= (window-pixel-height m) 3)))",
+            "(t t t 2 t t)",
+        ),
+    ]);
+}
+
+#[test]
 fn window_fringes_scroll_bars_and_margins_on_a_tty() {
     check(&[
         ("(set-window-fringes nil 3 4 t t)", "nil"),

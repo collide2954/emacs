@@ -1,5 +1,6 @@
 pub mod resize;
 pub mod scroll;
+pub mod split;
 
 use crate::dispextern::{GlyphMatrix, GlyphRowArea, WindowPart};
 use crate::dispnew::matrix::WhichMatrix;
@@ -971,49 +972,37 @@ impl Lisp {
         self.check_valid_window(window)
     }
 
-    pub fn make_window(&mut self) -> Value {
-        self.windows.sequence_number += 1;
-        let sequence_number = self.windows.sequence_number;
-        let normal_lines = self.float(1.0);
-        self.stack.push(normal_lines);
-        let normal_cols = self.float(1.0);
-        self.stack.push(normal_cols);
-        let start = self.make_marker_object();
-        self.stack.push(start);
-        let pointm = self.make_marker_object();
-        self.stack.push(pointm);
-        let old_pointm = self.make_marker_object();
-        self.stack.truncate(self.stack.len() - 4);
-        let w = Window {
+    pub(crate) fn allocate_window() -> Window {
+        Window {
             frame: Value::NIL,
             next: Value::NIL,
             prev: Value::NIL,
             parent: Value::NIL,
-            normal_lines,
-            normal_cols,
-            new_total: Value::fixnum(0),
-            new_normal: Value::fixnum(0),
-            new_pixel: Value::fixnum(0),
+            normal_lines: Value::NIL,
+            normal_cols: Value::NIL,
+            new_total: Value::NIL,
+            new_normal: Value::NIL,
+            new_pixel: Value::NIL,
             contents: Value::NIL,
             prev_buffers: Value::NIL,
             next_buffers: Value::NIL,
             old_buffer: Value::NIL,
-            start,
-            pointm,
-            old_pointm,
+            start: Value::NIL,
+            pointm: Value::NIL,
+            old_pointm: Value::NIL,
             temslot: Value::NIL,
             vertical_scroll_bar: Value::NIL,
-            vertical_scroll_bar_type: sym::T,
+            vertical_scroll_bar_type: Value::NIL,
             horizontal_scroll_bar: Value::NIL,
-            horizontal_scroll_bar_type: sym::T,
+            horizontal_scroll_bar_type: Value::NIL,
             display_table: Value::NIL,
             dedicated: Value::NIL,
             combination_limit: Value::NIL,
             window_parameters: Value::NIL,
-            cursor_type: sym::T,
+            cursor_type: Value::NIL,
             mode_line_help_echo: Value::NIL,
             use_time: 0,
-            sequence_number,
+            sequence_number: 0,
             change_stamp: 0,
             pixel_left: 0,
             pixel_top: 0,
@@ -1032,26 +1021,26 @@ impl Lisp {
             hscroll_whole: 0,
             base_line_number: 0,
             base_line_pos: 0,
-            column_number_displayed: -1,
-            nrows_scale_factor: 1,
-            ncols_scale_factor: 1,
+            column_number_displayed: 0,
+            nrows_scale_factor: 0,
+            ncols_scale_factor: 0,
             cursor: CursorPos::default(),
             output_cursor: CursorPos::default(),
             phys_cursor: CursorPos::default(),
-            phys_cursor_type: crate::dispextern::TextCursorKind::NoCursor,
+            phys_cursor_type: crate::dispextern::TextCursorKind::FilledBox,
             phys_cursor_ascent: 0,
             phys_cursor_height: 0,
             last_cursor_vpos: 0,
-            phys_cursor_width: -1,
-            left_fringe_width: -1,
-            right_fringe_width: -1,
+            phys_cursor_width: 0,
+            left_fringe_width: 0,
+            right_fringe_width: 0,
             left_margin_cols: 0,
             right_margin_cols: 0,
-            scroll_bar_width: -1,
-            scroll_bar_height: -1,
-            mode_line_height: -1,
-            header_line_height: -1,
-            tab_line_height: -1,
+            scroll_bar_width: 0,
+            scroll_bar_height: 0,
+            mode_line_height: 0,
+            header_line_height: 0,
+            tab_line_height: 0,
             window_end_pos: 0,
             window_end_bytepos: 0,
             last_point: 0,
@@ -1065,9 +1054,56 @@ impl Lisp {
             flags: WindowFlags::default(),
             current_matrix: None,
             desired_matrix: None,
-        };
+        }
+    }
+
+    pub fn make_window(&mut self) -> Value {
+        let normal_lines = self.float(1.0);
+        self.stack.push(normal_lines);
+        let normal_cols = self.float(1.0);
+        self.stack.push(normal_cols);
+        let start = self.make_marker_object();
+        self.stack.push(start);
+        let pointm = self.make_marker_object();
+        self.stack.push(pointm);
+        let old_pointm = self.make_marker_object();
+        self.stack.truncate(self.stack.len() - 4);
+        let mut w = Lisp::allocate_window();
+        w.normal_lines = normal_lines;
+        w.normal_cols = normal_cols;
+        w.new_total = Value::fixnum(0);
+        w.new_normal = Value::fixnum(0);
+        w.new_pixel = Value::fixnum(0);
+        w.start = start;
+        w.pointm = pointm;
+        w.old_pointm = old_pointm;
+        w.vertical_scroll_bar_type = sym::T;
+        w.horizontal_scroll_bar_type = sym::T;
+        w.cursor_type = sym::T;
+        w.nrows_scale_factor = 1;
+        w.ncols_scale_factor = 1;
+        w.left_fringe_width = -1;
+        w.right_fringe_width = -1;
+        w.mode_line_height = -1;
+        w.tab_line_height = -1;
+        w.header_line_height = -1;
+        w.phys_cursor_type = crate::dispextern::TextCursorKind::NoCursor;
+        w.phys_cursor_width = -1;
+        self.windows.sequence_number += 1;
+        w.sequence_number = self.windows.sequence_number;
+        w.scroll_bar_width = -1;
+        w.scroll_bar_height = -1;
+        w.column_number_displayed = -1;
         self.windows.window_list = Value::NIL;
         self.heap.vectorlike(Vectorlike::Window(Box::new(w)))
+    }
+
+    pub(crate) fn make_parent_window(&mut self, frame: Value) -> Value {
+        let mut p = Lisp::allocate_window();
+        self.windows.sequence_number += 1;
+        p.sequence_number = self.windows.sequence_number;
+        p.frame = frame;
+        self.heap.vectorlike(Vectorlike::Window(Box::new(p)))
     }
 
     fn adjust_window_count(&mut self, w: Value, arg: i64) {

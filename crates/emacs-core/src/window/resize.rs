@@ -33,7 +33,7 @@ fn xfixnum(v: Value) -> i64 {
 }
 
 impl Lisp {
-    fn window_children(&self, w: Value) -> Vec<Value> {
+    pub(super) fn window_children(&self, w: Value) -> Vec<Value> {
         let mut out = Vec::new();
         let mut c = self.window(w).contents;
         while !c.is_nil() {
