@@ -93,6 +93,40 @@ fn a_configure_notice_resizes_the_frame_and_its_surface() {
 }
 
 #[test]
+fn a_configure_notice_resizes_split_windows() {
+    on_big_stack(|| {
+        let (mut lisp, f, tx) = frame();
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (fset 'window--resize-root-window (function (lambda (window delta horizontal ignore pixelwise) (let ((top (window-top-child window))) (if horizontal (let ((size (+ (window-pixel-width window) delta))) (set-window-new-pixel window size) (set-window-new-pixel top size) (set-window-new-pixel (window-next-sibling top) size)) (set-window-new-pixel window (+ (window-pixel-height window) delta)) (set-window-new-pixel top (window-pixel-height top)) (set-window-new-pixel (window-next-sibling top) (+ (window-pixel-height (window-next-sibling top)) delta))))))) (setq w (frame-root-window f) h (window-pixel-height w) ww (window-pixel-width w) half (/ h 2)) (set-window-new-pixel w (- h half)) (set-window-new-normal w 0.5) (setq n (split-window-internal w half nil 0.5)) (list (window-live-p n) (eq (window-parent w) (frame-root-window f))))"
+            ),
+            "(t t)"
+        );
+        let id = lisp.frame(f).id as u64;
+        let g = lisp.frame(f).geometry.clone();
+        let (width, height) = (
+            g.pixel_width + 3 * g.column_width,
+            g.pixel_height + 2 * g.line_height,
+        );
+        tx.send(Notice::Configure {
+            frame: id,
+            width: width as u32,
+            height: height as u32,
+            scale: 1.0,
+        })
+        .unwrap();
+        lisp.gobble_input().unwrap();
+        let check = format!(
+            "(let ((r (frame-root-window f))) (list (= (window-pixel-height r) (+ h {lh})) (= (window-pixel-height w) (- h half)) (= (window-pixel-height n) (+ half {lh})) (= (window-pixel-top n) (+ (window-pixel-top w) (window-pixel-height w))) (= (window-pixel-width r) (+ ww {cw})) (= (window-pixel-width w) (window-pixel-width r)) (= (window-pixel-width n) (window-pixel-width r)) (= (window-pixel-top (minibuffer-window f)) (+ (window-pixel-top r) (window-pixel-height r)))))",
+            lh = 2 * g.line_height,
+            cw = 3 * g.column_width
+        );
+        assert_eq!(eval(&mut lisp, &check), "(t t t t t t t t)");
+    });
+}
+
+#[test]
 fn a_configure_notice_for_an_unknown_window_is_ignored() {
     on_big_stack(|| {
         let (mut lisp, f, tx) = frame();

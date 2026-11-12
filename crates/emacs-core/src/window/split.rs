@@ -156,7 +156,7 @@ impl Lisp {
         self.wset_combination(window, false, Value::NIL);
     }
 
-    fn resize_root_window(
+    pub(crate) fn resize_root_window(
         &mut self,
         window: Value,
         delta: i64,
@@ -170,7 +170,7 @@ impl Lisp {
         )
     }
 
-    fn window_pixel_to_total(&mut self, frame: Value, horizontal: Value) -> LispResult {
+    pub(crate) fn window_pixel_to_total(&mut self, frame: Value, horizontal: Value) -> LispResult {
         self.funcall(sym::WINDOW__PIXEL_TO_TOTAL, &[frame, horizontal])
     }
 }

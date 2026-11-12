@@ -3862,7 +3862,29 @@ impl Lisp {
             let pseudo = r.flags.pseudo_window_p;
             self.frame_mut(f).flags.window_change = !pseudo && new_pixel_size != old_pixel_size;
         } else {
-            unreachable!("resizing a split root window needs window_resize_apply");
+            if !horflag {
+                let r = self.window_mut(root);
+                r.top_line = top_margin;
+                r.pixel_top = top_margin_height;
+            }
+            let delta = new_pixel_size - old_pixel_size;
+            let horizontal = self.bool(horflag);
+            let frame = self.window(root).frame;
+            self.resize_root_window(root, delta, horizontal, Value::NIL, sym::T)?;
+            if self.window_resize_check(root, horflag)
+                && Some(new_pixel_size) == self.window(root).new_pixel.as_fixnum()
+            {
+                self.window_resize_apply(root, horflag);
+                self.window_pixel_to_total(frame, horizontal)?;
+            } else {
+                self.resize_root_window(root, delta, horizontal, sym::T, sym::T)?;
+                if self.window_resize_check(root, horflag)
+                    && Some(new_pixel_size) == self.window(root).new_pixel.as_fixnum()
+                {
+                    self.window_resize_apply(root, horflag);
+                    self.window_pixel_to_total(frame, horizontal)?;
+                }
+            }
         }
         if has_mini {
             let (top_line, total_lines, pixel_top, pixel_height) = {
