@@ -120,9 +120,17 @@ fn decoding_startup_options() {
     assert_eq!(s.load_file(), Some(b"foo".to_vec()));
     let s = decode(&["emacs", "--version", "--help", "--daemon"]).expect("decode");
     assert!(s.only_version && s.noninteractive);
-    assert!(version_text().starts_with("GNU Emacs 31.0.50\nCopyright (C) "));
+    assert!(version_text().starts_with("GNU Emacs 32.0.50\nCopyright (C) "));
     let s = decode(&["emacs", "--", "--batch"]).expect("decode");
     assert!(!s.noninteractive);
+}
+
+#[test]
+fn emacs_version_matches_configure() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        assert_eq!(eval(&mut lisp, "emacs-version"), "\"32.0.50\"");
+    });
 }
 
 #[test]

@@ -14,7 +14,7 @@ use crate::value::Value;
 
 pub const PACKAGE_NAME: &str = "GNU Emacs";
 pub const PACKAGE_BUGREPORT: &str = "bug-gnu-emacs@gnu.org";
-pub const EMACS_VERSION: &str = "31.0.50";
+pub const EMACS_VERSION: &str = "32.0.50";
 pub const EMACS_COPYRIGHT: &str = "Copyright (C) 2026 Free Software Foundation, Inc.";
 
 struct StandardArg {
