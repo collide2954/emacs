@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.148"
+version = "0.1.149"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
@@ -36,6 +36,7 @@ iced = { version = "0.14", features = ["canvas", "image", "tokio"] }
 tiny-skia = "0.11"
 cosmic-text = "0.15"
 swash = "0.2"
+harfrust = "0.3"
 num-bigint = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"

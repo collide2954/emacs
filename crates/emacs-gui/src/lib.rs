@@ -7,6 +7,7 @@ pub mod display;
 pub mod font;
 pub mod ftcrfont;
 pub mod gdkrgba;
+pub mod hbfont;
 pub mod keysym;
 pub mod pgtkdraw;
 pub mod pgtkfns;

@@ -12,6 +12,7 @@ iced.workspace = true
 tiny-skia.workspace = true
 cosmic-text.workspace = true
 swash.workspace = true
+harfrust.workspace = true
 
 [lints]
 workspace = true

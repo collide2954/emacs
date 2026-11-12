@@ -404,6 +404,21 @@ impl FontBackend {
         self.encode_char(font, c).is_some()
     }
 
+    pub fn shape(
+        &self,
+        font: &OpenFont,
+        buffer: harfrust::UnicodeBuffer,
+    ) -> (harfrust::GlyphBuffer, f64) {
+        let shaper = font.font.shaper();
+        let units_per_em = shaper.units_per_em();
+        let position_unit = if units_per_em > 0 {
+            f64::from(font.pixel_size) / f64::from(units_per_em)
+        } else {
+            1.0
+        };
+        (shaper.shape(buffer, &[]), position_unit)
+    }
+
     pub fn encode_char(&self, font: &OpenFont, c: u32) -> Option<u32> {
         let ch = char::from_u32(c)?;
         match font.font.as_swash().charmap().map(ch) {

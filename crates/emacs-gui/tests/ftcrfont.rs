@@ -46,7 +46,7 @@ fn booted() -> Lisp {
 }
 
 #[test]
-fn the_ftcr_driver_is_registered_globally() {
+fn the_ftcr_drivers_are_registered_globally() {
     on_big_stack(|| {
         let mut lisp = booted();
         let types: Vec<String> = lisp
@@ -56,7 +56,11 @@ fn the_ftcr_driver_is_registered_globally() {
             .iter()
             .map(|driver| lisp.symbol_name_string(driver.type_))
             .collect();
-        assert_eq!(types, ["ftcr"]);
+        assert_eq!(types, ["ftcr", "ftcrhb"]);
+        assert_eq!(
+            eval(&mut lisp, "(get 'ftcr 'font-driver-superseded-by)"),
+            "ftcrhb"
+        );
         assert_eq!(eval(&mut lisp, "(frame-font-cache)"), "nil");
     });
 }

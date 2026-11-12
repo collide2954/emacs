@@ -135,6 +135,36 @@ fn mock_draw(
     0
 }
 
+fn mock_shape(lisp: &mut Lisp, gstring: Value, _direction: Value) -> LispResult {
+    bump(lisp, "mock-shape-calls");
+    let forced = var(lisp, "mock-shape-result");
+    let bad = lisp.intern("bad");
+    if !forced.is_nil() && forced != bad {
+        return Ok(forced);
+    }
+    if lisp.vector_items(gstring).len() - 2 < 20 {
+        return Ok(Value::fixnum(-20));
+    }
+    let count = if forced == bad { 1 } else { 3 };
+    for i in 0..count {
+        let from = if forced == bad { 1 } else { i.min(1) };
+        let glyph = lisp.vector(vec![
+            Value::fixnum(from),
+            Value::fixnum(from),
+            Value::fixnum(97 + i),
+            Value::fixnum(97 + i),
+            Value::fixnum(5),
+            Value::fixnum(0),
+            Value::fixnum(5),
+            Value::fixnum(4),
+            Value::fixnum(1),
+            Value::NIL,
+        ]);
+        lisp.aset_value(gstring, Value::fixnum(i + 2), glyph)?;
+    }
+    Ok(Value::fixnum(count))
+}
+
 fn mock_driver(lisp: &mut Lisp) -> FontDriver {
     FontDriver {
         type_: lisp.intern("mock"),
@@ -153,7 +183,7 @@ fn mock_driver(lisp: &mut Lisp) -> FontDriver {
         text_extents: mock_text_extents,
         draw: Some(mock_draw),
         otf_capability: None,
-        shape: None,
+        shape: Some(mock_shape),
         start_for_frame: None,
         end_for_frame: None,
         filter_properties: None,
@@ -342,6 +372,55 @@ fn listing_and_opening_fonts_through_a_driver() {
         assert_eq!(eval(&mut lisp, "(font-get beta12 :type)"), "nil");
         assert_eq!(eval(&mut lisp, "mock-font-cache"), "(t)");
         assert_eq!(eval(&mut lisp, "(list-fonts (font-spec))"), "nil");
+    });
+}
+
+#[test]
+fn shaping_retries_with_larger_gstrings() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        setup(&mut lisp);
+        let f = lisp.frames.selected_frame;
+        let driver = mock_driver(&mut lisp);
+        lisp.register_font_driver(driver, Some(f)).unwrap();
+        lisp.font_update_drivers(f, sym::T).unwrap();
+        for (source, expected) in [
+            (
+                "(progn (setq beta (open-font (find-font (font-spec :family \"beta\")) 10) mock-shape-result nil mock-shape-calls 0) (let ((g (font-shape-gstring (composition-get-gstring 0 2 beta \"ab\") nil))) (list mock-shape-calls (length g) (integerp (aref g 1)) (aref (aref g 2) 2) (aref (aref g 4) 0) (aref (aref g 4) 1))))",
+                "(2 5 t 97 1 1)",
+            ),
+            (
+                "(progn (setq mock-shape-calls 0) (integerp (aref (font-shape-gstring (composition-get-gstring 0 2 beta \"ab\") nil) 1)))",
+                "t",
+            ),
+            ("mock-shape-calls", "0"),
+            (
+                "(progn (setq mock-shape-result 0) (font-shape-gstring (composition-get-gstring 0 2 beta \"cd\") nil))",
+                "nil",
+            ),
+            (
+                "(progn (setq mock-shape-result -1) (font-shape-gstring (composition-get-gstring 0 2 beta \"ef\") nil))",
+                "nil",
+            ),
+            (
+                "(progn (setq mock-shape-result 'x mock-shape-calls 0) (list (font-shape-gstring (composition-get-gstring 0 2 beta \"gh\") nil) mock-shape-calls))",
+                "(nil 6)",
+            ),
+            (
+                "(progn (setq mock-shape-result 'bad) (font-shape-gstring (composition-get-gstring 0 2 beta \"ij\") nil))",
+                "nil",
+            ),
+            (
+                "(font-shape-gstring (vector (vector 'x ?a) nil nil) nil)",
+                "error: (error \"Invalid glyph-string: \" [[x 97] nil nil])",
+            ),
+            (
+                "(font-shape-gstring (vector (vector nil ?a) nil nil) nil)",
+                "error: (wrong-type-argument font-object nil)",
+            ),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
     });
 }
 

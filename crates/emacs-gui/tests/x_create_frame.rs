@@ -201,7 +201,7 @@ fn x_create_frame_makes_a_visible_pgtk_frame() {
                 &(frames_before.parse::<i64>().unwrap() + 1).to_string(),
             ),
             ("(frame-parameter f 'name)", "\"test\""),
-            ("(frame-parameter f 'font-backend)", "(ftcr)"),
+            ("(frame-parameter f 'font-backend)", "(ftcrhb)"),
             ("(stringp (frame-parameter f 'font))", "t"),
             ("(frame-parameter f 'foreground-color)", "\"black\""),
             ("(frame-parameter f 'background-color)", "\"white\""),

@@ -821,6 +821,8 @@ fn x_create_frame(lisp: &mut Lisp, mut parms: Value, frame_out: &mut Value) -> L
     }
     let driver = crate::ftcrfont::ftcrfont_driver(lisp);
     lisp.register_font_driver(driver, Some(f))?;
+    let driver = crate::ftcrfont::ftcrhbfont_driver(lisp);
+    lisp.register_font_driver(driver, Some(f))?;
     lisp.gui_default_parameter(
         f,
         parms,

@@ -125,19 +125,17 @@ Ported but not yet complete (C kept):
 | `bytecode.c` | `bytecode.rs` | nothing but two opcodes obsolete since Emacs 24.1: `temp-output-buffer-setup`/`-show` signal an error; `debug-on-next-call` is not honored (as elsewhere in the port). The VM keeps its operands on `Lisp::stack` (so they are GC roots) and recurses for calls where C chains frames on its own stack; primitives are called through the subr table by name, not through function cells, as C calls `Fcar` and friends directly |
 | `terminal.c` | `terminal.rs` | nothing; `delete_terminal_internal` leaves the coding systems to be dropped with the terminal object |
 | `frame.c` | `frame.rs` | in `delete_frame`, the pgtk selection clearing and event swallowing (there are no selections or event queue yet) and `free_glyphs` (there are no glyph matrices, so `glyphs_initialized_p` stays false and, as in C, messages on a window frame are only logged and errors go to standard error); `do_switch_frame` does not resize the old frame's mini-window or redirect focus; of the window-system parameter code (`gui_display_get_arg`, `gui_default_parameter`, `gui_set_frame_parameters`, `frame_float` and the generic `gui_set_*` handlers, dispatched through the terminal's `frame_parm_handlers`), the divider-width and `scroll-bar-width` handlers (they need glyph matrices; `gui_set_font` and `gui_set_font_backend` are ported, minus the image-cache rescaling, as there are no images yet); `adjust_frame_size` is ported but stops with `unreachable!` where it would call a window system's size hook or resize child frames, which don't exist yet |
-| `window.c` | `window.rs` | splitting, resizing (`resize_frame_windows` handles only a leaf root window, the only kind the port can make), `window-list`; window configurations (`current-window-configuration`, `set-window-configuration`, `window-configuration-equal-p` and the dead-windows table) follow C, as do `set-window-fringes`, `set-window-scroll-bars`, `set-window-margins`, `window-scroll-bars`, `set-window-start`, `set-window-point`, `window-body-width`, `window-body-height` and the mode/header/tab line, divider and scroll bar size DEFUNs (without glyph matrices, line heights always come from `estimate_mode_line_height`; horizontal scroll bars don't exist, as in C without toolkit scroll bars) |
+| `window.c` | `window.rs` | `window-end`, `set-window-hscroll`, `scroll-left`, `scroll-right`, `other-window-for-scrolling`, `window-text-width`, `window-text-height`, `window-lines-pixel-dimensions`, `window-old-body-pixel-width`, `window-old-body-pixel-height`, `combine-windows`, `uncombine-window`, `force-window-update`, `run-window-configuration-change-hook`, `window-discard-buffer-from-window` and the cursor-type DEFUNs; splitting and deleting windows (`split-window-internal`, `delete-window-internal`, `delete-other-windows-internal`) and `resize_frame_windows` follow C; window configurations (`current-window-configuration`, `set-window-configuration`, `window-configuration-equal-p` and the dead-windows table) follow C, as do `set-window-fringes`, `set-window-scroll-bars`, `set-window-margins`, `window-scroll-bars`, `set-window-start`, `set-window-point`, `window-body-width`, `window-body-height` and the mode/header/tab line, divider and scroll bar size DEFUNs (without glyph matrices, line heights always come from `estimate_mode_line_height`; horizontal scroll bars don't exist, as in C without toolkit scroll bars) |
 | `minibuf.c` | `minibuf.rs` | `cancel_hourglass` on entry (the hourglass isn't ported, so it would do nothing); interactive reading (`read_minibuf` with `read_minibuf_unwind`, `minibuffer_unwind` and `run_exit_minibuf_hook`), recursive minibuffers, `move_minibuffers_onto_frame` and `zip_minibuffer_stacks` are ported. On exit, `resize_mini_window` only resets the window start while the frame has no glyph matrices (see `xdisp.c`), and the cursor update after the recursive edit does nothing until `update_frame` exists |
-| `font.c` | `font.rs` | `font-face-attributes`, `font-shape-gstring`, `font-variation-glyphs`, `font-get-glyphs`, `font-at`, `font_range`, the OTF DEFUNs; `font_put_frame_data` (unused with cairo); the driver layer (`struct font_driver` as `FontDriver`, per-frame driver lists, font caches, listing, sorting, matching, opening, `font_load_for_lface`, `font_open_by_name`, the font log) and its DEFUNs are ported |
-| `fontset.c` | `fontset.rs` | `fontset-info` and `font_for_char`; the realized-fontset lookup (`fontset_get_font_group`, `reorder_font_vector`, `fontset_find_font`, `fontset_font`, `face_for_char`) is ported, sorting font groups stably where C calls `qsort`; `map_charset_chars` takes a Rust callback (`CharsetMapFunction::Rust`) where C passes a C function |
+| `font.c` | `font.rs` | `font-face-attributes`, `font-variation-glyphs`, `font-get-glyphs`, `font-at`, `draw-string`, the OTF DEFUNs; `font_put_frame_data` (unused with cairo); the driver layer (`struct font_driver` as `FontDriver`, per-frame driver lists, font caches, listing, sorting, matching, opening, `font_load_for_lface`, `font_open_by_name`, the font log) and its DEFUNs are ported |
+| `fontset.c` | `fontset.rs` | `fontset-info`; the realized-fontset lookup (`fontset_get_font_group`, `reorder_font_vector`, `fontset_find_font`, `fontset_font`, `face_for_char`) is ported, sorting font groups stably where C calls `qsort`; `map_charset_chars` takes a Rust callback (`CharsetMapFunction::Rust`) where C passes a C function |
 | `xfaces.c` | `xfaces.rs` | tty face realization, stipples (there are no bitmaps yet), `face-font`, `x-list-fonts`, `x-family-fonts`, `internal-face-x-get-resource`; `face_at_buffer_position` and GUI face realization (`realize_gui_face`, the default face from the frame font, colors, boxes, underlines, `prepare_face_for_display`, freeing faces and their fontsets, `realize_non_ascii_face`, `face_for_font`) are ported |
 | `xdisp.c` | `xdisp.rs` | redisplay and the display iterator; it has the variables, the redisplay flags, `add_to_log`, `message_dolog`, the `message3`/`message_to_stderr` echo path, the message stack (`push_message`, `restore_message`), `invisible-p`, `window_box_height`, and `tab-bar-height`/`tool-bar-height`, which stop with `unreachable!` once a frame has a tab or tool bar window (none can be made yet). The display iterator (`xdisp/`: `init_iterator`, `start_display`, `reseat`, `handle_stop` and the property handlers, overlay strings, `get_next_display_element`, `set_iterator_to_next`, the `move_it_*` family, line-number glyphs, `produce_stretch_glyph`, `calc_pixel_width_or_height`, term.c's `produce_glyphs` and `gui_produce_glyphs`) is ported, as is `get-display-property`; it writes glyphs into rows (`append_glyph`, `append_composite_glyph`, `append_stretch_glyph`, `append_glyphless_glyph`, term.c's `append_glyph` for the scratch row on the initial frame) once a frame has glyph matrices, and is handed no row before that, and images and xwidgets stop with `unreachable!`. Code that keeps an iterator on the Rust stack runs Lisp with garbage collection deferred (`Lisp::with_gc_deferred`), because the collector can't see those values the way C's stack scanning does; a deferred `garbage-collect` returns nil `resize_mini_window` is ported up to the display iterator: on a frame without glyph matrices it returns without resizing (nothing has been displayed, so the mini-window never grew), and stops with `unreachable!` once a frame has them |
 | `fringe.c` | `fringe.rs` | everything except `lookup_fringe_bitmap`, which knows only the standard bitmaps because `define-fringe-bitmap` isn't ported |
-| `composite.c` | `composite.rs` | shaping on window-system frames |
+| `composite.c` | `composite.rs` | nothing; window-system frames shape through the font driver (`ftcrhb`, see the GUI section) |
 | `bidi.c` | `bidi.rs` | the paragraph-start region cache (`region-cache.c` isn't ported, so paragraph starts are always found by scanning, as C does when `cache-long-scans` is nil; only the `MAX_PARAGRAPH_SEARCH` cutoff can differ); the cache and its shelving follow C, and the bit fields of `struct bidi_stack` keep their 3-bit truncation. xdisp.c's `compute_display_string_pos`/`_end`, `current-bidi-paragraph-direction` and `bidi-find-overridden-directionality` are ported, and the display iterator drives `bidi_move_to_visually_next` |
 
-Window-system frames don't exist yet, so the face, font and composition code stops with
-`unreachable!` on the branches that need them. Realized faces work for the initial frame,
-which gets plain realized faces as in C.
+Realized faces work for the initial frame, which gets plain realized faces as in C.
 
 `doc.c` is fully ported (`doc.rs`). `dispnew.rs` has the `dispnew.c` variables,
 `frame-or-buffer-changed-p`, `ding`, `internal-show-cursor(-p)`, `sleep-for`, `sit_for`
@@ -275,8 +273,10 @@ Done:
   fontconfig's numeric weight/slant/width/spacing and its generic family preferences, opens
   fonts with ftcrfont's metric rules, and provides glyph extents, rasterization (including
   color glyphs) and drawing onto a surface.
-- `ftcrfont.rs`: the `ftcr` font driver (`ftcrfont.c`, with the parts of `ftfont.c` it
-  uses), registered globally at startup. fontdb stands in for fontconfig. Listing filters faces
+- `ftcrfont.rs`: the `ftcr` and `ftcrhb` font drivers (`ftcrfont.c`, with the parts of
+  `ftfont.c` they use), registered globally at startup and by `x-create-frame`; `ftcr` is
+  superseded by `ftcrhb`, so frames use `ftcrhb`, as C built with HarfBuzz does. fontdb stands
+  in for fontconfig. Listing filters faces
   by family (generic `monospace`, `sans-serif` and `sans` resolved first, names compared
   ignoring case and blanks), spacing, scalability and the uniquifier characters of the
   registry's `fc_charset_table` entry, checked against each face's cmap. Matching takes the
@@ -284,6 +284,12 @@ Done:
   of the pattern. Faces have no foundry, so a spec naming one lists nothing; `:lang` is not
   checked; a spec with `:otf` lists nothing (there is no OpenType layout support yet); `draw`
   does not clip yet.
+- `hbfont.rs`: `hbfont.c`'s `hbfont_shape` and `hbfont_combining_capability` for the `ftcrhb`
+  driver, over harfrust (HarfBuzz's Rust port) and the shaper cosmic-text builds for each font.
+  Positions come back in font units, so the position unit is the pixel size over the units
+  per em where C's FreeType-scaled HarfBuzz font gives 1/64. HarfBuzz's own Unicode data is
+  used where C installs Emacs's combining-class, general-category and mirroring tables as
+  callbacks (harfrust has no hook for them). `hbfont_otf_capability` is not ported.
 
 `cargo run -p emacs-gui --example shell` opens a frame from the Lisp thread, paints a test
 pattern and prints the events it receives.
@@ -313,7 +319,7 @@ pgtk-only fields stay in the GUI crate's `PgtkDisplayInfo`. Font drivers are `Fo
 tables of function pointers, as C's `struct font_driver`; a font object keeps C's
 `struct font` metrics in `FontObject` and its driver's private data behind an `Rc<dyn Any>`,
 dropped with the object as C's GC calls `close_font`. `x-create-frame` (`pgtkfns.c`) is ported: it builds a pgtk frame with its
-per-frame `PgtkOutput`, registers the `ftcr` driver, picks the default font, applies the
+per-frame `PgtkOutput`, registers the `ftcr` and `ftcrhb` drivers, picks the default font, applies the
 default parameters, realizes faces, sizes the frame with `gui_figure_window_size`, creates the
 frame's surface (C's `xg_create_frame_widgets`) and, when visible, asks iced to open the window
 (`pgtk_make_frame_visible`); `pgtk_set_window_size` resizes the surface and the window. The

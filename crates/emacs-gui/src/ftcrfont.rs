@@ -116,7 +116,7 @@ thread_local! {
     };
 }
 
-fn with_backend<T>(f: impl FnOnce(&mut FontBackend) -> T) -> T {
+pub(crate) fn with_backend<T>(f: impl FnOnce(&mut FontBackend) -> T) -> T {
     FTFONT.with(|ft| f(ft.borrow_mut().backend.get_or_insert_with(FontBackend::new)))
 }
 
@@ -147,6 +147,22 @@ pub fn syms_of_ftcrfont(lisp: &mut Lisp) {
     let driver = ftcrfont_driver(lisp);
     lisp.register_font_driver(driver, None)
         .expect("register the ftcr font driver");
+    let (ftcr, ftcrhb) = (lisp.intern("ftcr"), lisp.intern("ftcrhb"));
+    lisp.put(ftcr, sym::FONT_DRIVER_SUPERSEDED_BY, ftcrhb);
+    let driver = ftcrhbfont_driver(lisp);
+    lisp.register_font_driver(driver, None)
+        .expect("register the ftcrhb font driver");
+}
+
+pub fn ftcrhbfont_driver(lisp: &mut Lisp) -> FontDriver {
+    FontDriver {
+        type_: lisp.intern("ftcrhb"),
+        list: ftcrhbfont_list,
+        match_font: ftcrhbfont_match,
+        shape: Some(crate::hbfont::hbfont_shape),
+        combining_capability: Some(crate::hbfont::hbfont_combining_capability),
+        ..ftcrfont_driver(lisp)
+    }
 }
 
 pub fn ftcrfont_driver(lisp: &mut Lisp) -> FontDriver {
@@ -521,16 +537,24 @@ fn ftfont_list(lisp: &mut Lisp, spec: Value) -> LispResult {
     Ok(val)
 }
 
-fn ftcrfont_list(lisp: &mut Lisp, _f: Value, spec: Value) -> LispResult {
+fn ftfont_list2(lisp: &mut Lisp, spec: Value, type_: &str) -> LispResult {
     let list = ftfont_list(lisp, spec)?;
-    let ftcr = lisp.intern("ftcr");
+    let type_ = lisp.intern(type_);
     let mut tail = list;
     while tail.is_cons() {
         let entity = lisp.xcar(tail);
-        lisp.font_aset(entity, FONT_TYPE_INDEX, ftcr);
+        lisp.font_aset(entity, FONT_TYPE_INDEX, type_);
         tail = lisp.xcdr(tail);
     }
     Ok(list)
+}
+
+fn ftcrfont_list(lisp: &mut Lisp, _f: Value, spec: Value) -> LispResult {
+    ftfont_list2(lisp, spec, "ftcr")
+}
+
+fn ftcrhbfont_list(lisp: &mut Lisp, _f: Value, spec: Value) -> LispResult {
+    ftfont_list2(lisp, spec, "ftcrhb")
 }
 
 fn ftfont_match(lisp: &mut Lisp, spec: Value) -> LispResult {
@@ -562,13 +586,21 @@ fn ftfont_match(lisp: &mut Lisp, spec: Value) -> LispResult {
     Ok(entity)
 }
 
-fn ftcrfont_match(lisp: &mut Lisp, _f: Value, spec: Value) -> LispResult {
+fn ftfont_match2(lisp: &mut Lisp, spec: Value, type_: &str) -> LispResult {
     let entity = ftfont_match(lisp, spec)?;
     if !entity.is_nil() {
-        let ftcr = lisp.intern("ftcr");
-        lisp.font_aset(entity, FONT_TYPE_INDEX, ftcr);
+        let type_ = lisp.intern(type_);
+        lisp.font_aset(entity, FONT_TYPE_INDEX, type_);
     }
     Ok(entity)
+}
+
+fn ftcrfont_match(lisp: &mut Lisp, _f: Value, spec: Value) -> LispResult {
+    ftfont_match2(lisp, spec, "ftcr")
+}
+
+fn ftcrhbfont_match(lisp: &mut Lisp, _f: Value, spec: Value) -> LispResult {
+    ftfont_match2(lisp, spec, "ftcrhb")
 }
 
 fn ftfont_list_family(lisp: &mut Lisp, _f: Value) -> LispResult {
@@ -589,7 +621,7 @@ fn ftfont_list_family(lisp: &mut Lisp, _f: Value) -> LispResult {
     Ok(list)
 }
 
-fn open_font_data(lisp: &Lisp, font: Value) -> Option<Rc<RefCell<OpenFont>>> {
+pub(crate) fn open_font_data(lisp: &Lisp, font: Value) -> Option<Rc<RefCell<OpenFont>>> {
     lisp.font_object(font)
         .driver_data
         .clone()
@@ -624,7 +656,11 @@ fn ftcrfont_open(lisp: &mut Lisp, _f: Value, entity: Value, pixel_size: i32) -> 
     let k_minspace = lisp.intern(":minspace");
     let minspace = lisp.assq(k_minspace, extra);
     let no_minspace = minspace.is_cons() && lisp.xcdr(minspace).is_nil();
-    let driver = ftcrfont_driver(lisp);
+    let driver = if ty == lisp.intern("ftcrhb") {
+        ftcrhbfont_driver(lisp)
+    } else {
+        ftcrfont_driver(lisp)
+    };
     let font = lisp.font_object_mut(font_object);
     font.pixel_size = size as i32;
     font.driver = Some(driver);
