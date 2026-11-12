@@ -3,6 +3,26 @@ mod common;
 use common::check;
 
 #[test]
+fn obarray_make_size_limit() {
+    check(&[
+        ("(obarrayp (obarray-make 0))", "t"),
+        ("(obarrayp (obarray-make (ash 1 30)))", "t"),
+        (
+            "(obarray-make (1+ (ash 1 30)))",
+            "error: (args-out-of-range 1073741825)",
+        ),
+        (
+            "(obarray-make (ash 1 31))",
+            "error: (args-out-of-range 2147483648)",
+        ),
+        (
+            "(obarray-make -1)",
+            "error: (wrong-type-argument wholenump -1)",
+        ),
+    ]);
+}
+
+#[test]
 fn list_completion() {
     check(&[
         ("(try-completion \"fo\" '(\"foo\" \"foobar\"))", "\"foo\""),

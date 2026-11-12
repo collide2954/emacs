@@ -2222,9 +2222,30 @@ fn f_unintern(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(sym::T)
 }
 
+const WORD_SIZE_LOG2: u32 = i64::BITS.next_power_of_two().ilog2();
+
+const OBARRAY_MAX_BITS: u32 = {
+    let ptrdiff_bits = isize::BITS - WORD_SIZE_LOG2;
+    (if i32::BITS < ptrdiff_bits {
+        i32::BITS
+    } else {
+        ptrdiff_bits
+    }) - 2
+};
+
 fn f_obarray_make(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    if !args[0].is_nil() {
-        lisp.check_fixnat(args[0])?;
+    let size = args[0];
+    if !size.is_nil() {
+        lisp.check_fixnat(size)?;
+        let n = size.as_fixnum().unwrap_or(0) as u64;
+        let bits = if n == 0 {
+            0
+        } else {
+            u64::BITS - (n - 1).leading_zeros()
+        };
+        if bits > OBARRAY_MAX_BITS {
+            return Err(lisp.signal_list(sym::ARGS_OUT_OF_RANGE, &[size]));
+        }
     }
     Ok(lisp
         .heap

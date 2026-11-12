@@ -2594,9 +2594,11 @@ impl Lisp {
                             if !self.font_aref(val, FONT_TYPE_INDEX).is_nil() {
                                 self.composition_gstring_cache_clear_font(val);
                                 (driver.close_font)(self, val);
+                                self.font_aset(val, FONT_TYPE_INDEX, Value::NIL);
                             }
                             objlist = self.xcdr(objlist);
                         }
+                        self.font_aset(entity, FONT_OBJLIST_INDEX, Value::NIL);
                         if let Some(free_entity) = driver.free_entity {
                             free_entity(self, entity);
                         }

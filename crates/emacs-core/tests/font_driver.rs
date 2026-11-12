@@ -321,6 +321,10 @@ fn listing_and_opening_fonts_through_a_driver() {
                 "(query-font (font-spec))",
                 "error: (wrong-type-argument font-object #<font-spec nil nil nil nil nil nil nil nil nil nil nil nil nil>)",
             ),
+            (
+                "(progn (setq beta12 (open-font (find-font (font-spec :family \"beta\")) 12)) (font-get beta12 :type))",
+                "mock",
+            ),
             ("(close-font beta)", "nil"),
             ("mock-close-calls", "1"),
             ("(clear-font-cache)", "nil"),
@@ -334,6 +338,7 @@ fn listing_and_opening_fonts_through_a_driver() {
         }
         lisp.font_update_drivers(f, Value::NIL).unwrap();
         assert_eq!(eval(&mut lisp, "mock-close-calls"), "3");
+        assert_eq!(eval(&mut lisp, "(font-get beta12 :type)"), "nil");
         assert_eq!(eval(&mut lisp, "mock-font-cache"), "(t)");
         assert_eq!(eval(&mut lisp, "(list-fonts (font-spec))"), "nil");
     });
