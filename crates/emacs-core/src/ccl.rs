@@ -213,13 +213,6 @@ pub(crate) fn jis_to_sjis(code: i32) -> i32 {
     (s1 << 8) | s2
 }
 
-fn larger_vector(lisp: &mut Lisp, vec: Value, incr_min: usize) -> Value {
-    let mut items = lisp.vector_items(vec).to_vec();
-    let incr = incr_min.max(items.len() >> 1);
-    items.resize(items.len() + incr, Value::NIL);
-    lisp.vector(items)
-}
-
 enum Flow {
     Next,
     Finish,
@@ -1715,7 +1708,7 @@ fn f_register_ccl_program(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         idx += 1;
     }
     if idx == len {
-        lisp.ccl.program_table = larger_vector(lisp, table, 1);
+        lisp.ccl.program_table = crate::fns::larger_vector(lisp, table, 1);
     }
     let entry = lisp.vector(vec![name, ccl_prog, resolved, sym::T]);
     let table = lisp.ccl.program_table;
@@ -1749,7 +1742,7 @@ fn f_register_code_conversion_map(lisp: &mut Lisp, args: &[Value]) -> LispResult
         i += 1;
     }
     if i == len {
-        maps = larger_vector(lisp, maps, 1);
+        maps = crate::fns::larger_vector(lisp, maps, 1);
         lisp.set(sym::CODE_CONVERSION_MAP_VECTOR, maps)?;
     }
     let idx = Value::fixnum(i as i64);

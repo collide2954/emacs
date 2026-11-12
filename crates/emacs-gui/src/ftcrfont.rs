@@ -167,6 +167,7 @@ pub fn ftcrfont_driver(lisp: &mut Lisp) -> FontDriver {
         text_extents: ftcrfont_text_extents,
         draw: Some(ftcrfont_draw),
         otf_capability: None,
+        shape: None,
         start_for_frame: None,
         end_for_frame: None,
         filter_properties: Some(ftfont_filter_properties),

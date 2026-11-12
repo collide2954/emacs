@@ -2005,6 +2005,13 @@ fn f_line_number_at_pos(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.count_lines(start_byte, pos_byte) + 1))
 }
 
+pub(crate) fn larger_vector(lisp: &mut Lisp, vec: Value, incr_min: usize) -> Value {
+    let mut items = lisp.vector_items(vec).to_vec();
+    let incr = incr_min.max(items.len() >> 1);
+    items.resize(items.len() + incr, Value::NIL);
+    lisp.vector(items)
+}
+
 pub(crate) fn f_length(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.length(args[0])
 }

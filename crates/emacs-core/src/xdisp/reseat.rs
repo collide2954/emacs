@@ -289,7 +289,10 @@ impl Lisp {
             -1
         };
         let (w, string) = (it.window, it.string);
-        self.composition_reseat_it(&mut it.cmp_it, charpos, end_charpos, w, level, string)
+        let face = usize::try_from(it.face_id)
+            .ok()
+            .filter(|&id| self.face_from_id(it.f, id).is_some());
+        self.composition_reseat_it(&mut it.cmp_it, charpos, end_charpos, w, level, face, string)
     }
 
     pub fn lookup_glyphless_char_display(&self, c: i32, it: &mut It) -> Value {

@@ -153,6 +153,7 @@ fn mock_driver(lisp: &mut Lisp) -> FontDriver {
         text_extents: mock_text_extents,
         draw: Some(mock_draw),
         otf_capability: None,
+        shape: None,
         start_for_frame: None,
         end_for_frame: None,
         filter_properties: None,

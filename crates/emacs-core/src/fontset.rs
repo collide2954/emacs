@@ -753,6 +753,32 @@ impl Lisp {
         }
     }
 
+    pub fn font_for_char(
+        &mut self,
+        f: Value,
+        face_id: usize,
+        c: u32,
+        pos: i64,
+        object: Value,
+    ) -> LispResult {
+        let face = self.face_from_id(f, face_id).expect("realized face");
+        let (ascii_face, fontset_id) = (face.ascii_face, face.fontset);
+        if c < 0x80 {
+            return Ok(self
+                .face_from_id(f, ascii_face)
+                .expect("realized face")
+                .font);
+        }
+        let fontset = self.fontsets.table[fontset_id as usize];
+        let id = self.fontset_charset_id(pos, object)?;
+        let rfont_def = self.fontset_font(fontset, c, Some(face_id), id)?;
+        Ok(if self.is_vector(rfont_def) {
+            self.vector_items(rfont_def)[2]
+        } else {
+            Value::NIL
+        })
+    }
+
     pub fn make_fontset_for_ascii_face(
         &mut self,
         f: Value,

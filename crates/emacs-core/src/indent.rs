@@ -427,7 +427,15 @@ impl Lisp {
                         break 'endloop;
                     }
                     if scan > cmp_it.stop_pos && cmp_it.id < 0 {
-                        self.composition_reseat_it(&mut cmp_it, scan, end, window, -1, Value::NIL)?;
+                        self.composition_reseat_it(
+                            &mut cmp_it,
+                            scan,
+                            end,
+                            window,
+                            -1,
+                            None,
+                            Value::NIL,
+                        )?;
                     }
                 }
                 if col >= goal {
@@ -452,6 +460,7 @@ impl Lisp {
                             end,
                             window,
                             -1,
+                            None,
                             Value::NIL,
                         )?)
                 {
@@ -731,7 +740,7 @@ impl Lisp {
                     pos_byte = self.cur().text.char_to_byte(pos as usize) as i64;
                 }
                 if newpos > cmp_it.stop_pos && cmp_it.id < 0 {
-                    self.composition_reseat_it(&mut cmp_it, pos, to, win, -1, Value::NIL)?;
+                    self.composition_reseat_it(&mut cmp_it, pos, to, win, -1, None, Value::NIL)?;
                 }
                 quit_count = quit_count.wrapping_add(1);
                 rarely_quit(self, i64::from(quit_count))?;
@@ -812,7 +821,15 @@ impl Lisp {
             wide_column_end_hpos = 0;
             if cmp_it.id >= 0
                 || (pos == cmp_it.stop_pos
-                    && self.composition_reseat_it(&mut cmp_it, pos, to, win, -1, Value::NIL)?)
+                    && self.composition_reseat_it(
+                        &mut cmp_it,
+                        pos,
+                        to,
+                        win,
+                        -1,
+                        None,
+                        Value::NIL,
+                    )?)
             {
                 self.composition_update_it(&mut cmp_it, pos, pos_byte, Value::NIL);
             }

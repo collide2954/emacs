@@ -138,6 +138,7 @@ pub type FontFrameHook = fn(&mut Lisp, Value) -> i32;
 pub type FontFilterHook = fn(&mut Lisp, Value, Value) -> LispResult<()>;
 pub type FontCachedOkHook = fn(&mut Lisp, Value, Value, Value) -> bool;
 pub type FontCombiningHook = fn(&mut Lisp, Value) -> Value;
+pub type FontShapeHook = fn(&mut Lisp, Value, Value) -> LispResult;
 
 #[derive(Clone, Copy, Debug)]
 pub struct FontDriver {
@@ -157,6 +158,7 @@ pub struct FontDriver {
     pub text_extents: FontTextExtentsHook,
     pub draw: Option<FontDrawHook>,
     pub otf_capability: Option<FontCapabilityHook>,
+    pub shape: Option<FontShapeHook>,
     pub start_for_frame: Option<FontFrameHook>,
     pub end_for_frame: Option<FontFrameHook>,
     pub filter_properties: Option<FontFilterHook>,
@@ -1608,6 +1610,7 @@ pub const SUBRS: &[crate::subr::Subr] = &[
     crate::subr::Subr::fixed("close-font", 1, 2, f_close_font),
     crate::subr::Subr::fixed("query-font", 1, 1, f_query_font),
     crate::subr::Subr::fixed("font-has-char-p", 2, 3, f_font_has_char_p),
+    crate::subr::Subr::fixed("font-shape-gstring", 2, 2, f_font_shape_gstring),
     crate::subr::Subr::fixed("font-match-p", 2, 2, f_font_match_p),
     crate::subr::Subr::fixed("frame-font-cache", 0, 1, f_frame_font_cache),
     crate::subr::Subr::fixed("font-info", 1, 2, f_font_info),
@@ -2975,6 +2978,115 @@ impl Lisp {
         (driver.encode_char)(self, font_object, c)
     }
 
+    fn codepoint_is_emoji_eligible(&self, ch: i64) -> bool {
+        let table = self.find_symbol_value(sym::CHAR_SCRIPT_TABLE);
+        if ch >= 0
+            && self.is_char_table(table)
+            && self.char_table_ref(table, ch as u32) == sym::EMOJI
+        {
+            return true;
+        }
+        let eligible = self.find_symbol_value(sym::AUTO_COMPOSITION_EMOJI_ELIGIBLE_CODEPOINTS);
+        !self.memq(Value::fixnum(ch), eligible).is_nil()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn font_range(
+        &mut self,
+        pos: usize,
+        limit: &mut usize,
+        w: Value,
+        face: Option<usize>,
+        string: Value,
+        ch: i64,
+    ) -> LispResult {
+        const UNICODE_CATEGORY_CF: i64 = 27;
+        let f = self.window(w).frame;
+        let face_id = match face {
+            Some(face_id) => face_id,
+            None if string.is_nil() => {
+                self.face_at_buffer_position(w, pos, *limit, false, None, 0)?
+                    .0
+            }
+            None => {
+                let base = if self.find_symbol_value(sym::FACE_REMAPPING_ALIST).is_nil() {
+                    crate::xfaces::DEFAULT_FACE_ID
+                } else {
+                    self.lookup_basic_face(Some(w), f, crate::xfaces::DEFAULT_FACE_ID)?
+                };
+                self.face_at_string_position(w, string, pos as i64, 0, base, false, 0)?
+                    .0
+            }
+        };
+        let mut font_object = Value::NIL;
+        if self.codepoint_is_emoji_eligible(ch) {
+            let representative = self.find_symbol_value(sym::SCRIPT_REPRESENTATIVE_CHARS);
+            let val = self.assq(sym::EMOJI, representative);
+            if val.is_cons() {
+                let mut val = self.xcdr(val);
+                if val.is_cons() {
+                    val = self.xcar(val);
+                } else if self.is_vector(val) {
+                    val = self.vector_items(val)[0];
+                }
+                let c = val.as_fixnum().unwrap_or(0) as u32;
+                font_object = self.font_for_char(f, face_id, c, pos as i64, string)?;
+            }
+        }
+        let mut pos = pos;
+        while pos < *limit {
+            let c = if string.is_nil() {
+                self.char_at_pos(pos)
+            } else {
+                self.string_char_vec(string)[pos]
+            };
+            pos += 1;
+            let table = self.find_symbol_value(sym::UNICODE_CATEGORY_TABLE);
+            let category = if self.is_char_table(table) {
+                self.char_table_ref(table, c)
+            } else {
+                Value::NIL
+            };
+            if let Some(category) = category.as_fixnum()
+                && (category == UNICODE_CATEGORY_CF
+                    || (0xFE00..=0xFE0F).contains(&c)
+                    || (0xE0100..=0xE01EF).contains(&c))
+            {
+                continue;
+            }
+            if font_object.is_nil() {
+                font_object = self.font_for_char(f, face_id, c, (pos - 1) as i64, string)?;
+                if font_object.is_nil() {
+                    return Ok(Value::NIL);
+                }
+                continue;
+            }
+            if self.font_encode_char(font_object, c as i32) == FONT_INVALID_CODE {
+                *limit = pos - 1;
+            }
+        }
+        Ok(font_object)
+    }
+
+    pub fn font_fill_lglyph_metrics(&mut self, glyph: Value, font_object: Value, code: u32) {
+        let driver = self.font_object_driver(font_object);
+        let metrics = (driver.text_extents)(self, font_object, &[code]);
+        use crate::composite::{
+            LGLYPH_IX_ASCENT, LGLYPH_IX_CODE, LGLYPH_IX_DESCENT, LGLYPH_IX_LBEARING,
+            LGLYPH_IX_RBEARING, LGLYPH_IX_WIDTH,
+        };
+        for (idx, v) in [
+            (LGLYPH_IX_CODE, i64::from(code)),
+            (LGLYPH_IX_LBEARING, i64::from(metrics.lbearing)),
+            (LGLYPH_IX_RBEARING, i64::from(metrics.rbearing)),
+            (LGLYPH_IX_WIDTH, i64::from(metrics.width)),
+            (LGLYPH_IX_ASCENT, i64::from(metrics.ascent)),
+            (LGLYPH_IX_DESCENT, i64::from(metrics.descent)),
+        ] {
+            self.vector_set(glyph, idx, Value::fixnum(v));
+        }
+    }
+
     pub fn font_get_name(&self, font_object: Value) -> Value {
         self.font_aref(font_object, FONT_NAME_INDEX)
     }
@@ -3711,6 +3823,94 @@ fn f_open_font(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         if isize == 0 { 120 } else { isize }
     };
     lisp.font_open_entity(f, font_entity, isize)
+}
+
+fn f_font_shape_gstring(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    use crate::composite::{LGLYPH_IX_FROM, LGLYPH_IX_TO};
+    let (mut gstring, direction) = (args[0], args[1]);
+    if !lisp.composition_gstring_p(gstring)? {
+        return Err(lisp.signal_error("Invalid glyph-string: ", gstring));
+    }
+    if !lisp.lgstring_id(gstring).is_nil() {
+        return Ok(gstring);
+    }
+    let header = lisp.lgstring_header(gstring);
+    let cached_gstring = lisp.composition_gstring_lookup_cache(header)?;
+    if !cached_gstring.is_nil() {
+        return Ok(cached_gstring);
+    }
+    let font_object = lisp.lgstring_font(gstring);
+    check_font_object(lisp, font_object)?;
+    let Some(shape) = lisp.font_object_driver(font_object).shape else {
+        return Ok(Value::NIL);
+    };
+    let base = lisp.stack.len();
+    let result = (|| -> LispResult {
+        let mut n = Value::NIL;
+        let mut i = 0;
+        while i < 6 {
+            lisp.stack.push(gstring);
+            n = shape(lisp, gstring, direction)?;
+            if let Some(n_glyphs) = n.as_fixnum() {
+                if n_glyphs == 0 {
+                    return Ok(Value::NIL);
+                }
+                if n_glyphs > 0 {
+                    break;
+                }
+                let needed_size = -n_glyphs;
+                let incr = needed_size - lisp.lgstring_glyph_len(gstring) as i64;
+                if incr <= 0 {
+                    return Ok(Value::NIL);
+                }
+                gstring = crate::fns::larger_vector(lisp, gstring, incr as usize);
+                i += 1;
+                continue;
+            }
+            let incr = lisp.lgstring_glyph_len(gstring);
+            gstring = crate::fns::larger_vector(lisp, gstring, incr);
+            i += 1;
+        }
+        if i == 6 {
+            return Ok(Value::NIL);
+        }
+        lisp.stack.push(gstring);
+        let n = n.as_fixnum().unwrap_or(0);
+        if (n as usize) < lisp.lgstring_glyph_len(gstring) {
+            lisp.vector_set(gstring, n as usize + 2, Value::NIL);
+        }
+        let glyph = lisp.lgstring_glyph(gstring, 0);
+        let mut from = lisp.lglyph_int(glyph, LGLYPH_IX_FROM);
+        let mut to = lisp.lglyph_int(glyph, LGLYPH_IX_TO);
+        if from != 0 || to < from {
+            return Ok(Value::NIL);
+        }
+        for i in 1..lisp.lgstring_glyph_len(gstring) {
+            let glyph = lisp.lgstring_glyph(gstring, i);
+            if glyph.is_nil() {
+                break;
+            }
+            let (gfrom, gto) = (
+                lisp.lglyph_int(glyph, LGLYPH_IX_FROM),
+                lisp.lglyph_int(glyph, LGLYPH_IX_TO),
+            );
+            if !(gfrom <= gto
+                && if gfrom == from {
+                    gto == to
+                } else {
+                    gfrom == to + 1
+                })
+            {
+                return Ok(Value::NIL);
+            }
+            from = gfrom;
+            to = gto;
+        }
+        lisp.composition_gstring_adjust_zero_width(gstring);
+        lisp.composition_gstring_put_cache(gstring, n)
+    })();
+    lisp.stack.truncate(base);
+    result
 }
 
 fn check_font_object(lisp: &mut Lisp, v: Value) -> LispResult<Value> {

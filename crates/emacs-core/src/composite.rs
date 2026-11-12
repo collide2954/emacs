@@ -1,6 +1,6 @@
 use crate::character;
 use crate::error::LispResult;
-use crate::font::FontMetrics;
+use crate::font::{FONT_INVALID_CODE, FontMetrics};
 use crate::lisp::Lisp;
 use crate::object::{Vectorlike, Weakness};
 use crate::subr::Subr;
@@ -996,12 +996,9 @@ impl Lisp {
 
     fn fill_gstring_body(&mut self, gstring: Value) {
         let font_object = self.lgstring_font(gstring);
-        if self.font_object_p(font_object) {
-            unreachable!("shaping with a font object needs a font driver");
-        }
+        let font = self.font_object_p(font_object);
         let header = self.lgstring_header(gstring);
         let len = self.lgstring_char_len(gstring);
-        let width_table = self.bound_var(sym::CHAR_WIDTH_TABLE);
         for i in 0..len {
             let mut g = self.lgstring_glyph(gstring, i);
             let c = self.vector_items(header)[i + 1].as_fixnum().unwrap_or(0);
@@ -1009,25 +1006,39 @@ impl Lisp {
                 g = self.vector(vec![Value::NIL; LGLYPH_SIZE]);
                 self.vector_set(gstring, i + 2, g);
             }
-            let width = if self.is_char_table(width_table) {
-                self.char_table_ref(width_table, c as u32)
-                    .as_fixnum()
-                    .unwrap_or(0)
-            } else {
-                0
-            };
             for (idx, v) in [
                 (LGLYPH_IX_FROM, i as i64),
                 (LGLYPH_IX_TO, i as i64),
                 (LGLYPH_IX_CHAR, c),
-                (LGLYPH_IX_CODE, c),
-                (LGLYPH_IX_LBEARING, 0),
-                (LGLYPH_IX_RBEARING, width),
-                (LGLYPH_IX_WIDTH, width),
-                (LGLYPH_IX_ASCENT, 1),
-                (LGLYPH_IX_DESCENT, 0),
             ] {
                 self.vector_set(g, idx, Value::fixnum(v));
+            }
+            let code = if font {
+                self.font_encode_char(font_object, c as i32)
+            } else {
+                FONT_INVALID_CODE
+            };
+            if code != FONT_INVALID_CODE {
+                self.font_fill_lglyph_metrics(g, font_object, code);
+            } else {
+                let width_table = self.bound_var(sym::CHAR_WIDTH_TABLE);
+                let width = if self.is_char_table(width_table) {
+                    self.char_table_ref(width_table, c as u32)
+                        .as_fixnum()
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                for (idx, v) in [
+                    (LGLYPH_IX_CODE, c),
+                    (LGLYPH_IX_LBEARING, 0),
+                    (LGLYPH_IX_RBEARING, width),
+                    (LGLYPH_IX_WIDTH, width),
+                    (LGLYPH_IX_ASCENT, 1),
+                    (LGLYPH_IX_DESCENT, 0),
+                ] {
+                    self.vector_set(g, idx, Value::fixnum(v));
+                }
             }
             self.vector_set(g, LGLYPH_IX_ADJUSTMENT, Value::NIL);
         }
@@ -1152,12 +1163,13 @@ impl Lisp {
         charpos: usize,
         limit: usize,
         win: Value,
+        face: Option<usize>,
         string: Value,
         direction: Value,
         ch: i64,
     ) -> LispResult {
         let count = self.specpdl.len();
-        let r = self.autocmp_chars_1(rule, charpos, limit, win, string, direction, ch);
+        let r = self.autocmp_chars_1(rule, charpos, limit, win, face, string, direction, ch);
         self.unbind_to_value(count, r)
     }
 
@@ -1168,11 +1180,11 @@ impl Lisp {
         charpos: usize,
         limit: usize,
         win: Value,
+        face: Option<usize>,
         string: Value,
         direction: Value,
         ch: i64,
     ) -> LispResult {
-        let _ = ch;
         let pos = Value::fixnum(charpos as i64);
         let (pt, buffer) = (self.cur().pt, self.current_buffer);
         self.record_unwind_save_match_data()?;
@@ -1200,10 +1212,18 @@ impl Lisp {
         if len <= 0 {
             return Ok(Value::NIL);
         }
-        let to = charpos + len as usize;
-        let font_object = self.window(win).frame;
+        let mut to = charpos + len as usize;
+        let limit = to;
+        let mut font_object = self.window(win).frame;
         if self.frame(font_object).window_p() {
-            unreachable!("window-system frames need font_range");
+            font_object = self.font_range(charpos, &mut to, win, face, string, ch)?;
+            if !self.font_object_p(font_object)
+                || (!re.is_nil()
+                    && to < limit
+                    && self.fast_looking_at(re, charpos, to, string)? <= 0)
+            {
+                return Ok(Value::NIL);
+            }
         }
         let mut lgstring =
             self.composition_get_gstring(pos, Value::fixnum(to as i64), font_object, string)?;
@@ -1424,6 +1444,7 @@ impl Lisp {
         endpos: i64,
         w: Value,
         bidi_level: i32,
+        face: Option<usize>,
         string: Value,
     ) -> LispResult<bool> {
         if cmp_it.ch == -2 {
@@ -1441,7 +1462,8 @@ impl Lisp {
             };
         }
         let base = self.stack.len();
-        let composed = self.composition_reseat_it_1(cmp_it, charpos, endpos, w, bidi_level, string);
+        let composed =
+            self.composition_reseat_it_1(cmp_it, charpos, endpos, w, bidi_level, face, string);
         self.stack.truncate(base);
         if composed? {
             return Ok(true);
@@ -1461,6 +1483,7 @@ impl Lisp {
         Ok(false)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn composition_reseat_it_1(
         &mut self,
         cmp_it: &mut CompositionIt,
@@ -1468,6 +1491,7 @@ impl Lisp {
         endpos: i64,
         w: Value,
         bidi_level: i32,
+        face: Option<usize>,
         string: Value,
     ) -> LispResult<bool> {
         if cmp_it.ch < 0 {
@@ -1518,6 +1542,7 @@ impl Lisp {
                     charpos as usize,
                     endpos as usize,
                     w,
+                    face,
                     string,
                     direction,
                     cmp_it.ch,
@@ -1544,6 +1569,7 @@ impl Lisp {
                 cpos as usize,
                 (charpos + 1) as usize,
                 w,
+                face,
                 string,
                 direction,
                 cmp_it.ch,
@@ -1793,6 +1819,7 @@ impl Lisp {
                             check_pos as usize,
                             tail as usize,
                             window,
+                            None,
                             string,
                             Value::NIL,
                             c,
