@@ -15,7 +15,74 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("scroll-down", 0, 1, f_scroll_down).interactive("^P"),
     Subr::fixed("recenter", 0, 2, f_recenter).interactive("P\np"),
     Subr::fixed("move-to-window-line", 1, 1, f_move_to_window_line).interactive("P"),
+    Subr::fixed(
+        "other-window-for-scrolling",
+        0,
+        0,
+        f_other_window_for_scrolling,
+    ),
+    Subr::fixed("scroll-left", 0, 2, f_scroll_left).interactive("^P\np"),
+    Subr::fixed("scroll-right", 0, 2, f_scroll_right).interactive("^P\np"),
 ];
+
+fn f_other_window_for_scrolling(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let selected_window = lisp.windows.selected_window;
+    let minibuf_scroll_window = lisp.plain_value(sym::MINIBUFFER_SCROLL_WINDOW);
+    let scroll_buffer = lisp.plain_value(sym::OTHER_WINDOW_SCROLL_BUFFER);
+    let scroll_default = lisp.plain_value(sym::OTHER_WINDOW_SCROLL_DEFAULT);
+    let window = if lisp.window(selected_window).mini && !minibuf_scroll_window.is_nil() {
+        minibuf_scroll_window
+    } else if lisp.is_buffer(scroll_buffer) && lisp.buffer_live_p(scroll_buffer) {
+        let window = crate::window::f_get_buffer_window(lisp, &[scroll_buffer, Value::NIL])?;
+        if window.is_nil() {
+            lisp.funcall(sym::DISPLAY_BUFFER, &[scroll_buffer, sym::T, Value::NIL])?
+        } else {
+            window
+        }
+    } else if lisp.functionp(scroll_default) {
+        lisp.funcall(scroll_default, &[])?
+    } else {
+        let window = lisp.next_window(selected_window, sym::LAMBDA, Value::NIL, true)?;
+        if window == selected_window {
+            lisp.next_window(window, sym::LAMBDA, sym::VISIBLE, true)?
+        } else {
+            window
+        }
+    };
+    lisp.check_live_window(window)?;
+    if window == selected_window {
+        return Err(lisp.error("There is no other window"));
+    }
+    Ok(window)
+}
+
+fn scroll_horizontally(lisp: &mut Lisp, args: &[Value], direction: i64) -> LispResult {
+    use crate::window::WindowBodyUnit;
+    let (arg0, set_minimum) = (arg(args, 0), arg(args, 1));
+    let w = lisp.windows.selected_window;
+    let requested_arg = if arg0.is_nil() {
+        lisp.window_body_width(w, WindowBodyUnit::CanonicalChars)? - 2
+    } else {
+        let n = crate::callint::f_prefix_numeric_value(lisp, &[arg0])?;
+        n.as_fixnum().unwrap_or(0)
+    };
+    let hscroll = lisp.window(w).hscroll;
+    let result = lisp.set_window_hscroll(w, hscroll + direction * requested_arg);
+    if !set_minimum.is_nil() {
+        let win = lisp.window_mut(w);
+        win.min_hscroll = win.hscroll;
+    }
+    lisp.window_mut(w).flags.suspend_auto_hscroll = true;
+    Ok(result)
+}
+
+fn f_scroll_left(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    scroll_horizontally(lisp, args, 1)
+}
+
+fn f_scroll_right(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    scroll_horizontally(lisp, args, -1)
+}
 
 fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).copied().unwrap_or(Value::NIL)

@@ -589,3 +589,95 @@ fn discarding_buffers_running_the_change_hook_and_forcing_updates() {
         ("(force-window-update 'x)", "nil"),
     ]);
 }
+
+#[test]
+fn horizontal_scrolling() {
+    check(&[
+        ("(window-hscroll)", "0"),
+        ("(set-window-hscroll nil 5)", "5"),
+        ("(window-hscroll)", "5"),
+        ("(set-window-hscroll nil -3)", "0"),
+        (
+            "(set-window-hscroll nil 'x)",
+            "error: (wrong-type-argument fixnump x)",
+        ),
+        (
+            "(set-window-hscroll 'x 'y)",
+            "error: (wrong-type-argument fixnump y)",
+        ),
+        (
+            "(set-window-hscroll 'x 1)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+        ("(scroll-left 10)", "10"),
+        ("(scroll-left)", "88"),
+        ("(scroll-right 30)", "58"),
+        ("(scroll-right)", "0"),
+        ("(scroll-left '(4))", "4"),
+        ("(scroll-left '-)", "3"),
+        ("(scroll-right 'x)", "2"),
+        ("(interactive-form 'scroll-left)", "(interactive \"^P\np\")"),
+        (
+            "(interactive-form 'scroll-right)",
+            "(interactive \"^P\np\")",
+        ),
+    ]);
+}
+
+#[test]
+fn scroll_left_set_minimum_and_auto_hscroll_suspension() {
+    use emacs_core::lisp::Lisp;
+    common::on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        let w = lisp.windows.selected_window;
+        lisp.window_mut(w).flags.suspend_auto_hscroll = false;
+        assert_eq!(common::eval(&mut lisp, "(scroll-left 6)"), "6");
+        assert!(lisp.window(w).flags.suspend_auto_hscroll);
+        assert_eq!(lisp.window(w).min_hscroll, 0);
+        assert_eq!(common::eval(&mut lisp, "(scroll-left 2 t)"), "8");
+        assert_eq!(lisp.window(w).min_hscroll, 8);
+        lisp.window_mut(w).flags.suspend_auto_hscroll = false;
+        assert_eq!(common::eval(&mut lisp, "(set-window-hscroll nil 8)"), "8");
+        assert!(lisp.window(w).flags.suspend_auto_hscroll);
+        assert_eq!(common::eval(&mut lisp, "(scroll-right 1 t)"), "7");
+        assert_eq!(lisp.window(w).min_hscroll, 7);
+    });
+}
+
+#[test]
+fn other_window_for_scrolling() {
+    check(&[
+        (
+            "(other-window-for-scrolling)",
+            "error: (error \"There is no other window\")",
+        ),
+        (
+            "(let ((other-window-scroll-default (function (lambda () (minibuffer-window))))) (eq (other-window-for-scrolling) (minibuffer-window)))",
+            "t",
+        ),
+        (
+            "(let ((other-window-scroll-default (function (lambda () 'x)))) (other-window-for-scrolling))",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+        (
+            "(let ((other-window-scroll-buffer (window-buffer))) (other-window-for-scrolling))",
+            "error: (error \"There is no other window\")",
+        ),
+        (
+            "(progn (fset 'display-buffer (function (lambda (b n f) (setq called (list b n f)) (minibuffer-window)))) (let ((other-window-scroll-buffer (get-buffer-create \"o\"))) (list (eq (other-window-for-scrolling) (minibuffer-window)) called)))",
+            "(t (#<buffer o> t nil))",
+        ),
+        (
+            "(let ((other-window-scroll-buffer (get-buffer-create \"k\"))) (kill-buffer \"k\") (other-window-for-scrolling))",
+            "error: (error \"There is no other window\")",
+        ),
+        (
+            "(progn (setq minibuffer-scroll-window (frame-first-window)) (select-window (minibuffer-window)) (prog1 (eq (other-window-for-scrolling) (frame-first-window)) (select-window (frame-first-window))))",
+            "t",
+        ),
+        (
+            "(progn (setq minibuffer-scroll-window nil) (select-window (minibuffer-window)) (prog1 (eq (other-window-for-scrolling) (frame-first-window)) (select-window (frame-first-window))))",
+            "t",
+        ),
+    ]);
+}

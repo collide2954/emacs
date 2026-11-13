@@ -437,6 +437,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-scroll-bar-width", 0, 1, f_window_scroll_bar_width),
     Subr::fixed("window-scroll-bar-height", 0, 1, f_window_scroll_bar_height),
     Subr::fixed("window-hscroll", 0, 1, f_window_hscroll),
+    Subr::fixed("set-window-hscroll", 2, 2, f_set_window_hscroll),
     Subr::fixed("window-point", 0, 1, f_window_point),
     Subr::fixed("window-old-point", 0, 1, f_window_old_point),
     Subr::fixed("window-start", 0, 1, f_window_start),
@@ -3002,6 +3003,28 @@ fn f_window_scroll_bar_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_window_hscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let w = lisp.decode_live_window(arg(args, 0))?;
     Ok(Value::fixnum(lisp.window(w).hscroll))
+}
+
+fn f_set_window_hscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let ncol = lisp.check_fixnum(args[1])?;
+    let w = lisp.decode_live_window(args[0])?;
+    Ok(lisp.set_window_hscroll(w, ncol))
+}
+
+impl Lisp {
+    pub(crate) fn set_window_hscroll(&mut self, w: Value, hscroll: i64) -> Value {
+        let hscroll_max = crate::value::MOST_POSITIVE_FIXNUM.min(isize::MAX as i64);
+        let new_hscroll = hscroll.clamp(0, hscroll_max);
+        if self.window(w).hscroll != new_hscroll {
+            let contents = self.window(w).contents;
+            self.buffer_mut(contents).prevent_redisplay_optimizations_p = true;
+            self.wset_redisplay(w);
+        }
+        let win = self.window_mut(w);
+        win.hscroll = new_hscroll;
+        win.flags.suspend_auto_hscroll = true;
+        Value::fixnum(new_hscroll)
+    }
 }
 
 pub(crate) fn f_window_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
