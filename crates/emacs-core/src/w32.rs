@@ -3,6 +3,148 @@ use crate::lisp::Lisp;
 #[cfg(windows)]
 pub fn init_environment(lisp: &mut Lisp) {
     lisp.w32_init_environment();
+    init_user_info();
+}
+
+#[cfg(windows)]
+const PASSWD_FIELD_SIZE: usize = 256;
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Passwd {
+    pub name: Vec<u8>,
+    pub passwd: Vec<u8>,
+    pub uid: u32,
+    pub gid: u32,
+    pub gecos: Vec<u8>,
+    pub dir: Vec<u8>,
+    pub shell: Vec<u8>,
+}
+
+#[cfg(windows)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Group {
+    pub name: Vec<u8>,
+    pub gid: u32,
+}
+
+#[cfg(windows)]
+thread_local! {
+    static DFLT_PASSWD: std::cell::RefCell<Passwd> = std::cell::RefCell::new(Passwd::default());
+    static DFLT_GROUP: std::cell::RefCell<Group> = std::cell::RefCell::new(Group {
+        name: b"None".to_vec(),
+        gid: 0,
+    });
+}
+
+#[cfg(windows)]
+pub fn dflt_passwd() -> Passwd {
+    DFLT_PASSWD.with(|pw| pw.borrow().clone())
+}
+
+#[cfg(windows)]
+pub fn dflt_group() -> Group {
+    DFLT_GROUP.with(|gr| gr.borrow().clone())
+}
+
+#[cfg(windows)]
+pub fn getuid() -> u32 {
+    DFLT_PASSWD.with(|pw| pw.borrow().uid)
+}
+
+#[cfg(windows)]
+pub fn geteuid() -> u32 {
+    getuid()
+}
+
+#[cfg(windows)]
+pub fn getgid() -> u32 {
+    DFLT_PASSWD.with(|pw| pw.borrow().gid)
+}
+
+#[cfg(windows)]
+pub fn getegid() -> u32 {
+    getgid()
+}
+
+#[cfg(windows)]
+pub fn getpwuid(uid: u32) -> Option<Passwd> {
+    let pw = dflt_passwd();
+    (uid == pw.uid).then_some(pw)
+}
+
+#[cfg(windows)]
+pub fn getgrgid(gid: u32) -> Option<Group> {
+    (gid == getgid()).then(dflt_group)
+}
+
+#[cfg(windows)]
+pub fn getpwnam(name: &[u8]) -> Option<Passwd> {
+    let name = until_nul(name);
+    let mut pw = getpwuid(getuid())?;
+    if !name.eq_ignore_ascii_case(&pw.name) {
+        let logname = emacs_w32::getenv(b"LOGNAME");
+        let username = emacs_w32::getenv(b"USERNAME");
+        let alias = logname.or(username)?;
+        if !name.eq_ignore_ascii_case(&alias) {
+            return None;
+        }
+        pw.name = alias[..alias.len().min(PASSWD_FIELD_SIZE - 1)].to_vec();
+    }
+    Some(pw)
+}
+
+#[cfg(windows)]
+fn env_filename(name: &str) -> Vec<u8> {
+    match std::env::var_os(name) {
+        Some(value) => value.to_string_lossy().into_owned().into_bytes(),
+        None => panic!("emacs_abort: {name} is not defined"),
+    }
+}
+
+#[cfg(windows)]
+pub fn init_user_info() {
+    let mut pw = Passwd::default();
+    let mut group_name = None;
+    if let Some(id) = emacs_w32::process_token_identity() {
+        pw.name = id.user_name;
+        if pw.name.eq_ignore_ascii_case(b"administrator") {
+            pw.uid = 500;
+            pw.gid = 513;
+        } else {
+            pw.uid = id.user_rid;
+            match id.primary_group {
+                Some((rid, name)) => {
+                    pw.gid = rid;
+                    group_name = name;
+                }
+                None => pw.gid = pw.uid,
+            }
+        }
+    } else if let Some(name) = emacs_w32::user_name() {
+        pw.uid = if name.eq_ignore_ascii_case(b"administrator") {
+            0
+        } else {
+            123
+        };
+        pw.name = name;
+        pw.gid = pw.uid;
+    } else {
+        pw.name = b"unknown".to_vec();
+        pw.uid = 123;
+        pw.gid = 123;
+    }
+    pw.dir = env_filename("HOME");
+    pw.shell = env_filename("SHELL");
+    let gid = pw.gid;
+    DFLT_PASSWD.with(|cell| *cell.borrow_mut() = pw);
+    DFLT_GROUP.with(|cell| {
+        let mut group = cell.borrow_mut();
+        if let Some(name) = group_name {
+            group.name = name;
+        }
+        group.gid = gid;
+    });
 }
 
 #[cfg(not(windows))]

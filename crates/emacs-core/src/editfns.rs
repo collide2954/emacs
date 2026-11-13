@@ -59,10 +59,10 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("user-login-name", 0, 1, f_user_login_name),
     Subr::fixed("user-real-login-name", 0, 0, f_user_real_login_name),
     Subr::fixed("user-uid", 0, 0, f_user_uid),
-    Subr::fixed("user-real-uid", 0, 0, f_user_uid),
+    Subr::fixed("user-real-uid", 0, 0, f_user_real_uid),
     Subr::fixed("group-name", 1, 1, f_group_name),
-    Subr::fixed("group-gid", 0, 0, f_user_uid),
-    Subr::fixed("group-real-gid", 0, 0, f_user_uid),
+    Subr::fixed("group-gid", 0, 0, f_group_gid),
+    Subr::fixed("group-real-gid", 0, 0, f_group_real_gid),
     Subr::fixed("user-full-name", 0, 1, f_user_full_name),
     Subr::fixed("system-name", 0, 0, f_system_name),
     Subr::fixed("emacs-pid", 0, 0, f_emacs_pid),
@@ -757,48 +757,148 @@ fn f_char_before(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(lisp.fetch_char(pos as usize - 1) as i64))
 }
 
-fn login_name() -> String {
-    std::env::var("LOGNAME")
-        .or_else(|_| std::env::var("USER"))
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_else(|_| "unknown".to_string())
+#[cfg(windows)]
+fn sys_getenv(name: &[u8]) -> Option<Vec<u8>> {
+    emacs_w32::getenv(name)
+}
+
+#[cfg(unix)]
+fn sys_getenv(name: &[u8]) -> Option<Vec<u8>> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    std::env::var_os(std::ffi::OsStr::from_bytes(name)).map(OsStringExt::into_vec)
+}
+
+#[cfg(windows)]
+const USER_NAME_VARIABLE: &[u8] = b"USERNAME";
+
+#[cfg(unix)]
+const USER_NAME_VARIABLE: &[u8] = b"USER";
+
+pub fn init_editfns(lisp: &mut Lisp) {
+    init_and_cache_system_name(lisp);
+    let pw = crate::pwd::getpwuid(crate::pwd::getuid());
+    let real = lisp.make_string(pw.as_ref().map_or(&b"unknown"[..], |pw| &pw.name[..]));
+    lisp.set_plain_value(sym::USER_REAL_LOGIN_NAME, real);
+    let user_name = sys_getenv(b"LOGNAME")
+        .or_else(|| sys_getenv(USER_NAME_VARIABLE))
+        .unwrap_or_else(|| {
+            crate::pwd::getpwuid(crate::pwd::geteuid())
+                .map_or_else(|| b"unknown".to_vec(), |pw| pw.name)
+        });
+    let login = lisp.make_string(&user_name);
+    lisp.set_plain_value(sym::USER_LOGIN_NAME, login);
+    let same = crate::fns::f_string_equal(lisp, &[login, real]).is_ok_and(|v| !v.is_nil());
+    let tem = if same {
+        login
+    } else {
+        lisp.integer(i64::from(crate::pwd::geteuid()))
+    };
+    let mut full = f_user_full_name(lisp, &[tem]).unwrap_or(Value::NIL);
+    if let Some(p) = sys_getenv(b"NAME") {
+        full = lisp.make_string(&p);
+    } else if full.is_nil() {
+        full = lisp.make_string(b"unknown");
+    }
+    lisp.set_plain_value(sym::USER_FULL_NAME, full);
+}
+
+fn check_uid(lisp: &mut Lisp, v: Value) -> LispResult<u32> {
+    Ok(lisp.cons_to_unsigned(v, u64::from(u32::MAX))? as u32)
 }
 
 pub(crate) fn f_user_login_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    if !args[0].is_nil() {
-        return Ok(Value::NIL);
+    if lisp.plain_value(sym::USER_LOGIN_NAME).is_nil() {
+        init_editfns(lisp);
     }
-    let v = lisp.plain_value(sym::USER_LOGIN_NAME);
-    if v.is_string() {
-        return Ok(v);
+    let uid = args[0];
+    if uid.is_nil() {
+        return Ok(lisp.plain_value(sym::USER_LOGIN_NAME));
     }
-    let name = login_name();
-    Ok(lisp.string(&name))
+    let id = check_uid(lisp, uid)?;
+    Ok(match crate::pwd::getpwuid(id) {
+        Some(pw) => lisp.make_string(&pw.name),
+        None => Value::NIL,
+    })
 }
 
 fn f_user_real_login_name(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    let name = login_name();
-    Ok(lisp.string(&name))
+    if lisp.plain_value(sym::USER_LOGIN_NAME).is_nil() {
+        init_editfns(lisp);
+    }
+    Ok(lisp.plain_value(sym::USER_REAL_LOGIN_NAME))
 }
 
-pub(crate) fn f_user_uid(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    Ok(Value::fixnum(1000))
+pub(crate) fn f_user_uid(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    Ok(lisp.integer(i64::from(crate::pwd::geteuid())))
 }
 
-fn f_group_name(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    Ok(Value::NIL)
+fn f_user_real_uid(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    Ok(lisp.integer(i64::from(crate::pwd::getuid())))
+}
+
+fn f_group_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let gid = args[0];
+    if !lisp.is_number(gid) && !gid.is_cons() {
+        return Err(lisp.error("Invalid GID specification"));
+    }
+    let id = check_uid(lisp, gid)?;
+    Ok(match crate::pwd::getgrgid(id) {
+        Some(gr) => lisp.make_string(&gr.name),
+        None => Value::NIL,
+    })
+}
+
+fn f_group_gid(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    Ok(lisp.integer(i64::from(crate::pwd::getegid())))
+}
+
+fn f_group_real_gid(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    Ok(lisp.integer(i64::from(crate::pwd::getgid())))
 }
 
 fn f_user_full_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    if !args[0].is_nil() {
+    let uid = args[0];
+    let pw = if uid.is_nil() {
+        return Ok(lisp.plain_value(sym::USER_FULL_NAME));
+    } else if lisp.is_number(uid) {
+        let u = check_uid(lisp, uid)?;
+        crate::pwd::getpwuid(u)
+    } else if uid.is_string() {
+        let name = lisp.string_bytes(uid).to_vec();
+        crate::pwd::getpwnam(&name)
+    } else {
+        return Err(lisp.error("Invalid UID specification"));
+    };
+    let Some(pw) = pw else {
         return Ok(Value::NIL);
-    }
-    let v = lisp.plain_value(sym::USER_FULL_NAME);
-    if v.is_string() {
-        return Ok(v);
-    }
-    let name = std::env::var("NAME").unwrap_or_else(|_| login_name());
-    Ok(lisp.string(&name))
+    };
+    let p = &pw.gecos;
+    let end = p.iter().position(|&b| b == b',').unwrap_or(p.len());
+    let full = lisp.make_string(&p[..end]);
+    Ok(ampersand_full_name(lisp, full, &pw))
+}
+
+#[cfg(windows)]
+fn ampersand_full_name(_lisp: &mut Lisp, full: Value, _pw: &crate::pwd::Passwd) -> Value {
+    full
+}
+
+#[cfg(unix)]
+fn ampersand_full_name(lisp: &mut Lisp, full: Value, pw: &crate::pwd::Passwd) -> Value {
+    let p = lisp.string_bytes(full).to_vec();
+    let Some(q) = p.iter().position(|&b| b == b'&') else {
+        return full;
+    };
+    let uid = lisp.integer(i64::from(pw.uid));
+    let login = match f_user_login_name(lisp, &[uid]) {
+        Ok(login) if !login.is_nil() => login,
+        _ => return full,
+    };
+    let mut r = p[..q].to_vec();
+    r.extend_from_slice(lisp.string_bytes(login));
+    r[q] = lisp.upcase_char_buffer(u32::from(r[q])) as u8;
+    r.extend_from_slice(&p[q + 1..]);
+    lisp.make_string(&r)
 }
 
 thread_local! {

@@ -10,7 +10,7 @@ use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_SUCCESS, GetLastError, HANDLE, MAX_PATH, S_OK, WAIT_OBJECT_0,
 };
-use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
+use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Globalization::{
     GetACP, GetLocaleInfoA, GetUserDefaultUILanguage, IsValidCodePage, LOCALE_SABBREVLANGNAME,
     LOCALE_USE_CP_ACP,
@@ -24,6 +24,11 @@ use windows_sys::Win32::Security::Cryptography::{
     CRYPT_SILENT, CRYPT_VERIFYCONTEXT, CryptAcquireContextA, CryptGenRandom, PROV_RSA_FULL,
 };
 use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+use windows_sys::Win32::Security::{
+    GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, LookupAccountSidA, PSID,
+    SID_NAME_USE, TOKEN_INFORMATION_CLASS, TOKEN_PRIMARY_GROUP, TOKEN_QUERY, TOKEN_USER,
+    TokenPrimaryGroup, TokenUser,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     FindClose, FindFirstFileW, GetFileAttributesA, GetFileAttributesW, INVALID_FILE_ATTRIBUTES,
     WIN32_FIND_DATAW,
@@ -53,7 +58,9 @@ use windows_sys::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess, INFINITE, PROCESS_INFORMATION,
     STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
+use windows_sys::Win32::System::WindowsProgramming::GetUserNameA;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Shell::{CSIDL_APPDATA, SHGetFolderPathA};
 use windows_sys::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
@@ -568,6 +575,99 @@ fn monitor_info(handle: HMONITOR) -> Option<Monitor> {
         height_mm,
         dpi,
     })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TokenIdentity {
+    pub user_name: Vec<u8>,
+    pub user_rid: u32,
+    pub primary_group: Option<(u32, Option<Vec<u8>>)>,
+}
+
+const UNLEN: usize = 256;
+const GNLEN: usize = 256;
+
+fn token_information(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Option<Vec<u64>> {
+    let mut needed = 0u32;
+    let ok = unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut needed) };
+    if ok != 0 || unsafe { GetLastError() } != ERROR_INSUFFICIENT_BUFFER {
+        return None;
+    }
+    let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            class,
+            buf.as_mut_ptr().cast::<c_void>(),
+            needed,
+            &mut needed,
+        )
+    };
+    (ok != 0).then_some(buf)
+}
+
+fn sid_rid(sid: PSID) -> u32 {
+    let n_subauthorities = unsafe { *GetSidSubAuthorityCount(sid) };
+    if n_subauthorities < 1 {
+        return 0;
+    }
+    unsafe { *GetSidSubAuthority(sid, u32::from(n_subauthorities) - 1) }
+}
+
+fn lookup_account_sid(sid: PSID, name_len: usize, with_domain: bool) -> Option<Vec<u8>> {
+    let mut name = vec![0u8; name_len + 1];
+    let mut length = name.len() as u32;
+    let mut domain = [0u8; 1025];
+    let mut dlength = domain.len() as u32;
+    let mut user_type: SID_NAME_USE = 0;
+    let domain_ptr = if with_domain {
+        domain.as_mut_ptr()
+    } else {
+        null_mut()
+    };
+    let ok = unsafe {
+        LookupAccountSidA(
+            null(),
+            sid,
+            name.as_mut_ptr(),
+            &mut length,
+            domain_ptr,
+            &mut dlength,
+            &mut user_type,
+        )
+    };
+    (ok != 0).then(|| until_nul(&name))
+}
+
+pub fn process_token_identity() -> Option<TokenIdentity> {
+    let mut token: HANDLE = null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    let identity = token_information(token, TokenUser).and_then(|buf| {
+        let user_sid = unsafe { (*buf.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+        let user_name = lookup_account_sid(user_sid, UNLEN, true)?;
+        let primary_group = token_information(token, TokenPrimaryGroup).map(|group| {
+            let group_sid = unsafe { (*group.as_ptr().cast::<TOKEN_PRIMARY_GROUP>()).PrimaryGroup };
+            (
+                sid_rid(group_sid),
+                lookup_account_sid(group_sid, GNLEN, false),
+            )
+        });
+        Some(TokenIdentity {
+            user_name,
+            user_rid: sid_rid(user_sid),
+            primary_group,
+        })
+    });
+    unsafe { CloseHandle(token) };
+    identity
+}
+
+pub fn user_name() -> Option<Vec<u8>> {
+    let mut name = vec![0u8; UNLEN + 1];
+    let mut length = name.len() as u32;
+    (unsafe { GetUserNameA(name.as_mut_ptr(), &mut length) } != 0).then(|| until_nul(&name))
 }
 
 pub fn host_name() -> Option<OsString> {

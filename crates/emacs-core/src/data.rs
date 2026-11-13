@@ -2020,6 +2020,68 @@ fn f_byteorder(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
 }
 
 impl Lisp {
+    fn integer_to_uintmax(&self, v: Value) -> Option<u64> {
+        if let Some(n) = v.as_fixnum() {
+            u64::try_from(n).ok()
+        } else {
+            use num_traits::ToPrimitive;
+            self.bignum_ref(v).and_then(|b| b.to_u64())
+        }
+    }
+
+    pub(crate) fn cons_to_unsigned(&mut self, c: Value, max: u64) -> LispResult<u64> {
+        let mut valid = false;
+        let mut val: u64 = 0;
+        if c.is_float() {
+            let d = self.heap.float_value(c);
+            if d >= 0.0 && d < 1.0 + max as f64 {
+                val = d as u64;
+                valid = val as f64 == d;
+            }
+        } else {
+            let hi = if c.is_cons() { self.xcar(c) } else { c };
+            if let Some(v) = self.integer_to_uintmax(hi) {
+                val = v;
+                valid = true;
+            }
+            if valid && c.is_cons() {
+                let top = val;
+                let rest = self.xcdr(c);
+                let fixnat = |v: Value| v.as_fixnum().filter(|&n| n >= 0).map(|n| n as u64);
+                let mid_lo = if rest.is_cons() {
+                    fixnat(self.xcar(rest))
+                        .filter(|&mid| mid < 1 << 24)
+                        .zip(fixnat(self.xcdr(rest)).filter(|&lo| lo < 1 << 16))
+                } else {
+                    None
+                };
+                match mid_lo {
+                    Some((mid, lo)) if top <= u64::MAX >> 24 >> 16 => {
+                        val = top << 24 << 16 | mid << 16 | lo;
+                    }
+                    _ => {
+                        valid = top <= u64::MAX >> 16;
+                        if valid {
+                            let rest = if rest.is_cons() {
+                                self.xcar(rest)
+                            } else {
+                                rest
+                            };
+                            match fixnat(rest).filter(|&lo| lo < 1 << 16) {
+                                Some(lo) => val = top << 16 | lo,
+                                None => valid = false,
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !(valid && val <= max) {
+            return Err(self.error("Not an in-range integer, integral float, or cons of integers"));
+        }
+        Ok(val)
+    }
+
     pub fn bool_vector_bits(&mut self, v: Value) -> LispResult<Vec<bool>> {
         if v.is_vectorlike()
             && let Vectorlike::BoolVector(b) = self.heap.vectorlike_ref(v)

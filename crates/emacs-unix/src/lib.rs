@@ -198,6 +198,108 @@ pub fn sysctl_boottime() -> Option<(i64, i64)> {
     (r >= 0).then_some((tv.tv_sec as i64, tv.tv_usec as i64 * 1000))
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Passwd {
+    pub name: Vec<u8>,
+    pub passwd: Vec<u8>,
+    pub uid: u32,
+    pub gid: u32,
+    pub gecos: Vec<u8>,
+    pub dir: Vec<u8>,
+    pub shell: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Group {
+    pub name: Vec<u8>,
+    pub gid: u32,
+}
+
+pub fn getuid() -> u32 {
+    unsafe { libc::getuid() }
+}
+
+pub fn geteuid() -> u32 {
+    unsafe { libc::geteuid() }
+}
+
+pub fn getgid() -> u32 {
+    unsafe { libc::getgid() }
+}
+
+pub fn getegid() -> u32 {
+    unsafe { libc::getegid() }
+}
+
+fn c_bytes(p: *const libc::c_char) -> Vec<u8> {
+    if p.is_null() {
+        Vec::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(p) }.to_bytes().to_vec()
+    }
+}
+
+fn passwd_with(
+    lookup: impl Fn(*mut libc::passwd, *mut libc::c_char, usize, *mut *mut libc::passwd) -> libc::c_int,
+) -> Option<Passwd> {
+    let mut size = 1024usize;
+    loop {
+        let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut buf = vec![0 as libc::c_char; size];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        let rc = lookup(&mut pwd, buf.as_mut_ptr(), size, &mut result);
+        if rc == libc::ERANGE {
+            size *= 2;
+            continue;
+        }
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+        return Some(Passwd {
+            name: c_bytes(pwd.pw_name),
+            passwd: c_bytes(pwd.pw_passwd),
+            uid: pwd.pw_uid,
+            gid: pwd.pw_gid,
+            gecos: c_bytes(pwd.pw_gecos),
+            dir: c_bytes(pwd.pw_dir),
+            shell: c_bytes(pwd.pw_shell),
+        });
+    }
+}
+
+pub fn getpwuid(uid: u32) -> Option<Passwd> {
+    passwd_with(|pwd, buf, size, result| unsafe { libc::getpwuid_r(uid, pwd, buf, size, result) })
+}
+
+pub fn getpwnam(name: &[u8]) -> Option<Passwd> {
+    let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+    let name = CString::new(&name[..end]).ok()?;
+    passwd_with(|pwd, buf, size, result| unsafe {
+        libc::getpwnam_r(name.as_ptr(), pwd, buf, size, result)
+    })
+}
+
+pub fn getgrgid(gid: u32) -> Option<Group> {
+    let mut size = 1024usize;
+    loop {
+        let mut grp: libc::group = unsafe { std::mem::zeroed() };
+        let mut buf = vec![0 as libc::c_char; size];
+        let mut result: *mut libc::group = std::ptr::null_mut();
+        let rc = unsafe { libc::getgrgid_r(gid, &mut grp, buf.as_mut_ptr(), size, &mut result) };
+        if rc == libc::ERANGE {
+            size *= 2;
+            continue;
+        }
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+        return Some(Group {
+            name: c_bytes(grp.gr_name),
+            gid: grp.gr_gid,
+        });
+    }
+}
+
 pub fn gethostname() -> Vec<u8> {
     let mut size = 256usize;
     loop {

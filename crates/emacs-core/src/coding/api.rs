@@ -479,6 +479,15 @@ impl Lisp {
         self.code_convert_string(string, coding_system, sym::T, encodep, false, true)
     }
 
+    pub fn decode_system(&mut self, string: Value) -> LispResult {
+        let coding = self.plain_value(sym::LOCALE_CODING_SYSTEM);
+        if coding.is_nil() {
+            Ok(string)
+        } else {
+            self.code_convert_string_norecord(string, coding, false)
+        }
+    }
+
     fn charset_list_ids(&self, list: Value) -> Vec<i32> {
         let mut out = Vec::new();
         let mut tail = list;

@@ -1061,32 +1061,8 @@ impl Lisp {
         self.check_charset_get_id(name).expect("charset id")
     }
 
-    fn cons_to_unsigned(&mut self, v: Value) -> LispResult<u32> {
-        let n = if let Some(n) = v.as_fixnum() {
-            n
-        } else if v.is_cons() {
-            let hi = self.xcar(v).as_fixnum();
-            let lo_v = self.xcdr(v);
-            let lo = if lo_v.is_cons() {
-                self.xcar(lo_v).as_fixnum()
-            } else {
-                lo_v.as_fixnum()
-            };
-            match (hi, lo) {
-                (Some(h), Some(l)) if (0..1 << 16).contains(&l) => (h << 16) | l,
-                _ => return Err(self.signal_list(sym::ARGS_OUT_OF_RANGE, &[v])),
-            }
-        } else if let Some(b) = self.bignum_ref(v) {
-            use num_traits::ToPrimitive;
-            b.to_i64().unwrap_or(-1)
-        } else {
-            return Err(self.wrong_type(sym::INTEGERP, v));
-        };
-        if !(0..=u32::MAX as i64).contains(&n) {
-            let hi = self.integer(u32::MAX as i64);
-            return Err(self.args_out_of_range(v, hi));
-        }
-        Ok(n as u32)
+    fn cons_to_uint(&mut self, v: Value) -> LispResult<u32> {
+        Ok(self.cons_to_unsigned(v, u64::from(u32::MAX))? as u32)
     }
 
     pub(crate) fn check_integer_range(&mut self, v: Value, lo: i64, hi: i64) -> LispResult<i64> {
@@ -1459,7 +1435,7 @@ fn define_charset_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value) -> L
     cs.char_index_offset = 0;
     let val = args[ARG_MIN_CODE];
     if !val.is_nil() {
-        let code = lisp.cons_to_unsigned(val)?;
+        let code = lisp.cons_to_uint(val)?;
         if code < cs.min_code || code > cs.max_code {
             let lo = lisp.integer(cs.min_code as i64);
             let hi = lisp.integer(cs.max_code as i64);
@@ -1470,7 +1446,7 @@ fn define_charset_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value) -> L
     }
     let val = args[ARG_MAX_CODE];
     if !val.is_nil() {
-        let code = lisp.cons_to_unsigned(val)?;
+        let code = lisp.cons_to_uint(val)?;
         if code < cs.min_code || code > cs.max_code {
             let lo = lisp.integer(cs.min_code as i64);
             let hi = lisp.integer(cs.max_code as i64);
@@ -1489,7 +1465,7 @@ fn define_charset_internal_1(lisp: &mut Lisp, args: &[Value], attrs: Value) -> L
             return Err(lisp.error("Attribute :invalid-code must be specified"));
         }
     } else {
-        cs.invalid_code = lisp.cons_to_unsigned(val)?;
+        cs.invalid_code = lisp.cons_to_uint(val)?;
     }
     let val = args[ARG_ISO_FINAL];
     if val.is_nil() {
@@ -1843,7 +1819,7 @@ fn f_find_charset_string(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_decode_char(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let id = lisp.check_charset_get_id(args[0])?;
-    let code = lisp.cons_to_unsigned(args[1])?;
+    let code = lisp.cons_to_uint(args[1])?;
     let c = lisp.decode_char_fast(id, code)?;
     Ok(if c >= 0 {
         Value::fixnum(c as i64)

@@ -50,6 +50,7 @@ pub mod object;
 pub mod overlay;
 pub mod print;
 pub mod process;
+pub mod pwd;
 pub mod regex;
 pub mod search;
 pub mod sha1;

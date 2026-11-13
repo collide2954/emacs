@@ -5,7 +5,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use num_bigint::BigInt;
 
 use crate::coding::f_coding_system_plist;
-use crate::editfns::{f_user_login_name, f_user_uid};
 use crate::error::LispResult;
 use crate::fileio::{
     f_directory_file_name, f_expand_file_name, f_file_name_as_directory, normalize_slashes,
@@ -78,8 +77,10 @@ struct Stat {
     nlink: u64,
     uid: i64,
     gid: i64,
-    uname: Option<String>,
-    gname: Option<String>,
+    #[cfg(windows)]
+    uname: Option<Vec<u8>>,
+    #[cfg(windows)]
+    gname: Option<Vec<u8>>,
     atime: (i64, i64),
     mtime: (i64, i64),
     ctime: (i64, i64),
@@ -153,7 +154,27 @@ fn is_exec(path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn lstat(path: &Path, uid: i64, uname: &str) -> std::io::Result<Stat> {
+fn stat_uname(st: &Stat) -> Option<Vec<u8>> {
+    st.uname.clone()
+}
+
+#[cfg(windows)]
+fn stat_gname(st: &Stat) -> Option<Vec<u8>> {
+    st.gname.clone()
+}
+
+#[cfg(unix)]
+fn stat_uname(st: &Stat) -> Option<Vec<u8>> {
+    crate::pwd::getpwuid(st.uid as u32).map(|pw| pw.name)
+}
+
+#[cfg(unix)]
+fn stat_gname(st: &Stat) -> Option<Vec<u8>> {
+    crate::pwd::getgrgid(st.gid as u32).map(|gr| gr.name)
+}
+
+#[cfg(windows)]
+fn lstat(path: &Path) -> std::io::Result<Stat> {
     const FILETIME_ZERO: i64 = -11_644_473_600;
     let convert = |t: std::io::Result<SystemTime>| match timespec(t) {
         Some((s, ns)) if s != FILETIME_ZERO => (s, ns),
@@ -196,14 +217,16 @@ fn lstat(path: &Path, uid: i64, uname: &str) -> std::io::Result<Stat> {
     if ctime.0 == 0 {
         ctime = mtime;
     }
+    let pw = crate::w32::dflt_passwd();
+    let gr = crate::w32::dflt_group();
     Ok(Stat {
         kind,
         mode,
         nlink: 1,
-        uid,
-        gid: uid,
-        uname: Some(uname.to_string()),
-        gname: Some("None".to_string()),
+        uid: i64::from(pw.uid),
+        gid: i64::from(pw.gid),
+        uname: Some(pw.name),
+        gname: Some(gr.name),
         atime,
         mtime,
         ctime,
@@ -214,7 +237,7 @@ fn lstat(path: &Path, uid: i64, uname: &str) -> std::io::Result<Stat> {
 }
 
 #[cfg(unix)]
-fn lstat(path: &Path, _uid: i64, _uname: &str) -> std::io::Result<Stat> {
+fn lstat(path: &Path) -> std::io::Result<Stat> {
     use std::os::unix::fs::MetadataExt;
     let m = std::fs::symlink_metadata(path)?;
     let kind = if m.file_type().is_symlink() {
@@ -230,8 +253,6 @@ fn lstat(path: &Path, _uid: i64, _uname: &str) -> std::io::Result<Stat> {
         nlink: m.nlink(),
         uid: m.uid() as i64,
         gid: m.gid() as i64,
-        uname: None,
-        gname: None,
         atime: (m.atime(), m.atime_nsec()),
         mtime: (m.mtime(), m.mtime_nsec()),
         ctime: (m.ctime(), m.ctime_nsec()),
@@ -301,14 +322,7 @@ impl Lisp {
     }
 
     fn file_attributes(&mut self, path: &Path, filename: Value, id_format: Value) -> LispResult {
-        let uid = f_user_uid(self, &[])?.as_fixnum().unwrap_or(0);
-        let login = f_user_login_name(self, &[Value::NIL])?;
-        let login = if login.is_string() {
-            self.string_to_rust(login)
-        } else {
-            String::new()
-        };
-        let st = match lstat(path, uid, &login) {
+        let st = match lstat(path) {
             Ok(st) => st,
             Err(e) => return self.file_metadata_errno("Getting attributes", filename, &e),
         };
@@ -330,14 +344,20 @@ impl Lisp {
         let (uname, gname) = if id_format.is_nil() || id_format == sym::INTEGER {
             (None, None)
         } else {
-            (st.uname, st.gname)
+            (stat_uname(&st), stat_gname(&st))
         };
         let uid = match uname {
-            Some(name) => self.string(&name),
+            Some(name) => {
+                let name = self.unibyte_string(&name);
+                self.decode_system(name)?
+            }
             None => self.integer(st.uid),
         };
         let gid = match gname {
-            Some(name) => self.string(&name),
+            Some(name) => {
+                let name = self.unibyte_string(&name);
+                self.decode_system(name)?
+            }
             None => self.integer(st.gid),
         };
         let atime = self.make_lisp_time(st.atime.0, st.atime.1);
