@@ -57,7 +57,21 @@ pub const SUBRS: &[Subr] = &[
         4,
         f_bidi_find_overridden_directionality,
     ),
+    Subr::fixed("remember-mouse-glyph", 3, 3, f_remember_mouse_glyph),
 ];
+
+fn f_remember_mouse_glyph(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_window_system_frame(args[0])?;
+    let x = lisp.check_fixnum(args[1])?;
+    let y = lisp.check_fixnum(args[2])?;
+    let rect = lisp.remember_mouse_glyph(f, i64::from(x as i32), i64::from(y as i32));
+    Ok(lisp.list(&[
+        Value::fixnum(rect.x.into()),
+        Value::fixnum(rect.y.into()),
+        Value::fixnum(rect.width.into()),
+        Value::fixnum(rect.height.into()),
+    ]))
+}
 
 pub(crate) fn f_current_bidi_paragraph_direction(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let buffer = args.first().copied().unwrap_or(Value::NIL);

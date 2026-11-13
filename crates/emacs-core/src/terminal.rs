@@ -23,6 +23,18 @@ pub type DefaultFontParameterHook = fn(&mut Lisp, Value, Value) -> LispResult<()
 pub type WindowSizeHook = fn(&mut Lisp, Value, bool, i64, i64) -> LispResult<()>;
 pub type ScrollBarHook = fn(&mut Lisp, Value, i64, i64, i64) -> LispResult<()>;
 
+#[derive(Clone, Copy, Debug)]
+pub struct MousePosition {
+    pub frame: Value,
+    pub bar_window: Value,
+    pub part: crate::termhooks::ScrollBarPart,
+    pub x: Value,
+    pub y: Value,
+    pub time: u64,
+}
+
+pub type MousePositionHook = fn(&mut Lisp, Value, i32) -> Option<MousePosition>;
+
 #[derive(Clone, Copy, Default, Debug)]
 pub struct TerminalHooks {
     pub ring_bell: Option<fn(&mut Lisp, Value)>,
@@ -55,6 +67,7 @@ pub struct TerminalHooks {
     pub buffer_flipping_unblocked: Option<fn(&mut Lisp, Value)>,
     pub condemn_scroll_bars: Option<fn(&mut Lisp, Value)>,
     pub judge_scroll_bars: Option<fn(&mut Lisp, Value)>,
+    pub mouse_position: Option<MousePositionHook>,
 }
 
 pub type ReadSocketHook = fn(&mut Lisp, Value, &mut crate::termhooks::KbdEvent) -> LispResult<i32>;

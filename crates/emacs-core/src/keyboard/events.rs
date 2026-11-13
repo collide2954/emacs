@@ -512,6 +512,27 @@ impl Lisp {
         })
     }
 
+    fn make_lispy_movement(
+        &mut self,
+        frame: Value,
+        bar_window: Value,
+        x: Value,
+        y: Value,
+        t: u64,
+    ) -> LispResult {
+        if !frame.is_nil() && !bar_window.is_nil() {
+            unreachable!("scroll-bar movement events need scroll bars");
+        }
+        let frame = (!frame.is_nil()).then_some(frame);
+        let position = self.make_lispy_position(
+            frame,
+            x.as_fixnum().unwrap_or(0),
+            y.as_fixnum().unwrap_or(0),
+            t as i64,
+        )?;
+        Ok(self.list(&[sym::MOUSE_MOVEMENT, position]))
+    }
+
     fn make_lispy_wheel(&mut self, event: &mut KbdEvent) -> LispResult {
         let f = event.frame_or_window;
         if !self.frame_live_p(f) {
@@ -1265,8 +1286,46 @@ impl Lisp {
                 }
                 _ => self.kbd_buffer_get_keyboard_event(event)?,
             };
-        } else if self.some_mouse_moved().is_some() {
-            unreachable!("mouse movement events need make_lispy_movement");
+        } else if let Some(moved) = self.some_mouse_moved() {
+            event_frame = moved;
+            kbp = self.current_kboard;
+            let mut f = moved;
+            let mut position = None;
+            let terminal = self.frame(f).terminal;
+            if let Some(hook) = self.terminal(terminal).hooks.mouse_position
+                && let Some(p) = hook(self, f, 0)
+            {
+                f = p.frame;
+                position = Some(p);
+            }
+            let mut movement = Value::NIL;
+            if let Some(p) = position.filter(|p| !p.x.is_nil()) {
+                if !f.is_nil() {
+                    let mut frame = self.frame(f).focus_frame;
+                    if frame.is_nil() {
+                        frame = f;
+                    }
+                    if frame != self.keyboard.internal_last_event_frame
+                        && frame != self.frames.selected_frame
+                    {
+                        movement = self.make_lispy_switch_frame(frame);
+                    }
+                    self.keyboard.internal_last_event_frame = frame;
+                }
+                if movement.is_nil() {
+                    movement = self.make_lispy_movement(f, p.bar_window, p.x, p.y, p.time)?;
+                }
+            }
+            if !movement.is_nil() {
+                let device = self.frame(event_frame).last_mouse_device;
+                let device = if device.is_string() {
+                    device
+                } else {
+                    self.keyboard.virtual_core_pointer_name
+                };
+                self.set_plain_value(sym::LAST_EVENT_DEVICE, device);
+            }
+            obj = movement;
         } else {
             panic!("emacs_abort: kbd_buffer_get_event found no input");
         }

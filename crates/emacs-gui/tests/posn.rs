@@ -109,6 +109,78 @@ fn posn_at_x_y_finds_text_and_the_mode_line() {
 }
 
 #[test]
+fn remember_mouse_glyph_finds_the_glyph_under_the_mouse() {
+    use emacs_core::dispextern::TEXT_AREA;
+    use emacs_core::dispnew::matrix::WhichMatrix;
+    on_big_stack(|| {
+        let (mut lisp, f, w) = displayed();
+        let g = lisp.frame(f).geometry.clone();
+        let (cw, lh, ib) = (g.column_width, g.line_height, g.internal_border_width);
+        let text_left = lisp.window_box_left(w, GlyphRowArea::Text);
+        let rect = |lisp: &mut Lisp, x: i64, y: i64| {
+            eval(lisp, &format!("(remember-mouse-glyph nil {x} {y})"))
+        };
+        assert_eq!(
+            rect(&mut lisp, text_left + 2 * cw + 1, ib + lh + 2),
+            format!("({} {} {cw} {lh})", text_left + 2 * cw, ib + lh)
+        );
+        assert_eq!(
+            rect(&mut lisp, text_left + 20 * cw + 1, ib + lh + 2),
+            format!("({} {} {cw} {lh})", text_left + 20 * cw, ib + lh)
+        );
+        let (row_x, row_y, row_height, first_width) = {
+            let m = lisp.window_matrix(w, WhichMatrix::Current).unwrap();
+            let row = &m.rows[m.mode_line_row()];
+            (
+                i64::from(row.x),
+                i64::from(row.y),
+                i64::from(row.height),
+                i64::from(row.area_glyphs(TEXT_AREA)[0].pixel_width),
+            )
+        };
+        assert_eq!(
+            rect(&mut lisp, ib + 1, ib + row_y + 1),
+            format!("({} {} {first_width} {row_height})", ib + row_x, ib + row_y)
+        );
+        let (sw, sh) = {
+            let info = lisp.display_info(lisp.frame(f).terminal);
+            (
+                i64::from(info.smallest_char_width),
+                i64::from(info.smallest_font_height),
+            )
+        };
+        assert_eq!(
+            rect(&mut lisp, -1, -1),
+            format!("({} {} {sw} {sh})", -sw, -sh)
+        );
+        eval(&mut lisp, "(setq mouse-prefer-closest-glyph t)");
+        assert_eq!(
+            rect(&mut lisp, text_left + 3 * cw - 1, ib + lh + 2),
+            format!(
+                "({} {} {} {lh})",
+                text_left + 2 * cw + cw / 2,
+                ib + lh,
+                cw / 2
+            )
+        );
+        eval(
+            &mut lisp,
+            "(setq mouse-prefer-closest-glyph nil window-resize-pixelwise t)",
+        );
+        assert_eq!(rect(&mut lisp, 13, 17), "(13 17 1 1)");
+        eval(
+            &mut lisp,
+            "(setq window-resize-pixelwise nil mouse-fine-grained-tracking t)",
+        );
+        assert_eq!(rect(&mut lisp, 13, 17), "(13 17 1 1)");
+        assert_eq!(
+            eval(&mut lisp, "(remember-mouse-glyph nil 'a 0)"),
+            "error: (wrong-type-argument fixnump a)"
+        );
+    });
+}
+
+#[test]
 fn coordinates_in_window_p_and_window_at() {
     on_big_stack(|| {
         let (mut lisp, f, w) = displayed();

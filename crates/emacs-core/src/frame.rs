@@ -467,6 +467,8 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("frame-right-divider-width", 0, 1, f_right_divider_width),
     Subr::fixed("frame-bottom-divider-width", 0, 1, f_bottom_divider_width),
     Subr::fixed("frame-pointer-visible-p", 0, 1, f_frame_pointer_visible_p),
+    Subr::fixed("mouse-position", 0, 0, f_mouse_position),
+    Subr::fixed("mouse-pixel-position", 0, 0, f_mouse_pixel_position),
     Subr::fixed("frame--set-was-invisible", 2, 2, f_frame_set_was_invisible),
     Subr::fixed(
         "frame-window-state-change",
@@ -2958,6 +2960,58 @@ fn f_right_divider_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_bottom_divider_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     geometry_getter(lisp, args, |g| g.bottom_divider_width)
+}
+
+impl Lisp {
+    fn mouse_position_from_hook(&mut self) -> (Value, Value, Value) {
+        let mut f = self.frames.selected_frame;
+        let (mut x, mut y) = (Value::NIL, Value::NIL);
+        let terminal = self.frame(f).terminal;
+        if let Some(hook) = self.terminal(terminal).hooks.mouse_position
+            && let Some(position) = hook(self, f, -1)
+        {
+            f = position.frame;
+            x = position.x;
+            y = position.y;
+        }
+        (f, x, y)
+    }
+
+    pub fn mouse_position(&mut self, call_mouse_position_function: bool) -> LispResult {
+        let (f, mut x, mut y) = self.mouse_position_from_hook();
+        if !x.is_nil() && !f.is_nil() {
+            let (col, row) = self.pixel_to_glyph_coords(
+                f,
+                x.as_fixnum().unwrap_or(0),
+                y.as_fixnum().unwrap_or(0),
+                true,
+            );
+            x = Value::fixnum(col);
+            y = Value::fixnum(row);
+        }
+        let xy = self.cons(x, y);
+        let mut retval = self.cons(f, xy);
+        let function = self.find_symbol_value(sym::MOUSE_POSITION_FUNCTION);
+        if call_mouse_position_function && !function.is_nil() {
+            retval = self.funcall(function, &[retval])?;
+        }
+        Ok(retval)
+    }
+}
+
+fn f_mouse_position(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    lisp.mouse_position(true)
+}
+
+fn f_mouse_pixel_position(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    let (f, x, y) = lisp.mouse_position_from_hook();
+    let xy = lisp.cons(x, y);
+    let mut retval = lisp.cons(f, xy);
+    let function = lisp.find_symbol_value(sym::MOUSE_POSITION_FUNCTION);
+    if !function.is_nil() {
+        retval = lisp.funcall(function, &[retval])?;
+    }
+    Ok(retval)
 }
 
 fn f_frame_pointer_visible_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {

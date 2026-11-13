@@ -136,7 +136,13 @@ impl Shell {
         let inputs = match event {
             mouse::Event::CursorMoved { position } => {
                 view.cursor = position;
-                Vec::new()
+                self.notify(Notice::Motion {
+                    frame,
+                    x: position.x as i64,
+                    y: position.y as i64,
+                    timestamp,
+                });
+                return;
             }
             mouse::Event::ButtonPressed(button) => vec![button_event(
                 button,

@@ -95,6 +95,51 @@ fn shell_tracks_frames_and_forwards_events() {
 }
 
 #[test]
+fn cursor_motion_becomes_a_motion_notice() {
+    use iced::{Point, mouse};
+    let mut shell = Shell::boot();
+    let (tx, rx) = mpsc::channel();
+    let _ = shell.update(Message::Connected(tx));
+    let _ = shell.update(Message::Lisp(Command::OpenFrame {
+        frame: 4,
+        title: "m".into(),
+        width: 100,
+        height: 50,
+    }));
+    let id = shell.window_of(4).expect("window for frame");
+    let _ = shell.update(Message::Mouse(
+        id,
+        mouse::Event::CursorMoved {
+            position: Point::new(12.7, 30.2),
+        },
+    ));
+    let notices: Vec<Notice> = rx.try_iter().collect();
+    assert!(
+        matches!(
+            notices.as_slice(),
+            [Notice::Motion {
+                frame: 4,
+                x: 12,
+                y: 30,
+                ..
+            }]
+        ),
+        "{notices:?}"
+    );
+    let _ = shell.update(Message::Mouse(
+        id,
+        mouse::Event::ButtonPressed(mouse::Button::Left),
+    ));
+    match rx.try_recv().expect("button") {
+        Notice::Input(e) => assert_eq!(
+            (e.kind, e.code, e.x, e.y, e.frame),
+            (EventKind::MouseClick, 0, 12, 30, 4)
+        ),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn an_opened_window_is_configured_and_then_mapped() {
     let mut shell = Shell::boot();
     let (tx, rx) = mpsc::channel();

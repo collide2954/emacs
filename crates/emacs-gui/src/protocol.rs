@@ -49,4 +49,10 @@ pub enum Notice {
     Map {
         frame: u64,
     },
+    Motion {
+        frame: u64,
+        x: i64,
+        y: i64,
+        timestamp: u64,
+    },
 }

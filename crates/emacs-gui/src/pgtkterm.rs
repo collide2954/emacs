@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use emacs_core::character::{CHAR_ALT, CHAR_CTL, CHAR_HYPER, CHAR_META, CHAR_SUPER};
+use emacs_core::dispextern::{EmacsRectangle, WindowPart};
 use emacs_core::editfns::f_system_name;
 use emacs_core::error::LispResult;
 use emacs_core::fns::f_provide;
@@ -11,8 +12,8 @@ use emacs_core::keyboard::f_set_input_interrupt_mode;
 use emacs_core::lisp::Lisp;
 use emacs_core::object::Weakness;
 use emacs_core::symbols as sym;
-use emacs_core::termhooks::{EventKind, InputEvent, KbdEvent};
-use emacs_core::terminal::{DisplayInfo, OutputMethod};
+use emacs_core::termhooks::{EventKind, InputEvent, KbdEvent, ScrollBarPart};
+use emacs_core::terminal::{DisplayInfo, MousePosition, OutputMethod};
 use emacs_core::value::Value;
 use emacs_core::xfaces::EmacsColor;
 
@@ -31,7 +32,12 @@ pub struct PgtkDisplayInfo {
     pub x_focus_event_frame: Value,
     pub grabbed: u32,
     pub last_mouse_frame: Value,
+    pub last_mouse_motion_frame: Value,
+    pub last_mouse_motion_x: i64,
+    pub last_mouse_motion_y: i64,
+    pub last_mouse_glyph: EmacsRectangle,
     pub last_mouse_glyph_frame: Value,
+    pub last_mouse_movement_time: u64,
 }
 
 const FOCUS_EXPLICIT: i32 = 2;
@@ -191,7 +197,11 @@ pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) -> LispResult<()> {
         if d.x_focus_event_frame == f {
             d.x_focus_event_frame = Value::NIL;
         }
-        for slot in [&mut d.last_mouse_frame, &mut d.last_mouse_glyph_frame] {
+        for slot in [
+            &mut d.last_mouse_frame,
+            &mut d.last_mouse_motion_frame,
+            &mut d.last_mouse_glyph_frame,
+        ] {
             if *slot == f {
                 *slot = Value::NIL;
             }
@@ -252,6 +262,7 @@ pub fn mark_pgtkterm(roots: &mut Vec<Value>) {
                 dpyinfo.x_focus_frame,
                 dpyinfo.x_focus_event_frame,
                 dpyinfo.last_mouse_frame,
+                dpyinfo.last_mouse_motion_frame,
                 dpyinfo.last_mouse_glyph_frame,
             ]);
         }
@@ -412,6 +423,136 @@ fn scroll_event(lisp: &mut Lisp, input: InputEvent) {
             ..KbdEvent::default()
         },
     );
+}
+
+fn note_mouse_movement(lisp: &mut Lisp, frame: Value, x: i64, y: i64, timestamp: u64) -> bool {
+    if !has_output(lisp, frame) {
+        return false;
+    }
+    let (glyph_frame, r) = with_dpyinfo(lisp, frame, |d| {
+        d.last_mouse_movement_time = timestamp;
+        d.last_mouse_motion_frame = frame;
+        d.last_mouse_motion_x = x;
+        d.last_mouse_motion_y = y;
+        (d.last_mouse_glyph_frame, d.last_mouse_glyph)
+    });
+    let (rx, ry) = (i64::from(r.x), i64::from(r.y));
+    if frame != glyph_frame
+        || x < rx
+        || x >= rx + i64::from(r.width)
+        || y < ry
+        || y >= ry + i64::from(r.height)
+    {
+        lisp.frame_mut(frame).flags.mouse_moved = true;
+        let rect = lisp.remember_mouse_glyph(frame, x, y);
+        with_dpyinfo(lisp, frame, |d| {
+            d.last_mouse_glyph = rect;
+            d.last_mouse_glyph_frame = frame;
+        });
+        lisp.frame_mut(frame).last_mouse_device = sym::T;
+        return true;
+    }
+    false
+}
+
+fn motion_notify_event(lisp: &mut Lisp, id: u64, x: i64, y: i64, timestamp: u64) -> LispResult<()> {
+    let Some(frame) = pgtk_any_window_to_frame(lisp, id) else {
+        return Ok(());
+    };
+    let f = gui_mouse_grabbed(lisp, frame).unwrap_or(frame);
+    if lisp.mouse_hl_info(f).mouse_face_hidden {
+        lisp.mouse_hl_info_mut(f).mouse_face_hidden = false;
+        lisp.clear_mouse_face(f)?;
+    }
+    let mut event = None;
+    let selected_window = lisp.windows.selected_window;
+    if !lisp.plain_value(sym::MOUSE_AUTOSELECT_WINDOW).is_nil()
+        && !lisp.window(selected_window).mini
+        && (f == lisp.frames.selected_frame || !lisp.plain_value(sym::FOCUS_FOLLOWS_MOUSE).is_nil())
+    {
+        let mut part = WindowPart::Nothing;
+        let window = lisp.window_from_coordinates(f, x, y, &mut part, false);
+        if lisp.is_window(window)
+            && window != lisp.windows.last_mouse_window
+            && window != selected_window
+        {
+            event = Some(KbdEvent {
+                kind: EventKind::SelectWindow,
+                frame_or_window: window,
+                ..KbdEvent::default()
+            });
+        }
+        lisp.windows.last_mouse_window = window;
+    }
+    note_mouse_movement(lisp, f, x, y, timestamp);
+    if let Some(event) = event {
+        evq_enqueue(lisp, event);
+    }
+    Ok(())
+}
+
+fn pgtk_mouse_position(lisp: &mut Lisp, fp: Value, _insist: i32) -> Option<MousePosition> {
+    let terminal = lisp.frame(fp).terminal;
+    let display_frames: Vec<Value> = lisp
+        .frames
+        .list
+        .iter()
+        .copied()
+        .filter(|&f| {
+            lisp.frame_live_p(f)
+                && lisp.frame(f).output_method == OutputMethod::Pgtk
+                && lisp.frame(f).terminal == terminal
+        })
+        .collect();
+    for f in display_frames {
+        lisp.frame_mut(f).flags.mouse_moved = false;
+    }
+    let track_mouse = lisp.plain_value(sym::TRACK_MOUSE);
+    let mut return_frame_flag = false;
+    let f1 = match gui_mouse_grabbed(lisp, fp) {
+        Some(last) if track_mouse != sym::DROPPING && track_mouse != sym::DRAG_SOURCE => last,
+        _ => {
+            let pointer = with_dpyinfo(lisp, fp, |d| d.last_mouse_motion_frame);
+            if pointer.is_nil() {
+                let selected = lisp.frames.selected_frame;
+                return_frame_flag = track_mouse == sym::DRAG_SOURCE;
+                if lisp.frame(selected).output_method == OutputMethod::Pgtk {
+                    selected
+                } else {
+                    with_dpyinfo(lisp, fp, |d| d.last_mouse_frame)
+                }
+            } else {
+                pointer
+            }
+        }
+    };
+    if f1.is_nil() || lisp.frame(f1).output_method != OutputMethod::Pgtk {
+        return None;
+    }
+    let (motion_frame, win_x, win_y, time) = with_dpyinfo(lisp, fp, |d| {
+        (
+            d.last_mouse_motion_frame,
+            d.last_mouse_motion_x,
+            d.last_mouse_motion_y,
+            d.last_mouse_movement_time,
+        )
+    });
+    if motion_frame != f1 {
+        return None;
+    }
+    let rect = lisp.remember_mouse_glyph(f1, win_x, win_y);
+    with_dpyinfo(lisp, fp, |d| {
+        d.last_mouse_glyph = rect;
+        d.last_mouse_glyph_frame = f1;
+    });
+    Some(MousePosition {
+        frame: if return_frame_flag { Value::NIL } else { f1 },
+        bar_window: Value::NIL,
+        part: ScrollBarPart::Nowhere,
+        x: Value::fixnum(win_x),
+        y: Value::fixnum(win_y),
+        time,
+    })
 }
 
 fn delete_event(lisp: &mut Lisp, input: InputEvent) {
@@ -673,6 +814,12 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             height,
             ..
         } => size_allocate(lisp, frame, width, height)?,
+        Notice::Motion {
+            frame,
+            x,
+            y,
+            timestamp,
+        } => motion_notify_event(lisp, frame, x, y, timestamp)?,
     }
     Ok(())
 }
@@ -727,7 +874,12 @@ fn initialize_display_info(terminal: Value) -> (PgtkDisplayInfo, DisplayInfo) {
         x_focus_event_frame: Value::NIL,
         grabbed: 0,
         last_mouse_frame: Value::NIL,
+        last_mouse_motion_frame: Value::NIL,
+        last_mouse_motion_x: 0,
+        last_mouse_motion_y: 0,
+        last_mouse_glyph: EmacsRectangle::default(),
         last_mouse_glyph_frame: Value::NIL,
+        last_mouse_movement_time: 0,
     };
     (pgtk, common)
 }
@@ -826,6 +978,7 @@ pub fn pgtk_term_init(
     hooks.delete_frame = Some(pgtk_destroy_window);
     hooks.delete_terminal = Some(pgtk_delete_terminal);
     hooks.read_socket = Some(pgtk_read_socket);
+    hooks.mouse_position = Some(pgtk_mouse_position);
     hooks.update_begin = Some(crate::pgtkdraw::pgtk_update_begin);
     hooks.update_end = Some(crate::pgtkdraw::pgtk_update_end);
     hooks.implicit_set_name = Some(crate::pgtkfns::pgtk_implicitly_set_name);

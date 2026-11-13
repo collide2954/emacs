@@ -128,6 +128,77 @@ fn mouse_notices_become_mouse_events() {
 }
 
 #[test]
+fn motion_notices_move_the_mouse() {
+    use emacs_core::dispextern::GlyphRowArea;
+    on_big_stack(|| {
+        let (tx, notices) = mpsc::channel();
+        let (mut lisp, f) = with_frame(notices);
+        eval(
+            &mut lisp,
+            "(progn (select-frame f) (fset 'record-window-buffer (function (lambda (w) nil))) (set-window-buffer nil (get-buffer-create \"text\")) (set-buffer \"text\") (setq bidi-paragraph-direction 'left-to-right) (insert \"line 0\\nline 1\\n\") (goto-char 1))",
+        );
+        lisp.frame_mut(f).flags.visible = true;
+        lisp.redisplay().unwrap();
+        let id = lisp.frame(f).id as u64;
+        let frame = lisp.prin1_to_string(f);
+        let w = lisp.frame(f).root_window;
+        let g = lisp.frame(f).geometry.clone();
+        let (cw, lh, ib) = (g.column_width, g.line_height, g.internal_border_width);
+        let x = lisp.window_box_left(w, GlyphRowArea::Text) + 2 * cw + 1;
+        let y = ib + lh + 2;
+        let motion = |x: i64, y: i64, timestamp: u64| Notice::Motion {
+            frame: id,
+            x,
+            y,
+            timestamp,
+        };
+        assert_eq!(
+            eval(&mut lisp, "(mouse-pixel-position)"),
+            format!("({frame} nil)")
+        );
+        tx.send(motion(x, y, 500)).unwrap();
+        lisp.gobble_input().unwrap();
+        assert!(lisp.frame(f).flags.mouse_moved);
+        assert_eq!(
+            eval(&mut lisp, "(mouse-pixel-position)"),
+            format!("({frame} {x} . {y})")
+        );
+        assert!(!lisp.frame(f).flags.mouse_moved);
+        let (col, row) = lisp.pixel_to_glyph_coords(f, x, y, true);
+        assert_eq!(
+            eval(&mut lisp, "(mouse-position)"),
+            format!("({frame} {col} . {row})")
+        );
+        tx.send(motion(x + 1, y, 600)).unwrap();
+        lisp.gobble_input().unwrap();
+        assert!(!lisp.frame(f).flags.mouse_moved);
+        assert_eq!(eval(&mut lisp, "(input-pending-p)"), "nil");
+        eval(&mut lisp, "(setq track-mouse t)");
+        tx.send(motion(x + cw, y, 700)).unwrap();
+        assert_eq!(eval(&mut lisp, "(input-pending-p)"), "t");
+        let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
+        let position = lisp.car_safe(lisp.cdr_safe(event));
+        assert_eq!(lisp.car_safe(event), lisp.intern("mouse-movement"));
+        assert_eq!(lisp.car_safe(position), w);
+        let timestamp = lisp.car_safe(lisp.cdr_safe(lisp.cdr_safe(lisp.cdr_safe(position))));
+        assert_eq!(lisp.prin1_to_string(timestamp), "700");
+        assert_eq!(eval(&mut lisp, "(input-pending-p)"), "nil");
+        eval(
+            &mut lisp,
+            "(setq track-mouse nil mouse-autoselect-window t)",
+        );
+        let mini = lisp.frame(f).minibuffer_window;
+        let mini_y = ib + lisp.window(mini).pixel_top + 2;
+        tx.send(motion(x, mini_y, 800)).unwrap();
+        tx.send(motion(x + 3 * cw, mini_y, 900)).unwrap();
+        assert_eq!(eval(&mut lisp, "(input-pending-p)"), "t");
+        let window = lisp.prin1_to_string(mini);
+        assert_eq!(next_event(&mut lisp), format!("(select-window ({window}))"));
+        assert_eq!(eval(&mut lisp, "(input-pending-p)"), "nil");
+    });
+}
+
+#[test]
 fn notices_become_lisp_events() {
     on_big_stack(|| {
         let (tx, notices) = mpsc::channel();

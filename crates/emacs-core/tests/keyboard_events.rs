@@ -8,7 +8,8 @@ use emacs_core::keyboard::{
 use emacs_core::lisp::Lisp;
 use emacs_core::subr::Subr;
 use emacs_core::symbols as sym;
-use emacs_core::termhooks::{EventKind, KbdEvent};
+use emacs_core::termhooks::{EventKind, KbdEvent, ScrollBarPart};
+use emacs_core::terminal::MousePosition;
 use emacs_core::timefns::{current_timespec, timespec_add};
 use emacs_core::value::Value;
 
@@ -55,6 +56,68 @@ fn mouse(
         out.push_str(&format!(" {}", lisp.prin1_to_string(*count)));
     }
     out
+}
+
+fn test_mouse_position(lisp: &mut Lisp, f: Value, _insist: i32) -> Option<MousePosition> {
+    for frame in lisp.frames.list.clone() {
+        lisp.frame_mut(frame).flags.mouse_moved = false;
+    }
+    Some(MousePosition {
+        frame: f,
+        bar_window: Value::NIL,
+        part: ScrollBarPart::Nowhere,
+        x: Value::fixnum(7),
+        y: Value::fixnum(9),
+        time: 4242,
+    })
+}
+
+#[test]
+fn mouse_position_and_movement() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        let l = &mut lisp;
+        let f = l.frames.selected_frame;
+        for source in ["(mouse-pixel-position)", "(mouse-position)"] {
+            assert_eq!(
+                eval(
+                    l,
+                    &format!("(let ((p {source})) (list (eq (car p) (selected-frame)) (cdr p)))")
+                ),
+                "(t (nil))",
+                "{source} without a hook"
+            );
+        }
+        let terminal = l.frame(f).terminal;
+        l.terminal_mut(terminal).hooks.mouse_position = Some(test_mouse_position);
+        for (source, expected) in [
+            (
+                "(let ((p (mouse-pixel-position))) (list (eq (car p) (selected-frame)) (cdr p)))",
+                "(t (7 . 9))",
+            ),
+            (
+                "(let ((p (mouse-position))) (list (eq (car p) (selected-frame)) (cdr p)))",
+                "(t (7 . 9))",
+            ),
+            (
+                "(let ((mouse-position-function (function (lambda (p) (cons 'x (cdr p)))))) (list (mouse-position) (mouse-pixel-position)))",
+                "((x 7 . 9) (x 7 . 9))",
+            ),
+        ] {
+            assert_eq!(eval(l, source), expected, "evaluating {source}");
+        }
+        l.set_plain_value(sym::TRACK_MOUSE, sym::T);
+        l.frame_mut(f).flags.mouse_moved = true;
+        let (event, _, _, _) = l.kbd_buffer_get_event(None, None).unwrap();
+        let items = l.list_to_vec(event).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(l.prin1_to_string(items[0]), "mouse-movement");
+        let position = l.list_to_vec(items[1]).unwrap();
+        assert_eq!(position[0], l.frame(f).selected_window);
+        assert_eq!(l.prin1_to_string(position[3]), "4242");
+        assert!(!l.frame(f).flags.mouse_moved);
+        assert_eq!(eval(l, "last-event-device"), "\"Virtual core pointer\"");
+    });
 }
 
 #[test]

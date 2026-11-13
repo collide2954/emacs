@@ -1425,6 +1425,52 @@ impl Lisp {
         window
     }
 
+    pub fn window_relative_x_coord(&self, w: Value, part: WindowPart, x: i64) -> i64 {
+        let pseudo = self.window(w).flags.pseudo_window_p;
+        let left_x = if pseudo {
+            0
+        } else {
+            self.window_box_left_edge_x(w)
+        };
+        let outside = self.window_has_fringes_outside_margins(w);
+        match part {
+            WindowPart::Text => x - self.window_box_left(w, GlyphRowArea::Text),
+            WindowPart::TabLine
+            | WindowPart::HeaderLine
+            | WindowPart::ModeLine
+            | WindowPart::LeftFringe => x - left_x,
+            WindowPart::RightFringe => x - left_x - self.window_left_fringe_width(w),
+            WindowPart::LeftMargin => {
+                x - left_x
+                    - if outside {
+                        self.window_left_fringe_width(w)
+                    } else {
+                        0
+                    }
+            }
+            WindowPart::RightMargin => {
+                x + 1
+                    - if pseudo {
+                        self.window(w).pixel_width
+                    } else {
+                        self.window_box_right_edge_x(w)
+                    }
+                    + self.window_box_width(w, GlyphRowArea::RightMargin)
+                    + if outside {
+                        self.window_right_fringe_width(w)
+                    } else {
+                        0
+                    }
+            }
+            WindowPart::Nothing
+            | WindowPart::VerticalBorder
+            | WindowPart::VerticalScrollBar
+            | WindowPart::HorizontalScrollBar
+            | WindowPart::RightDivider
+            | WindowPart::BottomDivider => 0,
+        }
+    }
+
     pub(crate) fn window_scroll_bar_area_width(&self, w: Value) -> i64 {
         if self.window_has_vertical_scroll_bar(w) {
             self.window_config_scroll_bar_width(w)
@@ -1465,7 +1511,7 @@ impl Lisp {
         }
     }
 
-    fn window_frame_line_height(&self, w: Value) -> i64 {
+    pub(crate) fn window_frame_line_height(&self, w: Value) -> i64 {
         self.frame(self.window(w).frame).geometry.line_height
     }
 
