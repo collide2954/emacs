@@ -263,7 +263,9 @@ stands in for GTK, tiny-skia for cairo, and cosmic-text for FreeType and HarfBuz
   pointer is, so `pgtk_mouse_position` answers from the last motion and reports nothing
   before one; mouse highlighting and help echo are not handled yet.
 - Output: redisplay draws each frame into a tiny-skia pixmap on the Lisp thread, as pgtk
-  draws into a cairo image surface. A flush hands the pixels to iced, which shows them.
+  draws into a cairo image surface. A flush hands the pixels to iced, which shows them once
+  `image::allocate` has them on the GPU. iced uploads images of 2 MiB or more on a worker
+  thread and draws nothing until then, so the previous picture stays up in the meantime.
 - Fonts: a cosmic-text font driver supplies metrics and glyphs, in the role of `ftcrfont.c`.
 - The frame primitives (`x-create-frame` and friends, as in `pgtkfns.c`) live in the GUI
   crate and are registered into the interpreter at startup.

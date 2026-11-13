@@ -28,12 +28,23 @@ pub enum Message {
     Window(window::Id, window::Event),
     Key(window::Id, keyboard::Event),
     Mouse(window::Id, mouse::Event),
+    Allocated {
+        id: window::Id,
+        seq: u64,
+        handle: Handle,
+        width: u32,
+        height: u32,
+        allocation: Option<image::Allocation>,
+    },
 }
 
 struct View {
     frame: u64,
     title: String,
     image: Option<(Handle, u32, u32)>,
+    allocation: Option<image::Allocation>,
+    presented: u64,
+    shown: u64,
     scale: f32,
     size: Size,
     cursor: Point,
@@ -65,6 +76,13 @@ impl Shell {
 
     pub fn has_image(&self, id: window::Id) -> bool {
         self.views.get(&id).is_some_and(|v| v.image.is_some())
+    }
+
+    pub fn image_size(&self, id: window::Id) -> Option<(u32, u32)> {
+        self.views
+            .get(&id)
+            .and_then(|v| v.image.as_ref())
+            .map(|(_, width, height)| (*width, *height))
     }
 
     pub fn title(&self, id: window::Id) -> String {
@@ -121,6 +139,23 @@ impl Shell {
             }
             Message::Mouse(id, event) => {
                 self.mouse_event(id, event);
+                Task::none()
+            }
+            Message::Allocated {
+                id,
+                seq,
+                handle,
+                width,
+                height,
+                allocation,
+            } => {
+                if let Some(view) = self.views.get_mut(&id)
+                    && seq > view.shown
+                {
+                    view.image = Some((handle, width, height));
+                    view.allocation = allocation;
+                    view.shown = seq;
+                }
                 Task::none()
             }
         }
@@ -191,6 +226,9 @@ impl Shell {
                         frame,
                         title,
                         image: None,
+                        allocation: None,
+                        presented: 0,
+                        shown: 0,
                         scale: 1.0,
                         size,
                         cursor: Point::ORIGIN,
@@ -223,10 +261,23 @@ impl Shell {
                 height,
                 pixels,
             } => {
-                if let Some(view) = self.window_of(frame).and_then(|id| self.views.get_mut(&id)) {
-                    view.image = Some((Handle::from_rgba(width, height, pixels), width, height));
-                }
-                Task::none()
+                let Some(id) = self.window_of(frame) else {
+                    return Task::none();
+                };
+                let Some(view) = self.views.get_mut(&id) else {
+                    return Task::none();
+                };
+                view.presented += 1;
+                let seq = view.presented;
+                let handle = Handle::from_rgba(width, height, pixels);
+                image::allocate(handle.clone()).map(move |result| Message::Allocated {
+                    id,
+                    seq,
+                    handle: handle.clone(),
+                    width,
+                    height,
+                    allocation: result.ok(),
+                })
             }
             Command::SetFullscreen { frame, on } => match self.window_of(frame) {
                 Some(id) => window::set_mode(

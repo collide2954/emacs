@@ -39,7 +39,7 @@ fn shell_tracks_frames_and_forwards_events() {
         height: 50,
         pixels: vec![0; 100 * 50 * 4],
     }));
-    assert!(shell.has_image(id));
+    assert!(!shell.has_image(id));
 
     let _ = shell.update(Message::Window(id, window::Event::Rescaled(2.0)));
     let _ = shell.update(Message::Window(
@@ -137,6 +137,47 @@ fn cursor_motion_becomes_a_motion_notice() {
         ),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn a_presented_image_is_shown_once_allocated() {
+    use iced::widget::image::Handle;
+    let mut shell = Shell::boot();
+    let _ = shell.update(Message::Lisp(Command::OpenFrame {
+        frame: 6,
+        title: "p".into(),
+        width: 8,
+        height: 4,
+    }));
+    let id = shell.window_of(6).expect("window for frame");
+    let pixels = |width: u32, height: u32| vec![0; (width * height * 4) as usize];
+    let present = |width, height| {
+        Message::Lisp(Command::Present {
+            frame: 6,
+            width,
+            height,
+            pixels: pixels(width, height),
+        })
+    };
+    let allocated = |seq, width, height| Message::Allocated {
+        id,
+        seq,
+        handle: Handle::from_rgba(width, height, pixels(width, height)),
+        width,
+        height,
+        allocation: None,
+    };
+    let _ = shell.update(present(4, 2));
+    assert_eq!(shell.image_size(id), None);
+    let _ = shell.update(allocated(1, 4, 2));
+    assert_eq!(shell.image_size(id), Some((4, 2)));
+    let _ = shell.update(present(8, 2));
+    let _ = shell.update(present(8, 4));
+    assert_eq!(shell.image_size(id), Some((4, 2)));
+    let _ = shell.update(allocated(3, 8, 4));
+    assert_eq!(shell.image_size(id), Some((8, 4)));
+    let _ = shell.update(allocated(2, 8, 2));
+    assert_eq!(shell.image_size(id), Some((8, 4)));
 }
 
 #[test]
