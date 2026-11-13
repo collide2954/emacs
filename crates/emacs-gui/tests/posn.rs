@@ -213,6 +213,87 @@ fn window_cursor_info_describes_the_drawn_cursor() {
 }
 
 #[test]
+fn window_end_and_window_lines_pixel_dimensions() {
+    use emacs_core::dispnew::matrix::WhichMatrix;
+    on_big_stack(|| {
+        let (mut lisp, f, w) = displayed();
+        let cw = lisp.frame(f).geometry.column_width;
+        let lh = lisp.frame(f).geometry.line_height;
+        let box_height = lisp.window_box_height(w);
+        let rows = (box_height + lh - 1) / lh;
+        let end = 1 + 7 * rows;
+        assert_eq!(eval(&mut lisp, "(window-end)"), end.to_string());
+        assert_eq!(eval(&mut lisp, "(window-end nil t)"), end.to_string());
+        let (pixel_width, pixel_height) = (lisp.window(w).pixel_width, lisp.window(w).pixel_height);
+        let text_bottom = lisp.window_text_bottom_y(w);
+        let body_width = lisp
+            .window_body_width(w, emacs_core::window::WindowBodyUnit::Pixels)
+            .unwrap();
+        let nrows = lisp.window_matrix(w, WhichMatrix::Current).unwrap().nrows;
+        let dims = |range: std::ops::Range<i64>, max_y: i64, x: &dyn Fn(i64) -> i64| {
+            let items: Vec<String> = range
+                .filter(|r| (r + 1) * lh < max_y)
+                .map(|r| format!("({} . {})", x(r), (r + 1) * lh))
+                .collect();
+            if items.is_empty() {
+                "nil".to_string()
+            } else {
+                format!("({})", items.join(" "))
+            }
+        };
+        assert_eq!(
+            eval(&mut lisp, "(window-lines-pixel-dimensions)"),
+            dims(0..rows, pixel_height, &|_| 7 * cw)
+        );
+        assert_eq!(
+            eval(&mut lisp, "(window-lines-pixel-dimensions nil nil nil t)"),
+            dims(0..rows, text_bottom, &|_| 7 * cw)
+        );
+        assert_eq!(
+            eval(&mut lisp, "(window-lines-pixel-dimensions nil 1 2)"),
+            dims(1..3, pixel_height, &|_| 7 * cw)
+        );
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(window-lines-pixel-dimensions nil nil nil nil t)"
+            ),
+            dims(0..rows, pixel_height, &|_| pixel_width - 7 * cw)
+        );
+        assert_eq!(
+            eval(&mut lisp, "(window-lines-pixel-dimensions nil 0 0 t t)"),
+            dims(0..1, text_bottom, &|_| body_width - 7 * cw)
+        );
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(window-lines-pixel-dimensions nil 0 0 nil nil t)"
+            ),
+            dims(0..1, pixel_height, &|_| pixel_width - cw)
+        );
+        assert_eq!(
+            eval(&mut lisp, "(window-lines-pixel-dimensions nil 0 0 nil t t)"),
+            dims(0..1, pixel_height, &|_| cw)
+        );
+        assert_eq!(
+            eval(&mut lisp, "(window-lines-pixel-dimensions nil -1)"),
+            format!("error: (args-out-of-range -1 0 {nrows})")
+        );
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(window-lines-pixel-dimensions (minibuffer-window))"
+            ),
+            "nil"
+        );
+        eval(&mut lisp, "(progn (goto-char 1) (insert \"ab\\n\"))");
+        assert_eq!(eval(&mut lisp, "(window-lines-pixel-dimensions)"), "nil");
+        assert_eq!(eval(&mut lisp, "(window-end)"), (end + 3).to_string());
+        assert_eq!(eval(&mut lisp, "(window-end nil t)"), (end - 4).to_string());
+    });
+}
+
+#[test]
 fn coordinates_in_window_p_and_window_at() {
     on_big_stack(|| {
         let (mut lisp, f, w) = displayed();

@@ -591,6 +591,65 @@ fn discarding_buffers_running_the_change_hook_and_forcing_updates() {
 }
 
 #[test]
+fn window_end_and_line_dimensions_in_batch() {
+    check(&[
+        ("(window-end)", "1"),
+        ("(window-end nil t)", "1"),
+        ("(progn (insert \"abc\") (window-end nil t))", "4"),
+        (
+            "(window-end 'x)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+        ("(window-lines-pixel-dimensions)", "nil"),
+        (
+            "(window-lines-pixel-dimensions 'x)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+    ]);
+}
+
+#[test]
+fn combining_and_uncombining_windows() {
+    check(&[
+        (
+            "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (setq w (selected-window) h (window-pixel-height w)) (set-window-new-pixel w (- h 8)) (set-window-new-normal w (/ (- h 8) (float h))) (setq c (split-window-internal w 8 nil (/ 8 (float h))) p (window-parent w)) (set-window-new-pixel w (- h 16)) (set-window-new-normal w 0.5) (setq b (split-window-internal w 8 nil 0.5)) (list (eq (window-top-child p) w) (eq (window-next-sibling w) b) (eq (window-next-sibling b) c) (window-pixel-height w) (window-pixel-height b) (window-pixel-height c)))",
+            "(t t t 8 8 8)",
+        ),
+        (
+            "(combine-windows w w)",
+            "error: (error \"Cannot combine a window with itself\")",
+        ),
+        ("(combine-windows w c)", "nil"),
+        (
+            "(combine-windows 'x w)",
+            "error: (wrong-type-argument window-valid-p x)",
+        ),
+        (
+            "(progn (setq q (combine-windows w b)) (list (window-valid-p q) (window-live-p q) (eq (window-parent q) p) (eq (window-top-child p) q) (eq (window-top-child q) w) (eq (window-parent w) q) (eq (window-parent b) q) (eq (window-next-sibling q) c) (eq (window-prev-sibling c) q) (window-prev-sibling q) (window-prev-sibling w) (window-next-sibling b) (= (window-pixel-top q) (window-pixel-top w)) (window-pixel-height q) (window-total-height q) (= (window-pixel-width q) (window-pixel-width w)) (window-normal-size w) (window-normal-size b) (window-normal-size w t) (= (window-normal-size q) (/ 16.0 24)) (= (window-normal-size c) (- 1.0 (/ 16.0 24)))))",
+            "(t nil t t t t t t t nil nil nil t 16 16 t 0.5 0.5 1.0 t t)",
+        ),
+        (
+            "(combine-windows b c)",
+            "error: (error \"Windows to combine must be children of same parent\")",
+        ),
+        ("(uncombine-window w)", "nil"),
+        ("(uncombine-window p)", "nil"),
+        (
+            "(uncombine-window (minibuffer-window))",
+            "error: (error \"Cannot uncombine a mini window\")",
+        ),
+        (
+            "(list (uncombine-window q) (eq (window-top-child p) w) (eq (window-parent w) p) (eq (window-parent b) p) (eq (window-next-sibling b) c) (eq (window-prev-sibling c) b) (window-prev-sibling w) (= (window-normal-size w) (/ 8.0 24)) (= (window-normal-size b) (/ 8.0 24)) (= (window-normal-size c) (- 1.0 (/ 8.0 24) (/ 8.0 24))))",
+            "(t t t t t t nil t t t)",
+        ),
+        (
+            "(progn (setq q2 (combine-windows c b)) (list (eq (window-top-child q2) b) (eq (window-next-sibling b) c) (eq (window-parent c) q2) (eq (window-next-sibling w) q2) (eq (window-prev-sibling q2) w) (window-next-sibling q2) (= (window-pixel-top q2) (window-pixel-top b)) (window-pixel-height q2)))",
+            "(t t t t t nil t 16)",
+        ),
+    ]);
+}
+
+#[test]
 fn horizontal_scrolling() {
     check(&[
         ("(window-hscroll)", "0"),

@@ -441,6 +441,13 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-point", 0, 1, f_window_point),
     Subr::fixed("window-old-point", 0, 1, f_window_old_point),
     Subr::fixed("window-start", 0, 1, f_window_start),
+    Subr::fixed("window-end", 0, 2, f_window_end),
+    Subr::fixed(
+        "window-lines-pixel-dimensions",
+        0,
+        6,
+        f_window_lines_pixel_dimensions,
+    ),
     Subr::fixed("set-window-point", 2, 2, f_set_window_point),
     Subr::fixed("set-window-start", 2, 3, f_set_window_start),
     Subr::fixed("window-dedicated-p", 0, 1, f_window_dedicated_p),
@@ -3003,6 +3010,160 @@ fn f_window_scroll_bar_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 fn f_window_hscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let w = lisp.decode_live_window(arg(args, 0))?;
     Ok(Value::fixnum(lisp.window(w).hscroll))
+}
+
+fn f_window_end(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    use crate::dispextern::{It, TextPos};
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    let update = arg(args, 1);
+    let buf = lisp.window(w).contents;
+    lisp.check_buffer(buf)?;
+    let f = lisp.window(w).frame;
+    let needs_update = lisp.windows.windows_or_buffers_changed != 0
+        || !lisp.window(w).flags.window_end_valid
+        || lisp.buffer(buf).clip_changed
+        || lisp.buffer(buf).prevent_redisplay_optimizations_p
+        || lisp.window_outdated(w);
+    if !update.is_nil()
+        && needs_update
+        && !(lisp.noninteractive()
+            || lisp.frame(f).output_method == crate::terminal::OutputMethod::Initial)
+    {
+        let old_buffer = lisp.current_buffer;
+        if buf != old_buffer {
+            lisp.set_buffer_internal(buf);
+        }
+        let marker = lisp.marker(lisp.window(w).start);
+        let (charpos, bytepos) = (marker.charpos as i64, marker.bytepos as i64);
+        let b = lisp.cur();
+        let startp = if charpos < b.begv as i64 {
+            TextPos::new(b.begv as i64, b.begv_byte as i64)
+        } else if charpos > b.zv as i64 {
+            TextPos::new(b.zv as i64, b.zv_byte as i64)
+        } else {
+            TextPos::new(charpos, bytepos)
+        };
+        let itdata = lisp.bidi_shelve_cache();
+        let value = lisp.with_gc_deferred(|lisp| -> LispResult<i64> {
+            let mut it = It::default();
+            lisp.start_display(&mut it, w, startp)?;
+            let height = lisp.window_box_height(w) as i32;
+            lisp.move_it_vertically(&mut it, height)?;
+            if it.current_y < it.last_visible_y {
+                lisp.move_it_past_eol(&mut it)?;
+            }
+            Ok(it.charpos())
+        })?;
+        lisp.bidi_unshelve_cache(itdata, false);
+        if buf != old_buffer {
+            lisp.set_buffer_internal(old_buffer);
+        }
+        Ok(Value::fixnum(value))
+    } else {
+        let z = lisp.buffer(buf).z() as i64;
+        Ok(Value::fixnum(z - lisp.window(w).window_end_pos))
+    }
+}
+
+fn f_window_lines_pixel_dimensions(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    use crate::dispextern::TEXT_AREA;
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    let (first, last, body, inverse, left) = (
+        arg(args, 1),
+        arg(args, 2),
+        arg(args, 3),
+        arg(args, 4),
+        arg(args, 5),
+    );
+    let max_y = if body.is_nil() {
+        lisp.window(w).pixel_height
+    } else {
+        lisp.window_text_bottom_y(w)
+    };
+    let window_width = if body.is_nil() {
+        lisp.window(w).pixel_width
+    } else {
+        lisp.window_body_width(w, WindowBodyUnit::Pixels)?
+    };
+    let tab_line_height = lisp.window_tab_line_height(w);
+    let header_line_height = lisp.window_header_line_height(w);
+    let subtract = if body.is_nil() {
+        0
+    } else {
+        tab_line_height + header_line_height
+    };
+    let invert = !inverse.is_nil();
+    let left_flag = !left.is_nil();
+    if lisp.noninteractive() || lisp.window(w).flags.pseudo_window_p {
+        return Ok(Value::NIL);
+    }
+    let contents = lisp.window(w).contents;
+    lisp.check_buffer(contents)?;
+    if !lisp.window(w).flags.window_end_valid
+        || lisp.windows.windows_or_buffers_changed != 0
+        || lisp.buffer(contents).clip_changed
+        || lisp.buffer(contents).prevent_redisplay_optimizations_p
+        || lisp.window_outdated(w)
+    {
+        return Ok(Value::NIL);
+    }
+    let nrows = i64::from(
+        lisp.window_matrix(w, WhichMatrix::Current)
+            .expect("glyph matrix")
+            .nrows,
+    );
+    let row = if !first.is_nil() {
+        lisp.check_integer_range(first, 0, nrows)? as usize
+    } else if body.is_nil() {
+        0
+    } else {
+        lisp.window_matrix(w, WhichMatrix::Current)
+            .expect("glyph matrix")
+            .first_text_row()
+    };
+    let end_row = if !last.is_nil() {
+        lisp.check_integer_range(last, 0, nrows)? as usize
+    } else if body.is_nil() {
+        nrows as usize
+    } else {
+        lisp.matrix_bottom_text_row(w, WhichMatrix::Current)
+    };
+    let mut dims = Vec::new();
+    {
+        let m = lisp
+            .window_matrix(w, WhichMatrix::Current)
+            .expect("glyph matrix");
+        let mut r = row;
+        while r <= end_row
+            && let Some(glyph_row) = m.rows.get(r)
+            && glyph_row.enabled_p
+            && i64::from(glyph_row.y + glyph_row.height) < max_y
+        {
+            let x = if left_flag {
+                let glyph_width = glyph_row
+                    .glyphs
+                    .get(glyph_row.area[TEXT_AREA])
+                    .map_or(0, |g| i64::from(g.pixel_width));
+                if invert {
+                    glyph_width
+                } else {
+                    window_width - glyph_width
+                }
+            } else if invert {
+                window_width - i64::from(glyph_row.pixel_width)
+            } else {
+                i64::from(glyph_row.pixel_width)
+            };
+            dims.push((x, i64::from(glyph_row.y + glyph_row.height) - subtract));
+            r += 1;
+        }
+    }
+    let mut rows = Value::NIL;
+    for (x, y) in dims.into_iter().rev() {
+        let cell = lisp.cons(Value::fixnum(x), Value::fixnum(y));
+        rows = lisp.cons(cell, rows);
+    }
+    Ok(rows)
 }
 
 fn f_set_window_hscroll(lisp: &mut Lisp, args: &[Value]) -> LispResult {

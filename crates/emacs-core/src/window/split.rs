@@ -23,7 +23,115 @@ pub const SUBRS: &[Subr] = &[
         1,
         f_run_window_scroll_functions,
     ),
+    Subr::fixed("combine-windows", 2, 2, f_combine_windows),
+    Subr::fixed("uncombine-window", 1, 1, f_uncombine_window),
 ];
+
+fn f_combine_windows(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let mut f = lisp.decode_valid_window(args[0])?;
+    let mut l = lisp.decode_valid_window(args[1])?;
+    if f == l {
+        return Err(lisp.error("Cannot combine a window with itself"));
+    }
+    let mut w = f;
+    while w != l && !lisp.window(w).next.is_nil() {
+        w = lisp.window(w).next;
+    }
+    if w != l {
+        w = l;
+        while w != f && !lisp.window(w).next.is_nil() {
+            w = lisp.window(w).next;
+        }
+        if w == f {
+            f = l;
+            l = w;
+        } else {
+            return Err(lisp.error("Windows to combine must be children of same parent"));
+        }
+    }
+    if lisp.window(f).prev.is_nil() && lisp.window(l).next.is_nil() {
+        return Ok(Value::NIL);
+    }
+    let frame = lisp.window(f).frame;
+    let parent = lisp.make_parent_window(frame);
+    let f_parent = lisp.window(f).parent;
+    let horflag = lisp.window(f_parent).horizontal;
+    lisp.window_mut(parent).parent = f_parent;
+    lisp.wset_combination(parent, horflag, f);
+    let f_prev = lisp.window(f).prev;
+    if f_prev.is_nil() {
+        lisp.wset_combination(f_parent, horflag, parent);
+    } else {
+        lisp.window_mut(f_prev).next = parent;
+        lisp.window_mut(parent).prev = f_prev;
+        lisp.window_mut(f).prev = Value::NIL;
+    }
+    let l_next = lisp.window(l).next;
+    if !l_next.is_nil() {
+        lisp.window_mut(l_next).prev = parent;
+        lisp.window_mut(parent).next = l_next;
+        lisp.window_mut(l).next = Value::NIL;
+    }
+    let (fw, lw) = (
+        lisp.window(f).clone_geometry(),
+        lisp.window(l).clone_geometry(),
+    );
+    let p = lisp.window_mut(parent);
+    p.pixel_left = fw.pixel_left;
+    p.left_col = fw.left_col;
+    p.pixel_top = fw.pixel_top;
+    p.top_line = fw.top_line;
+    if horflag {
+        p.pixel_width = lw.pixel_left + lw.pixel_width - fw.pixel_left;
+        p.total_cols = lw.left_col + lw.total_cols - fw.left_col;
+        p.pixel_height = fw.pixel_height;
+        p.total_lines = fw.total_lines;
+    } else {
+        p.pixel_height = lw.pixel_top + lw.pixel_height - fw.pixel_top;
+        p.total_lines = lw.top_line + lw.total_lines - fw.top_line;
+        p.pixel_width = fw.pixel_width;
+        p.total_cols = fw.total_cols;
+    }
+    lisp.window_set_parent_and_normal_sizes(parent);
+    let grandparent = lisp.window(parent).parent;
+    lisp.window_set_parent_and_normal_sizes(grandparent);
+    Ok(parent)
+}
+
+fn f_uncombine_window(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_valid_window(args[0])?;
+    let parent = lisp.window(w).parent;
+    if lisp.window(w).mini {
+        return Err(lisp.error("Cannot uncombine a mini window"));
+    }
+    if lisp.window_internal_p(w)
+        && !parent.is_nil()
+        && lisp.window(w).horizontal == lisp.window(parent).horizontal
+    {
+        let first = lisp.window(w).contents;
+        let mut last = first;
+        while !lisp.window(last).next.is_nil() {
+            last = lisp.window(last).next;
+        }
+        let w_prev = lisp.window(w).prev;
+        lisp.window_mut(first).prev = w_prev;
+        if w_prev.is_nil() {
+            let horizontal = lisp.window(parent).horizontal;
+            lisp.wset_combination(parent, horizontal, first);
+        } else {
+            lisp.window_mut(w_prev).next = first;
+        }
+        let w_next = lisp.window(w).next;
+        lisp.window_mut(last).next = w_next;
+        if !w_next.is_nil() {
+            lisp.window_mut(w_next).prev = last;
+        }
+        lisp.window_set_parent_and_normal_sizes(parent);
+        Ok(sym::T)
+    } else {
+        Ok(Value::NIL)
+    }
+}
 
 fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).copied().unwrap_or(Value::NIL)
@@ -102,6 +210,44 @@ impl Lisp {
         if !tem.is_nil() && self.window(tem).contents == old {
             let horizontal = self.window(tem).horizontal;
             self.wset_combination(tem, horizontal, new);
+        }
+    }
+
+    fn window_set_parent_and_normal_sizes(&mut self, parent: Value) {
+        let horizontal = self.window(parent).horizontal;
+        let (p_width, p_height) = (
+            self.window(parent).pixel_width as f64,
+            self.window(parent).pixel_height as f64,
+        );
+        let mut w = self.window(parent).contents;
+        let mut remainder = 1.0;
+        loop {
+            self.window_mut(w).parent = parent;
+            let one = self.float(1.0);
+            if horizontal {
+                self.window_mut(w).normal_lines = one;
+            } else {
+                self.window_mut(w).normal_cols = one;
+            }
+            let next = self.window(w).next;
+            let normal = if next.is_nil() {
+                remainder
+            } else if horizontal {
+                self.window(w).pixel_width as f64 / p_width
+            } else {
+                self.window(w).pixel_height as f64 / p_height
+            };
+            let value = self.float(normal);
+            if horizontal {
+                self.window_mut(w).normal_cols = value;
+            } else {
+                self.window_mut(w).normal_lines = value;
+            }
+            if next.is_nil() {
+                break;
+            }
+            remainder -= normal;
+            w = next;
         }
     }
 
