@@ -1,7 +1,8 @@
 use crate::error::LispResult;
 use crate::keyboard::{
-    ALT_MODIFIER, CLICK_MODIFIER, CTRL_MODIFIER, HYPER_MODIFIER, Kvar, META_MODIFIER,
-    READABLE_EVENTS_DO_TIMERS_NOW, SHIFT_MODIFIER, SUPER_MODIFIER, make_ctrl_char,
+    ALT_MODIFIER, CLICK_MODIFIER, CTRL_MODIFIER, DOUBLE_MODIFIER, DOWN_MODIFIER, DRAG_MODIFIER,
+    HYPER_MODIFIER, Kvar, META_MODIFIER, READABLE_EVENTS_DO_TIMERS_NOW, SHIFT_MODIFIER,
+    SUPER_MODIFIER, TRIPLE_MODIFIER, UP_MODIFIER, make_ctrl_char,
 };
 use crate::lisp::Lisp;
 use crate::subr::Subr;
@@ -173,18 +174,44 @@ const ISO_LISPY_FUNCTION_KEYS: [Option<&str>; 53] = {
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("input-pending-p", 0, 1, f_input_pending_p),
     Subr::fixed("insert-special-event", 1, 1, f_insert_special_event),
+    Subr::fixed("internal--track-mouse", 1, 1, f_internal_track_mouse),
 ];
+
+fn tracking_off(lisp: &mut Lisp, old_track_mouse: Value) -> LispResult<()> {
+    lisp.set_plain_value(sym::TRACK_MOUSE, old_track_mouse);
+    if old_track_mouse.is_nil() && !lisp.readable_events(READABLE_EVENTS_DO_TIMERS_NOW)? {
+        lisp.redisplay_preserve_echo_area(6)?;
+        lisp.get_input_pending(READABLE_EVENTS_DO_TIMERS_NOW)?;
+    }
+    Ok(())
+}
+
+fn f_internal_track_mouse(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let bodyfun = args[0];
+    let count = lisp.specpdl.len();
+    let old = lisp.plain_value(sym::TRACK_MOUSE);
+    lisp.record_unwind(tracking_off, old);
+    lisp.set_plain_value(sym::TRACK_MOUSE, sym::T);
+    let val = lisp.funcall(bodyfun, &[]);
+    lisp.unbind_to_value(count, val)
+}
+
+pub(crate) const LISPY_WHEEL_NAMES: [&str; 4] =
+    ["wheel-up", "wheel-down", "wheel-left", "wheel-right"];
 
 #[derive(Clone, Copy)]
 enum SymbolTable {
     Accent,
     Function,
     System,
+    Mouse,
+    Wheel,
 }
 
 enum NameTable {
     Strs(&'static [&'static str]),
     Options(&'static [Option<&'static str>]),
+    Sized(usize),
     None,
 }
 
@@ -193,7 +220,7 @@ impl NameTable {
         match self {
             NameTable::Strs(t) => t.get(i).copied(),
             NameTable::Options(t) => t.get(i).copied().flatten(),
-            NameTable::None => None,
+            NameTable::Sized(_) | NameTable::None => None,
         }
     }
 
@@ -201,6 +228,7 @@ impl NameTable {
         match self {
             NameTable::Strs(t) => t.len() as i64,
             NameTable::Options(t) => t.len() as i64,
+            NameTable::Sized(n) => *n as i64,
             NameTable::None => i64::MAX,
         }
     }
@@ -212,6 +240,8 @@ impl Lisp {
             SymbolTable::Accent => self.keyboard.accent_key_syms,
             SymbolTable::Function => self.keyboard.func_key_syms,
             SymbolTable::System => self.kvar(Kvar::SystemKeySyms),
+            SymbolTable::Mouse => self.keyboard.mouse_syms,
+            SymbolTable::Wheel => self.keyboard.wheel_syms,
         }
     }
 
@@ -220,7 +250,344 @@ impl Lisp {
             SymbolTable::Accent => self.keyboard.accent_key_syms = value,
             SymbolTable::Function => self.keyboard.func_key_syms = value,
             SymbolTable::System => self.set_kvar(Kvar::SystemKeySyms, value),
+            SymbolTable::Mouse => self.keyboard.mouse_syms = value,
+            SymbolTable::Wheel => self.keyboard.wheel_syms = value,
         }
+    }
+
+    fn save_line_number_display_width(&mut self, event: &KbdEvent) -> LispResult<()> {
+        let w = if self.is_window(event.frame_or_window) {
+            event.frame_or_window
+        } else if self.is_frame(event.frame_or_window) {
+            self.frame(event.frame_or_window).selected_window
+        } else {
+            self.windows.selected_window
+        };
+        self.keyboard.down_mouse_line_number_width = self.line_number_display_width(w)?.0;
+        Ok(())
+    }
+
+    fn line_number_mode_hscroll(&mut self, start_pos: Value, end_pos: Value) -> LispResult<bool> {
+        if self.car_safe(start_pos) != self.car_safe(end_pos)
+            || self.list_to_vec(start_pos)?.len() < 7
+            || self.list_to_vec(end_pos)?.len() < 7
+        {
+            return Ok(false);
+        }
+        let start_col_row = self.list_to_vec(start_pos)?[6];
+        let end_col_row = self.list_to_vec(end_pos)?[6];
+        let mut window = self.car_safe(end_pos);
+        if !self.window_valid_p(window) {
+            window = self.windows.selected_window;
+        }
+        let (col_width, _) = self.line_number_display_width(window)?;
+        let start_col = self.car_safe(start_col_row);
+        let end_col = self.car_safe(end_col_row);
+        Ok(start_col == end_col
+            && self.keyboard.down_mouse_line_number_width >= 0
+            && col_width != self.keyboard.down_mouse_line_number_width)
+    }
+
+    fn mouse_event_frame(&self, event: &KbdEvent) -> Value {
+        if self.is_window(event.frame_or_window) {
+            self.window(event.frame_or_window).frame
+        } else if self.is_frame(event.frame_or_window) {
+            event.frame_or_window
+        } else {
+            panic!("emacs_abort: mouse event without a frame or window")
+        }
+    }
+
+    fn double_click_p(&self, event: &KbdEvent, button: i64) -> bool {
+        let f = self.mouse_event_frame(event);
+        let fuzz = if self.frame(f).window_p() {
+            self.int_var(sym::DOUBLE_CLICK_FUZZ)
+        } else {
+            self.int_var(sym::DOUBLE_CLICK_FUZZ) / 8
+        };
+        let (x, y) = (
+            event.x.as_fixnum().unwrap_or(0),
+            event.y.as_fixnum().unwrap_or(0),
+        );
+        let time = self.find_symbol_value(sym::DOUBLE_CLICK_TIME);
+        button == self.keyboard.last_mouse_button
+            && (x - self.keyboard.last_mouse_x).abs() <= fuzz
+            && (y - self.keyboard.last_mouse_y).abs() <= fuzz
+            && self.keyboard.button_down_time != 0
+            && (time == sym::T
+                || time.as_fixnum().is_some_and(|limit| {
+                    limit >= 0
+                        && event
+                            .timestamp
+                            .wrapping_sub(self.keyboard.button_down_time as u64)
+                            < limit as u64
+                }))
+    }
+
+    fn make_lispy_mouse_click(&mut self, event: &mut KbdEvent) -> LispResult {
+        let button = i64::from(event.code);
+        let f = event.frame_or_window;
+        if !self.frame_live_p(f) {
+            return Ok(Value::NIL);
+        }
+        let (x, y) = (
+            event.x.as_fixnum().unwrap_or(0),
+            event.y.as_fixnum().unwrap_or(0),
+        );
+        if !self.frame(f).window_p() {
+            let (column, row) = (x, y);
+            if row >= 0
+                && row < self.frame(f).geometry.menu_bar_lines
+                && event.modifiers & DOWN_MODIFIER != 0
+            {
+                let items = self.frame(f).menu_bar_items;
+                let items = if self.is_vector(items) {
+                    self.vector_items(items).to_vec()
+                } else {
+                    Vec::new()
+                };
+                let mut item = Value::NIL;
+                for &[key, string, _, pos] in items.as_chunks::<4>().0 {
+                    if string.is_nil() {
+                        break;
+                    }
+                    let pos = pos.as_fixnum().unwrap_or(0);
+                    if column >= pos && column < pos + self.string_chars(string) as i64 {
+                        item = key;
+                        break;
+                    }
+                }
+                if item.is_nil() {
+                    return Ok(Value::NIL);
+                }
+                let xy = self.cons(event.x, event.y);
+                let position =
+                    self.list(&[f, sym::MENU_BAR, xy, Value::fixnum(event.timestamp as i64)]);
+                return Ok(self.list(&[item, position]));
+            }
+        }
+        let base = self.stack.len();
+        let r = self.make_lispy_mouse_click_1(event, button, f, x, y);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn make_lispy_mouse_click_1(
+        &mut self,
+        event: &mut KbdEvent,
+        button: i64,
+        f: Value,
+        x: i64,
+        y: i64,
+    ) -> LispResult {
+        let mut position = self.make_lispy_position(Some(f), x, y, event.timestamp as i64)?;
+        self.stack.push(position);
+        if event.arg.is_cons() && self.xcar(event.arg) == sym::TAB_BAR {
+            let object = self.list(&[self.xcdr(event.arg)]);
+            position = self.nconc2(position, object);
+        }
+        let size = self.vector_items(self.keyboard.button_down_location).len() as i64;
+        if button >= size {
+            let incr = (button - size + 1) as usize;
+            let location = self.keyboard.button_down_location;
+            self.keyboard.button_down_location = crate::fns::larger_vector(self, location, incr);
+            let mouse_syms = self.keyboard.mouse_syms;
+            self.keyboard.mouse_syms = crate::fns::larger_vector(self, mouse_syms, incr);
+        }
+        let location = self.keyboard.button_down_location;
+        let start_pos = self.vector_items(location)[button as usize];
+        self.stack.push(start_pos);
+        self.vector_set(location, button as usize, Value::NIL);
+        let is_double = self.double_click_p(event, button);
+        self.keyboard.last_mouse_button = button;
+        self.keyboard.last_mouse_x = x;
+        self.keyboard.last_mouse_y = y;
+        if event.modifiers & DOWN_MODIFIER != 0 {
+            if is_double {
+                self.keyboard.double_click_count += 1;
+                event.modifiers |= if self.keyboard.double_click_count > 2 {
+                    TRIPLE_MODIFIER
+                } else {
+                    DOUBLE_MODIFIER
+                };
+            } else {
+                self.keyboard.double_click_count = 1;
+            }
+            self.keyboard.button_down_time = event.timestamp as i64;
+            let copy = crate::fns::f_copy_alist(self, &[position])?;
+            let location = self.keyboard.button_down_location;
+            self.vector_set(location, button as usize, copy);
+            self.keyboard.frame_relative_event_pos = self.cons(event.x, event.y);
+            self.keyboard.ignore_mouse_drag_p = false;
+            self.save_line_number_display_width(event)?;
+        } else if event.modifiers & UP_MODIFIER != 0 {
+            if !start_pos.is_cons() {
+                return Ok(Value::NIL);
+            }
+            let mut click_or_drag_modifier = CLICK_MODIFIER;
+            if self.keyboard.ignore_mouse_drag_p {
+                self.keyboard.ignore_mouse_drag_p = false;
+            } else {
+                let fuzz = self.int_var(sym::DOUBLE_CLICK_FUZZ);
+                let pos = self.keyboard.frame_relative_event_pos;
+                let xdiff = x - self.car_safe(pos).as_fixnum().unwrap_or(0);
+                let ydiff = y - self.cdr_safe(pos).as_fixnum().unwrap_or(0);
+                let start_window = self.car_safe(start_pos);
+                let start_area = self.car_safe(self.cdr_safe(start_pos));
+                let window = self.car_safe(position);
+                let area = self.car_safe(self.cdr_safe(position));
+                let same = 0 < fuzz
+                    && -fuzz < xdiff
+                    && xdiff < fuzz
+                    && -fuzz < ydiff
+                    && ydiff < fuzz
+                    && (start_area == area
+                        || self.line_number_mode_hscroll(start_pos, position)?
+                        || start_window != window);
+                if !same {
+                    self.keyboard.button_down_time = 0;
+                    click_or_drag_modifier = DRAG_MODIFIER;
+                    self.keyboard.down_mouse_line_number_width = -1;
+                } else if (start_window != window || start_area != area)
+                    && start_area.is_fixnum()
+                    && self.window_live_p(start_window)
+                    && !crate::data::f_fboundp(self, &[sym::WINDOW_EDGES])?.is_nil()
+                {
+                    let edges = self.funcall(
+                        sym::WINDOW_EDGES,
+                        &[start_window, sym::T, Value::NIL, sym::T],
+                    )?;
+                    let edges = self.list_to_vec(edges)?;
+                    let edge = |i: usize| edges.get(i).and_then(|v| v.as_fixnum()).unwrap_or(0);
+                    let pos = self.keyboard.frame_relative_event_pos;
+                    let mut new_x = self.car_safe(pos).as_fixnum().unwrap_or(0);
+                    let mut new_y = self.cdr_safe(pos).as_fixnum().unwrap_or(0);
+                    if new_x < edge(0) {
+                        new_x = edge(0);
+                    } else if new_x >= edge(2) {
+                        new_x = edge(2) - 1;
+                    }
+                    if new_y < edge(1) {
+                        new_y = edge(1);
+                    } else if new_y >= edge(3) {
+                        new_y = edge(3) - 1;
+                    }
+                    position = self.make_lispy_position(
+                        Some(event.frame_or_window),
+                        new_x,
+                        new_y,
+                        event.timestamp as i64,
+                    )?;
+                    self.stack.push(position);
+                }
+            }
+            let count = self.keyboard.double_click_count;
+            event.modifiers = (event.modifiers & !UP_MODIFIER)
+                | click_or_drag_modifier
+                | match count {
+                    ..2 => 0,
+                    2 => DOUBLE_MODIFIER,
+                    _ => TRIPLE_MODIFIER,
+                };
+        } else {
+            panic!("emacs_abort: a mouse click without a down or up modifier");
+        }
+        let size = self.vector_items(self.keyboard.mouse_syms).len();
+        let stem = self.keyboard.lispy_mouse_stem;
+        let head = self.modify_event_symbol(
+            button,
+            event.modifiers,
+            sym::MOUSE_CLICK,
+            stem,
+            NameTable::Sized(size),
+            SymbolTable::Mouse,
+        );
+        Ok(if event.modifiers & DRAG_MODIFIER != 0 {
+            self.list(&[head, start_pos, position])
+        } else if event.modifiers & (DOUBLE_MODIFIER | TRIPLE_MODIFIER) != 0 {
+            let count = Value::fixnum(self.keyboard.double_click_count);
+            self.list(&[head, position, count])
+        } else {
+            self.list(&[head, position])
+        })
+    }
+
+    fn make_lispy_wheel(&mut self, event: &mut KbdEvent) -> LispResult {
+        let f = event.frame_or_window;
+        if !self.frame_live_p(f) {
+            return Ok(Value::NIL);
+        }
+        let (x, y) = (
+            event.x.as_fixnum().unwrap_or(0),
+            event.y.as_fixnum().unwrap_or(0),
+        );
+        let base = self.stack.len();
+        let position = self.make_lispy_position(Some(f), x, y, event.timestamp as i64);
+        let position = match position {
+            Ok(position) => position,
+            Err(e) => {
+                self.stack.truncate(base);
+                return Err(e);
+            }
+        };
+        self.stack.push(position);
+        let mut symbol_num = if event.modifiers & UP_MODIFIER != 0 {
+            event.modifiers &= !UP_MODIFIER;
+            0
+        } else if event.modifiers & DOWN_MODIFIER != 0 {
+            event.modifiers &= !DOWN_MODIFIER;
+            1
+        } else {
+            panic!("emacs_abort: a wheel event without a down or up modifier")
+        };
+        if event.kind == EventKind::HorizWheel {
+            symbol_num += 2;
+        }
+        if self.double_click_p(event, -(1 + symbol_num)) {
+            self.keyboard.double_click_count += 1;
+            event.modifiers |= if self.keyboard.double_click_count > 2 {
+                TRIPLE_MODIFIER
+            } else {
+                DOUBLE_MODIFIER
+            };
+        } else {
+            self.keyboard.double_click_count = 1;
+            event.modifiers |= CLICK_MODIFIER;
+        }
+        self.keyboard.button_down_time = event.timestamp as i64;
+        self.keyboard.last_mouse_button = -(1 + symbol_num);
+        self.keyboard.last_mouse_x = x;
+        self.keyboard.last_mouse_y = y;
+        let head = self.modify_event_symbol(
+            symbol_num,
+            event.modifiers,
+            sym::MOUSE_CLICK,
+            Value::NIL,
+            NameTable::Strs(&LISPY_WHEEL_NAMES),
+            SymbolTable::Wheel,
+        );
+        let count = Value::fixnum(self.keyboard.double_click_count);
+        let arg = event.arg;
+        let r = if arg.is_cons() {
+            let rest = self.xcdr(arg);
+            let delta = if rest.is_cons() && self.xcdr(rest).is_cons() {
+                let dx = self.xcar(rest);
+                let dy = self.xcar(self.xcdr(rest));
+                self.cons(dx, dy)
+            } else {
+                Value::NIL
+            };
+            let lines = self.xcar(arg);
+            self.list(&[head, position, count, lines, delta])
+        } else if self.is_number(arg) {
+            self.list(&[head, position, count, arg])
+        } else if event.modifiers & (DOUBLE_MODIFIER | TRIPLE_MODIFIER) != 0 {
+            self.list(&[head, position, count])
+        } else {
+            self.list(&[head, position])
+        };
+        self.stack.truncate(base);
+        Ok(r)
     }
 
     fn modify_event_symbol(
@@ -289,8 +656,8 @@ impl Lisp {
         self.list(&[sym::SWITCH_FRAME, frame])
     }
 
-    pub fn make_lispy_event(&mut self, event: &mut KbdEvent) -> Value {
-        match event.kind {
+    pub fn make_lispy_event(&mut self, event: &mut KbdEvent) -> LispResult {
+        Ok(match event.kind {
             EventKind::DeleteWindow
             | EventKind::Iconify
             | EventKind::Deiconify
@@ -353,38 +720,38 @@ impl Lisp {
                 let code = event.code;
                 for (i, &accent) in LISPY_ACCENT_CODES.iter().enumerate() {
                     if code == accent {
-                        return self.modify_event_symbol(
+                        return Ok(self.modify_event_symbol(
                             i as i64,
                             event.modifiers,
                             sym::FUNCTION_KEY,
                             Value::NIL,
                             NameTable::Strs(&LISPY_ACCENT_KEYS),
                             SymbolTable::Accent,
-                        );
+                        ));
                     }
                 }
                 if (ISO_FUNCTION_KEY_OFFSET..FUNCTION_KEY_OFFSET).contains(&code) {
-                    return self.modify_event_symbol(
+                    return Ok(self.modify_event_symbol(
                         i64::from(code - ISO_FUNCTION_KEY_OFFSET),
                         event.modifiers,
                         sym::FUNCTION_KEY,
                         Value::NIL,
                         NameTable::Options(&ISO_LISPY_FUNCTION_KEYS),
                         SymbolTable::Function,
-                    );
+                    ));
                 }
                 if (FUNCTION_KEY_OFFSET..FUNCTION_KEY_OFFSET + LISPY_FUNCTION_KEYS.len() as u32)
                     .contains(&code)
                     && LISPY_FUNCTION_KEYS[(code - FUNCTION_KEY_OFFSET) as usize].is_some()
                 {
-                    return self.modify_event_symbol(
+                    return Ok(self.modify_event_symbol(
                         i64::from(code - FUNCTION_KEY_OFFSET),
                         event.modifiers,
                         sym::FUNCTION_KEY,
                         Value::NIL,
                         NameTable::Options(&LISPY_FUNCTION_KEYS),
                         SymbolTable::Function,
-                    );
+                    ));
                 }
                 if self.kvar(Kvar::SystemKeySyms).is_nil() {
                     let table = self.cons(Value::NIL, Value::NIL);
@@ -423,10 +790,9 @@ impl Lisp {
                 self.list(&[sym::CONFIG_CHANGED_EVENT, event.arg, event.frame_or_window])
             }
             EventKind::PreeditText => self.list(&[sym::PREEDIT_TEXT, event.arg]),
-            EventKind::MouseClick
-            | EventKind::Wheel
-            | EventKind::HorizWheel
-            | EventKind::ScrollBarClick
+            EventKind::MouseClick => return self.make_lispy_mouse_click(event),
+            EventKind::Wheel | EventKind::HorizWheel => return self.make_lispy_wheel(event),
+            EventKind::ScrollBarClick
             | EventKind::HorizontalScrollBarClick
             | EventKind::DragNDrop
             | EventKind::TouchEnd
@@ -438,7 +804,7 @@ impl Lisp {
             }
             EventKind::UserSignal => unreachable!("user signals need find_user_signal_name"),
             _ => panic!("emacs_abort: make_lispy_event of {:?}", event.kind),
-        }
+        })
     }
 
     fn event_to_kboard(&self, event: &KbdEvent) -> Option<usize> {
@@ -893,7 +1259,7 @@ impl Lisp {
                 | EventKind::FocusOut
                 | EventKind::SelectWindow
                 | EventKind::Sleep => {
-                    let obj = self.make_lispy_event(&mut event);
+                    let obj = self.make_lispy_event(&mut event)?;
                     self.keyboard.kbd_buffer.pop_front();
                     obj
                 }
@@ -976,7 +1342,7 @@ impl Lisp {
             let next = Value::fixnum(index.as_fixnum().unwrap_or(0) + 1);
             self.heap.set_car(event.arg, next);
         }
-        let obj = self.make_lispy_event(&mut event);
+        let obj = self.make_lispy_event(&mut event)?;
         let done = event.kind != EventKind::MultibyteCharKeystroke
             || !event.arg.is_cons()
             || self.xcar(event.arg).as_fixnum().unwrap_or(0) as usize

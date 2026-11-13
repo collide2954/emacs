@@ -2,7 +2,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use emacs_core::emacs::Startup;
-use emacs_core::keyboard::CTRL_MODIFIER;
+use emacs_core::keyboard::{CTRL_MODIFIER, DOWN_MODIFIER, UP_MODIFIER};
 use emacs_core::lisp::Lisp;
 use emacs_core::termhooks::{EventKind, InputEvent};
 use emacs_core::value::Value;
@@ -62,6 +62,69 @@ fn input(frame: u64, kind: EventKind, code: u32, modifiers: i64) -> Notice {
 fn next_event(lisp: &mut Lisp) -> String {
     let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
     lisp.prin1_to_string(event)
+}
+
+#[test]
+fn mouse_notices_become_mouse_events() {
+    on_big_stack(|| {
+        let (tx, notices) = mpsc::channel();
+        let (mut lisp, f) = with_frame(notices);
+        let id = lisp.frame(f).id as u64;
+        let window = lisp.frame(f).selected_window;
+        let mouse = |kind, modifiers, timestamp| {
+            Notice::Input(InputEvent {
+                kind,
+                code: 0,
+                modifiers,
+                x: 3,
+                y: 3,
+                timestamp,
+                frame: id,
+                ..InputEvent::default()
+            })
+        };
+        tx.send(mouse(EventKind::MouseClick, DOWN_MODIFIER, 1000))
+            .unwrap();
+        tx.send(Notice::Input(InputEvent {
+            frame: id + 1000,
+            ..match mouse(EventKind::MouseClick, DOWN_MODIFIER, 1050) {
+                Notice::Input(input) => input,
+                _ => unreachable!(),
+            }
+        }))
+        .unwrap();
+        tx.send(mouse(EventKind::MouseClick, UP_MODIFIER, 1100))
+            .unwrap();
+        tx.send(mouse(EventKind::Wheel, DOWN_MODIFIER, 2000))
+            .unwrap();
+        assert_eq!(eval(&mut lisp, "(input-pending-p)"), "t");
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
+            let head = lisp.car_safe(event);
+            if head == lisp.intern("switch-frame") {
+                continue;
+            }
+            let position = lisp.car_safe(lisp.cdr_safe(event));
+            seen.push((
+                lisp.prin1_to_string(head),
+                lisp.car_safe(position) == window,
+            ));
+        }
+        assert_eq!(
+            seen,
+            [
+                ("down-mouse-1".to_string(), true),
+                ("mouse-1".to_string(), true),
+                ("wheel-down".to_string(), true)
+            ]
+        );
+        assert_eq!(eval(&mut lisp, "(input-pending-p)"), "nil");
+        assert_eq!(
+            eval(&mut lisp, "last-event-device"),
+            "\"Virtual core pointer\""
+        );
+    });
 }
 
 #[test]

@@ -7,12 +7,14 @@ use emacs_core::termhooks::{EventKind, InputEvent};
 use iced::futures::channel::mpsc as fmpsc;
 use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::keyboard;
+use iced::mouse;
 use iced::widget::image::{FilterMethod, Handle};
 use iced::widget::{image, space};
-use iced::{ContentFit, Element, Event, Length, Size, Subscription, Task, event, window};
+use iced::{ContentFit, Element, Event, Length, Point, Size, Subscription, Task, event, window};
 
 use crate::display::Display;
 use crate::keysym::{KeyPress, key_press_event};
+use crate::mouse::{WheelAccumulator, button_event};
 use crate::protocol::{Command, Notice};
 
 const LISP_STACK_SIZE: usize = 1 << 30;
@@ -25,6 +27,7 @@ pub enum Message {
     Lisp(Command),
     Window(window::Id, window::Event),
     Key(window::Id, keyboard::Event),
+    Mouse(window::Id, mouse::Event),
 }
 
 struct View {
@@ -33,6 +36,8 @@ struct View {
     image: Option<(Handle, u32, u32)>,
     scale: f32,
     size: Size,
+    cursor: Point,
+    wheel: WheelAccumulator,
 }
 
 pub struct Shell {
@@ -40,6 +45,7 @@ pub struct Shell {
     views: BTreeMap<window::Id, View>,
     frames: HashMap<u64, window::Id>,
     epoch: Instant,
+    modifiers: keyboard::Modifiers,
 }
 
 impl Shell {
@@ -49,6 +55,7 @@ impl Shell {
             views: BTreeMap::new(),
             frames: HashMap::new(),
             epoch: Instant::now(),
+            modifiers: keyboard::Modifiers::empty(),
         }
     }
 
@@ -112,6 +119,49 @@ impl Shell {
                 self.key_event(id, event);
                 Task::none()
             }
+            Message::Mouse(id, event) => {
+                self.mouse_event(id, event);
+                Task::none()
+            }
+        }
+    }
+
+    fn mouse_event(&mut self, id: window::Id, event: mouse::Event) {
+        let timestamp = self.timestamp();
+        let modifiers = self.modifiers;
+        let Some(view) = self.views.get_mut(&id) else {
+            return;
+        };
+        let frame = view.frame;
+        let inputs = match event {
+            mouse::Event::CursorMoved { position } => {
+                view.cursor = position;
+                Vec::new()
+            }
+            mouse::Event::ButtonPressed(button) => vec![button_event(
+                button,
+                true,
+                view.cursor,
+                modifiers,
+                timestamp,
+                frame,
+            )],
+            mouse::Event::ButtonReleased(button) => vec![button_event(
+                button,
+                false,
+                view.cursor,
+                modifiers,
+                timestamp,
+                frame,
+            )],
+            mouse::Event::WheelScrolled { delta } => {
+                view.wheel
+                    .events(delta, view.cursor, modifiers, timestamp, frame)
+            }
+            _ => Vec::new(),
+        };
+        for input in inputs {
+            self.notify(Notice::Input(input));
         }
     }
 
@@ -137,6 +187,8 @@ impl Shell {
                         image: None,
                         scale: 1.0,
                         size,
+                        cursor: Point::ORIGIN,
+                        wheel: WheelAccumulator::default(),
                     },
                 );
                 self.frames.insert(frame, id);
@@ -232,6 +284,9 @@ impl Shell {
     }
 
     fn key_event(&mut self, id: window::Id, event: keyboard::Event) {
+        if let keyboard::Event::ModifiersChanged(modifiers) = event {
+            self.modifiers = modifiers;
+        }
         let Some(frame) = self.views.get(&id).map(|v| v.frame) else {
             return;
         };
@@ -283,6 +338,7 @@ impl Shell {
             window::events().map(|(id, event)| Message::Window(id, event)),
             event::listen_with(|event, _status, id| match event {
                 Event::Keyboard(key) => Some(Message::Key(id, key)),
+                Event::Mouse(mouse) => Some(Message::Mouse(id, mouse)),
                 _ => None,
             }),
         ])

@@ -9,6 +9,7 @@ pub mod ftcrfont;
 pub mod gdkrgba;
 pub mod hbfont;
 pub mod keysym;
+pub mod mouse;
 pub mod pgtkdraw;
 pub mod pgtkfns;
 pub mod pgtkim;

@@ -388,6 +388,16 @@ pub struct Keyboard {
     pub echo_message_buffer: Value,
     pub button_down_time: i64,
     pub ignore_mouse_drag_p: bool,
+    pub button_down_location: Value,
+    pub frame_relative_event_pos: Value,
+    pub down_mouse_line_number_width: i32,
+    pub last_mouse_button: i64,
+    pub last_mouse_x: i64,
+    pub last_mouse_y: i64,
+    pub double_click_count: i64,
+    pub mouse_syms: Value,
+    pub wheel_syms: Value,
+    pub lispy_mouse_stem: Value,
     pub getcjmp: Value,
     pub getcjmp_tag: Value,
     pub this_command_keys: Value,
@@ -434,6 +444,16 @@ impl Default for Keyboard {
             echo_message_buffer: Value::NIL,
             button_down_time: 0,
             ignore_mouse_drag_p: false,
+            button_down_location: Value::NIL,
+            frame_relative_event_pos: Value::NIL,
+            down_mouse_line_number_width: 0,
+            last_mouse_button: 0,
+            last_mouse_x: 0,
+            last_mouse_y: 0,
+            double_click_count: 0,
+            mouse_syms: Value::NIL,
+            wheel_syms: Value::NIL,
+            lispy_mouse_stem: Value::NIL,
             getcjmp: Value::NIL,
             getcjmp_tag: Value::NIL,
             this_command_keys: Value::NIL,
@@ -475,6 +495,11 @@ impl Keyboard {
             self.help_form_saved_window_configs,
             self.read_key_sequence_cmd,
             self.read_key_sequence_remapped,
+            self.button_down_location,
+            self.frame_relative_event_pos,
+            self.mouse_syms,
+            self.wheel_syms,
+            self.lispy_mouse_stem,
         ]);
         self.menu.roots(out);
         out.extend_from_slice(&self.raw_keybuf);
@@ -827,6 +852,14 @@ fn init_while_no_input_ignore_events(lisp: &mut Lisp) -> Value {
 }
 
 pub fn init_vars(lisp: &mut Lisp) {
+    let stem = lisp.string("mouse");
+    lisp.keyboard.lispy_mouse_stem = stem;
+    let location = lisp.vector(vec![Value::NIL; 5]);
+    lisp.keyboard.button_down_location = location;
+    let mouse_syms = lisp.vector(vec![Value::NIL; 5]);
+    lisp.keyboard.mouse_syms = mouse_syms;
+    let wheel_syms = lisp.vector(vec![Value::NIL; events::LISPY_WHEEL_NAMES.len()]);
+    lisp.keyboard.wheel_syms = wheel_syms;
     let message = lisp.string("Back to top level");
     lisp.defvar(sym::INTERNAL__TOP_LEVEL_MESSAGE, message);
     lisp.defvar_bool(sym::KILL_EMACS_ON_SIGINT, true);

@@ -2,7 +2,9 @@ mod common;
 
 use common::{check, eval, on_big_stack};
 use emacs_core::error::LispResult;
-use emacs_core::keyboard::{CTRL_MODIFIER, META_MODIFIER, SHIFT_MODIFIER};
+use emacs_core::keyboard::{
+    CTRL_MODIFIER, DOWN_MODIFIER, META_MODIFIER, SHIFT_MODIFIER, UP_MODIFIER,
+};
 use emacs_core::lisp::Lisp;
 use emacs_core::subr::Subr;
 use emacs_core::symbols as sym;
@@ -23,6 +25,149 @@ fn key(lisp: &Lisp, kind: EventKind, code: u32, modifiers: i64) -> KbdEvent {
 fn read(lisp: &mut Lisp) -> String {
     let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
     lisp.prin1_to_string(event)
+}
+
+fn mouse(
+    lisp: &mut Lisp,
+    kind: EventKind,
+    code: u32,
+    modifiers: i64,
+    (x, y): (i64, i64),
+    timestamp: u64,
+) -> String {
+    let mut event = KbdEvent {
+        kind,
+        code,
+        modifiers,
+        x: Value::fixnum(x),
+        y: Value::fixnum(y),
+        timestamp,
+        frame_or_window: lisp.frames.selected_frame,
+        ..KbdEvent::default()
+    };
+    let obj = lisp.make_lispy_event(&mut event).unwrap();
+    if obj.is_nil() {
+        return "nil".to_string();
+    }
+    let items = lisp.list_to_vec(obj).unwrap();
+    let mut out = format!("{} {}", lisp.prin1_to_string(items[0]), items.len());
+    if let Some(count) = items.get(2).filter(|v| v.is_fixnum()) {
+        out.push_str(&format!(" {}", lisp.prin1_to_string(*count)));
+    }
+    out
+}
+
+#[test]
+fn posn_point_and_track_mouse() {
+    check(&[
+        ("(posn-point '(w nil nil nil nil 42))", "42"),
+        ("(posn-point '(w (3 . 4)))", "3"),
+        ("(posn-point '(w 7))", "7"),
+        ("(posn-point '(w vertical-scroll-bar))", "nil"),
+        ("(posn-point 1)", "error: (wrong-type-argument listp 1)"),
+        (
+            "(list (internal--track-mouse (function (lambda () track-mouse))) track-mouse)",
+            "(t nil)",
+        ),
+        (
+            "(list (condition-case nil (internal--track-mouse (function (lambda () (error \"x\")))) (error track-mouse)) track-mouse)",
+            "(nil nil)",
+        ),
+        (
+            "(let ((track-mouse 'dragging)) (list (internal--track-mouse (function (lambda () track-mouse))) track-mouse))",
+            "(t dragging)",
+        ),
+    ]);
+}
+
+#[test]
+fn mouse_clicks_and_wheels() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        let l = &mut lisp;
+        let click = EventKind::MouseClick;
+        for (kind, code, modifiers, at, t, expected) in [
+            (click, 0, DOWN_MODIFIER, (0, 1), 1000, "down-mouse-1 2"),
+            (click, 0, UP_MODIFIER, (0, 1), 1100, "mouse-1 2"),
+            (
+                click,
+                0,
+                DOWN_MODIFIER,
+                (0, 1),
+                1200,
+                "double-down-mouse-1 3 2",
+            ),
+            (click, 0, UP_MODIFIER, (0, 1), 1250, "double-mouse-1 3 2"),
+            (
+                click,
+                0,
+                DOWN_MODIFIER,
+                (0, 1),
+                1300,
+                "triple-down-mouse-1 3 3",
+            ),
+            (click, 0, UP_MODIFIER, (0, 1), 1350, "triple-mouse-1 3 3"),
+            (click, 0, DOWN_MODIFIER, (0, 1), 5000, "down-mouse-1 2"),
+            (click, 0, UP_MODIFIER, (10, 3), 5100, "drag-mouse-1 3"),
+            (click, 0, UP_MODIFIER, (10, 3), 5200, "nil"),
+            (
+                click,
+                0,
+                DOWN_MODIFIER | CTRL_MODIFIER,
+                (2, 2),
+                5300,
+                "C-down-mouse-1 2",
+            ),
+            (click, 9, DOWN_MODIFIER, (2, 2), 5400, "down-mouse-10 2"),
+            (click, 9, UP_MODIFIER, (2, 2), 5450, "mouse-10 2"),
+            (EventKind::Wheel, 0, UP_MODIFIER, (1, 1), 6000, "wheel-up 2"),
+            (
+                EventKind::Wheel,
+                0,
+                UP_MODIFIER,
+                (1, 1),
+                6100,
+                "double-wheel-up 3 2",
+            ),
+            (
+                EventKind::HorizWheel,
+                0,
+                DOWN_MODIFIER,
+                (1, 1),
+                6150,
+                "wheel-right 2",
+            ),
+            (
+                EventKind::HorizWheel,
+                0,
+                UP_MODIFIER,
+                (1, 1),
+                6200,
+                "wheel-left 2",
+            ),
+            (
+                EventKind::Wheel,
+                0,
+                DOWN_MODIFIER,
+                (1, 1),
+                6250,
+                "wheel-down 2",
+            ),
+        ] {
+            assert_eq!(
+                mouse(l, kind, code, modifiers, at, t),
+                expected,
+                "{kind:?} {code} {modifiers} {at:?} {t}"
+            );
+        }
+        for (source, expected) in [
+            ("(get 'mouse-1 'event-kind)", "mouse-click"),
+            ("(get 'wheel-up 'event-kind)", "mouse-click"),
+            ("(get 'mouse-10 'event-kind)", "mouse-click"),
+        ] {
+            assert_eq!(eval(l, source), expected, "evaluating {source}");
+        }
+    });
 }
 
 #[test]

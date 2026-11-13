@@ -8,10 +8,27 @@ use crate::value::Value;
 pub const SUBRS: &[Subr] = &[
     Subr::fixed("posn-at-x-y", 2, 4, f_posn_at_x_y),
     Subr::fixed("posn-at-point", 0, 2, f_posn_at_point),
+    Subr::fixed("posn-point", 1, 1, f_posn_point),
 ];
 
 fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).copied().unwrap_or(Value::NIL)
+}
+
+fn f_posn_point(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let position = args[0];
+    let posn = crate::fns::f_nth(lisp, &[Value::fixnum(5), position])?;
+    if !posn.is_nil() {
+        return Ok(posn);
+    }
+    let posn = lisp.xcar(lisp.xcdr(position));
+    if posn.is_cons() {
+        return Ok(lisp.xcar(posn));
+    }
+    if posn.is_fixnum() {
+        return Ok(posn);
+    }
+    Ok(Value::NIL)
 }
 
 impl Lisp {

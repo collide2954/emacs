@@ -29,6 +29,9 @@ pub struct PgtkDisplayInfo {
     pub last_user_time: u64,
     pub x_focus_frame: Value,
     pub x_focus_event_frame: Value,
+    pub grabbed: u32,
+    pub last_mouse_frame: Value,
+    pub last_mouse_glyph_frame: Value,
 }
 
 const FOCUS_EXPLICIT: i32 = 2;
@@ -188,6 +191,11 @@ pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) -> LispResult<()> {
         if d.x_focus_event_frame == f {
             d.x_focus_event_frame = Value::NIL;
         }
+        for slot in [&mut d.last_mouse_frame, &mut d.last_mouse_glyph_frame] {
+            if *slot == f {
+                *slot = Value::NIL;
+            }
+        }
     });
     let key = frame_key(lisp, f) as u64;
     crate::with_display(|display| display.close_frame(key));
@@ -243,6 +251,8 @@ pub fn mark_pgtkterm(roots: &mut Vec<Value>) {
                 dpyinfo.terminal,
                 dpyinfo.x_focus_frame,
                 dpyinfo.x_focus_event_frame,
+                dpyinfo.last_mouse_frame,
+                dpyinfo.last_mouse_glyph_frame,
             ]);
         }
     });
@@ -341,6 +351,64 @@ fn key_press_event(lisp: &mut Lisp, input: InputEvent) {
             timestamp: input.timestamp,
             frame_or_window: f,
             arg,
+            ..KbdEvent::default()
+        },
+    );
+}
+
+fn gui_mouse_grabbed(lisp: &Lisp, frame: Value) -> Option<Value> {
+    let (grabbed, last) = with_dpyinfo(lisp, frame, |d| (d.grabbed, d.last_mouse_frame));
+    (grabbed != 0 && lisp.is_frame(last) && lisp.frame_live_p(last)).then_some(last)
+}
+
+fn button_event(lisp: &mut Lisp, input: InputEvent) {
+    let Some(frame) = pgtk_any_window_to_frame(lisp, input.frame) else {
+        return;
+    };
+    with_dpyinfo(lisp, frame, |d| d.last_mouse_glyph_frame = Value::NIL);
+    let f = gui_mouse_grabbed(lisp, frame).unwrap_or(frame);
+    with_dpyinfo(lisp, frame, |d| d.last_user_time = input.timestamp);
+    let tab_bar_window = lisp.frame(f).tab_bar_window;
+    if lisp.is_window(tab_bar_window) && lisp.window(tab_bar_window).total_lines != 0 {
+        unreachable!("tab-bar clicks need handle_tab_bar_click");
+    }
+    let event = KbdEvent {
+        kind: EventKind::MouseClick,
+        code: input.code,
+        timestamp: input.timestamp,
+        modifiers: input.modifiers,
+        x: Value::fixnum(input.x),
+        y: Value::fixnum(input.y),
+        frame_or_window: f,
+        ..KbdEvent::default()
+    };
+    let button = 1u32 << (input.code + 1).min(31);
+    if input.modifiers & emacs_core::keyboard::DOWN_MODIFIER != 0 {
+        with_dpyinfo(lisp, frame, |d| {
+            d.grabbed |= button;
+            d.last_mouse_frame = f;
+        });
+    } else {
+        with_dpyinfo(lisp, frame, |d| d.grabbed &= !button);
+    }
+    lisp.frame_mut(f).flags.mouse_moved = false;
+    evq_enqueue(lisp, event);
+}
+
+fn scroll_event(lisp: &mut Lisp, input: InputEvent) {
+    let Some(frame) = pgtk_any_window_to_frame(lisp, input.frame) else {
+        return;
+    };
+    let f = gui_mouse_grabbed(lisp, frame).unwrap_or(frame);
+    evq_enqueue(
+        lisp,
+        KbdEvent {
+            kind: input.kind,
+            timestamp: input.timestamp,
+            modifiers: input.modifiers,
+            x: Value::fixnum(input.x),
+            y: Value::fixnum(input.y),
+            frame_or_window: f,
             ..KbdEvent::default()
         },
     );
@@ -592,6 +660,8 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             | EventKind::MultibyteCharKeystroke
             | EventKind::NonAsciiKeystroke => key_press_event(lisp, input),
             EventKind::DeleteWindow => delete_event(lisp, input),
+            EventKind::MouseClick => button_event(lisp, input),
+            EventKind::Wheel | EventKind::HorizWheel => scroll_event(lisp, input),
             EventKind::FocusIn => focus_event(lisp, input, true)?,
             EventKind::FocusOut => focus_event(lisp, input, false)?,
             _ => {}
@@ -655,6 +725,9 @@ fn initialize_display_info(terminal: Value) -> (PgtkDisplayInfo, DisplayInfo) {
         last_user_time: 0,
         x_focus_frame: Value::NIL,
         x_focus_event_frame: Value::NIL,
+        grabbed: 0,
+        last_mouse_frame: Value::NIL,
+        last_mouse_glyph_frame: Value::NIL,
     };
     (pgtk, common)
 }
