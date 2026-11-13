@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use iced::futures::channel::mpsc::UnboundedSender;
 
+use crate::monitor::{GdkMonitor, MonitorSource, SystemMonitors};
 use crate::protocol::{Command, Notice};
 use crate::surface::Surface;
 
@@ -16,6 +17,7 @@ pub struct Display {
     pending: Vec<Notice>,
     surfaces: HashMap<u64, Surface>,
     shown: HashSet<u64>,
+    monitor_source: Box<dyn MonitorSource + Send>,
 }
 
 impl Display {
@@ -26,7 +28,20 @@ impl Display {
             pending: Vec::new(),
             surfaces: HashMap::new(),
             shown: HashSet::new(),
+            monitor_source: Box::new(SystemMonitors),
         }
+    }
+
+    pub fn set_monitor_source(&mut self, source: Box<dyn MonitorSource + Send>) {
+        self.monitor_source = source;
+    }
+
+    pub fn monitors(&self) -> Vec<GdkMonitor> {
+        self.monitor_source.monitors()
+    }
+
+    pub fn monitor_at_window(&self, window: u64) -> isize {
+        self.monitor_source.monitor_at_window(window)
     }
 
     pub fn wait(&mut self, timeout: Duration) -> Result<bool, Disconnected> {

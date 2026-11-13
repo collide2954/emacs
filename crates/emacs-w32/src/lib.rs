@@ -10,9 +10,15 @@ use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_SUCCESS, GetLastError, HANDLE, MAX_PATH, S_OK, WAIT_OBJECT_0,
 };
+use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT, RECT};
 use windows_sys::Win32::Globalization::{
     GetACP, GetLocaleInfoA, GetUserDefaultUILanguage, IsValidCodePage, LOCALE_SABBREVLANGNAME,
     LOCALE_USE_CP_ACP,
+};
+use windows_sys::Win32::Graphics::Gdi::{
+    CreateDCW, DISPLAY_DEVICEW, DeleteDC, EnumDisplayDevicesW, EnumDisplayMonitors, GetDeviceCaps,
+    GetMonitorInfoW, HDC, HMONITOR, HORZSIZE, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MONITORINFOEXW, MonitorFromPoint, MonitorFromWindow, VERTSIZE,
 };
 use windows_sys::Win32::Security::Cryptography::{
     CRYPT_SILENT, CRYPT_VERIFYCONTEXT, CryptAcquireContextA, CryptGenRandom, PROV_RSA_FULL,
@@ -46,7 +52,9 @@ use windows_sys::Win32::System::Threading::{
     STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_INFORMATION};
+use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Shell::{CSIDL_APPDATA, SHGetFolderPathA};
+use windows_sys::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 
 pub use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -460,4 +468,110 @@ extern "system" fn ctrl_handler(event: u32) -> windows_sys::core::BOOL {
 pub fn set_console_ctrl_handler(handler: fn(u32) -> bool) -> bool {
     let _ = CTRL_HANDLER.set(handler);
     unsafe { SetConsoleCtrlHandler(Some(ctrl_handler), 1) != 0 }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rect {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl From<RECT> for Rect {
+    fn from(r: RECT) -> Rect {
+        Rect {
+            left: r.left,
+            top: r.top,
+            right: r.right,
+            bottom: r.bottom,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Monitor {
+    pub handle: isize,
+    pub monitor: Rect,
+    pub work: Rect,
+    pub primary: bool,
+    pub device: String,
+    pub model: Option<String>,
+    pub width_mm: i32,
+    pub height_mm: i32,
+    pub dpi: u32,
+}
+
+unsafe extern "system" fn monitor_enum(
+    monitor: HMONITOR,
+    _hdc: HDC,
+    _rect: *mut RECT,
+    data: LPARAM,
+) -> windows_sys::core::BOOL {
+    let handles = unsafe { &mut *(data as *mut Vec<HMONITOR>) };
+    handles.push(monitor);
+    1
+}
+
+pub fn display_monitors() -> Vec<Monitor> {
+    let mut handles: Vec<HMONITOR> = Vec::new();
+    let ok = unsafe {
+        EnumDisplayMonitors(
+            null_mut(),
+            null(),
+            Some(monitor_enum),
+            &mut handles as *mut Vec<HMONITOR> as LPARAM,
+        )
+    };
+    if ok == 0 {
+        return Vec::new();
+    }
+    handles.into_iter().filter_map(monitor_info).collect()
+}
+
+fn monitor_info(handle: HMONITOR) -> Option<Monitor> {
+    let mut mi: MONITORINFOEXW = unsafe { std::mem::zeroed() };
+    mi.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
+    if unsafe { GetMonitorInfoW(handle, &mut mi as *mut MONITORINFOEXW as *mut MONITORINFO) } == 0 {
+        return None;
+    }
+    let display = wide_os(OsStr::new("DISPLAY"));
+    let hdc = unsafe { CreateDCW(display.as_ptr(), mi.szDevice.as_ptr(), null(), null()) };
+    if hdc.is_null() {
+        return None;
+    }
+    let width_mm = unsafe { GetDeviceCaps(hdc, HORZSIZE as i32) };
+    let height_mm = unsafe { GetDeviceCaps(hdc, VERTSIZE as i32) };
+    unsafe { DeleteDC(hdc) };
+    let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+    let dpi =
+        if unsafe { GetDpiForMonitor(handle, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) } == S_OK {
+            dpi_x
+        } else {
+            96
+        };
+    let mut dd: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
+    dd.cb = size_of::<DISPLAY_DEVICEW>() as u32;
+    let model = (unsafe { EnumDisplayDevicesW(mi.szDevice.as_ptr(), 0, &mut dd, 0) } != 0)
+        .then(|| from_wide(&dd.DeviceString).to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty());
+    Some(Monitor {
+        handle: handle as isize,
+        monitor: mi.monitorInfo.rcMonitor.into(),
+        work: mi.monitorInfo.rcWork.into(),
+        primary: mi.monitorInfo.dwFlags & MONITORINFOF_PRIMARY != 0,
+        device: from_wide(&mi.szDevice).to_string_lossy().into_owned(),
+        model,
+        width_mm,
+        height_mm,
+        dpi,
+    })
+}
+
+pub fn monitor_from_window(hwnd: u64) -> isize {
+    unsafe { MonitorFromWindow(hwnd as usize as HWND, MONITOR_DEFAULTTONEAREST) as isize }
+}
+
+pub fn monitor_from_point(x: i32, y: i32) -> isize {
+    unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) as isize }
 }

@@ -74,6 +74,7 @@ pub struct PgtkOutput {
     pub drag_dest_targets: Option<Vec<Vec<u8>>>,
     pub focus_state: i32,
     pub has_been_visible: bool,
+    pub window: u64,
 }
 
 thread_local! {
@@ -808,6 +809,11 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             _ => {}
         },
         Notice::Map { frame } => map_event(lisp, frame)?,
+        Notice::Realize { frame, window } => {
+            if let Some(f) = pgtk_any_window_to_frame(lisp, frame) {
+                with_output(lisp, f, |o| o.window = window);
+            }
+        }
         Notice::Configure {
             frame,
             width,

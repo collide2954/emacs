@@ -2741,7 +2741,7 @@ pub(crate) fn f_assq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-pub(crate) fn f_assoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_assoc(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist, testfn) = (args[0], args[1], args[2]);
     if lisp.eq_comparable_value(key) && testfn.is_nil() {
         return f_assq(lisp, &[key, alist]);

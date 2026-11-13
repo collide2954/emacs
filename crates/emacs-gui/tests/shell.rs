@@ -140,6 +140,28 @@ fn cursor_motion_becomes_a_motion_notice() {
 }
 
 #[test]
+fn a_realized_window_reports_its_raw_id() {
+    let mut shell = Shell::boot();
+    let (tx, rx) = mpsc::channel();
+    let _ = shell.update(Message::Connected(tx));
+    let _ = shell.update(Message::Lisp(Command::OpenFrame {
+        frame: 7,
+        title: "r".into(),
+        width: 10,
+        height: 10,
+    }));
+    let id = shell.window_of(7).expect("window for frame");
+    let _ = shell.update(Message::Realized(id, 0x0004_0A2C));
+    assert_eq!(
+        rx.try_iter().collect::<Vec<_>>(),
+        [Notice::Realize {
+            frame: 7,
+            window: 0x0004_0A2C,
+        }]
+    );
+}
+
+#[test]
 fn a_presented_image_is_shown_once_allocated() {
     use iced::widget::image::Handle;
     let mut shell = Shell::boot();

@@ -343,10 +343,17 @@ closes its iced window; as in GTK builds, a pgtk terminal is kept when its last 
 removes it. `pgtk-register-dnd-targets` records a frame's drop targets (drops themselves need
 the event loop). The display queries that GDK answers without monitors are ported
 (`x-display-planes`, `x-display-color-cells`, `x-display-screens`, `x-display-visual-class`,
-`x-display-backing-store`, `x-display-save-under`, `x-server-max-request-size`); the
-monitor-based ones (`x-display-pixel-width`/`-height`, `x-display-mm-width`/`-height`,
-`pgtk-display-monitor-attributes-list`) need a monitor list, which iced does not expose, so
-they wait for a platform source (Win32 monitor enumeration in `emacs-w32`). An interactive
+`x-display-backing-store`, `x-display-save-under`, `x-server-max-request-size`), and so are
+the monitor-based ones (`x-display-pixel-width`/`-height`, `x-display-mm-width`/`-height`,
+`pgtk-display-monitor-attributes-list`, `pgtk-set-monitor-scale-factor`, with `frame.c`'s
+`make_monitor_attribute_list`). iced exposes no monitor list, so `Display` stands in for the
+`GdkDisplay` and gets its monitors from a `MonitorSource`: on Windows, `emacs-w32` enumerates
+them the way GDK's Windows backend does (`EnumDisplayMonitors`, `GetMonitorInfoW`,
+`GetDeviceCaps` for millimetres, `GetDpiForMonitor`, `EnumDisplayDevicesW` for the model), and
+other platforms report no monitors yet. Geometry is in logical pixels with a GDK scale of 1,
+the units of Lisp frame pixels, since the iced shell does the device scaling. The shell sends
+each window's raw id (the HWND) in a `Realize` notice so a frame's monitor can be found with
+`MonitorFromWindow`. An interactive
 `emacs -Q` runs all of `command-line`: it creates the first frame, deletes the initial
 terminal frame and its terminal, sets up faces and fonts (non-ASCII characters get faces
 through the realized fontsets) and then enters the command loop. Key and focus events from

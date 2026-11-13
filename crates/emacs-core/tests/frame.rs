@@ -182,3 +182,72 @@ fn make_frame_without_minibuffer_and_minibuffer_frame() {
         assert!(lisp.is_buffer(w.contents));
     });
 }
+
+#[test]
+fn monitor_attribute_lists() {
+    use emacs_core::dispextern::EmacsRectangle;
+    use emacs_core::frame::MonitorInfo;
+    use emacs_core::lisp::Lisp;
+    use emacs_core::value::Value;
+    common::on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        let rect = |x, y, width, height| EmacsRectangle {
+            x,
+            y,
+            width,
+            height,
+        };
+        let monitor =
+            |geom, work, mm_width, mm_height, name: Option<&str>, scale_factor| MonitorInfo {
+                geom,
+                work,
+                mm_width,
+                mm_height,
+                name: name.map(str::to_string),
+                scale_factor,
+            };
+        let monitors = [
+            monitor(
+                rect(0, 0, 1536, 864),
+                rect(0, 0, 1536, 816),
+                344,
+                193,
+                Some("A"),
+                1.0,
+            ),
+            monitor(rect(1536, 0, 0, 0), rect(0, 0, 0, 0), 1, 1, Some("Z"), 1.0),
+            monitor(
+                rect(1536, 0, 800, 600),
+                rect(1536, 0, 800, 560),
+                200,
+                150,
+                None,
+                2.0,
+            ),
+            monitor(
+                rect(-800, 0, 800, 600),
+                rect(-800, 0, 800, 600),
+                0,
+                0,
+                Some("C"),
+                1.5,
+            ),
+        ];
+        let f = lisp.frames.selected_frame;
+        let frame = lisp.prin1_to_string(f);
+        let on_third = lisp.cons(f, Value::NIL);
+        let frames = [Value::NIL, Value::NIL, on_third, Value::NIL];
+        let list = lisp.make_monitor_attribute_list(&monitors, 2, &frames, Some("Gdk"));
+        assert_eq!(
+            lisp.prin1_to_string(list),
+            format!(
+                "(((geometry 1536 0 800 600) (workarea 1536 0 800 560) (mm-size 200 150) (scale-factor . 2.0) (frames {frame}) (source . \"Gdk\")) ((name . \"C\") (geometry -800 0 800 600) (workarea -800 0 800 600) (mm-size 0 0) (scale-factor . 1.5) (frames) (source . \"Gdk\")) ((name . \"A\") (geometry 0 0 1536 864) (workarea 0 0 1536 816) (mm-size 344 193) (scale-factor . 1.0) (frames) (source . \"Gdk\")))"
+            )
+        );
+        let list = lisp.make_monitor_attribute_list(&monitors[..1], 5, &frames[..1], None);
+        assert_eq!(
+            lisp.prin1_to_string(list),
+            "(((name . \"A\") (geometry 0 0 1536 864) (workarea 0 0 1536 816) (mm-size 344 193) (scale-factor . 1.0) (frames)))"
+        );
+    });
+}

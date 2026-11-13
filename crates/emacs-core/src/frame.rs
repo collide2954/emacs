@@ -2962,7 +2962,78 @@ fn f_bottom_divider_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     geometry_getter(lisp, args, |g| g.bottom_divider_width)
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MonitorInfo {
+    pub geom: crate::dispextern::EmacsRectangle,
+    pub work: crate::dispextern::EmacsRectangle,
+    pub mm_width: i32,
+    pub mm_height: i32,
+    pub name: Option<String>,
+    pub scale_factor: f64,
+}
+
 impl Lisp {
+    pub fn make_monitor_attribute_list(
+        &mut self,
+        monitors: &[MonitorInfo],
+        primary_monitor: usize,
+        monitor_frames: &[Value],
+        source: Option<&str>,
+    ) -> Value {
+        let mut attributes_list = Value::NIL;
+        let mut primary_monitor_attributes = Value::NIL;
+        for (i, mi) in monitors.iter().enumerate() {
+            if mi.geom.width == 0 {
+                continue;
+            }
+            let list4i = |lisp: &mut Lisp, r: &crate::dispextern::EmacsRectangle| {
+                lisp.list(&[
+                    Value::fixnum(r.x.into()),
+                    Value::fixnum(r.y.into()),
+                    Value::fixnum(r.width.into()),
+                    Value::fixnum(r.height.into()),
+                ])
+            };
+            let workarea = list4i(self, &mi.work);
+            let geometry = list4i(self, &mi.geom);
+            let mut attributes = Value::NIL;
+            if let Some(source) = source {
+                let s = self.make_string(source.as_bytes());
+                let pair = self.cons(sym::SOURCE, s);
+                attributes = self.cons(pair, attributes);
+            }
+            let pair = self.cons(sym::FRAMES, monitor_frames[i]);
+            attributes = self.cons(pair, attributes);
+            let scale = self.float(mi.scale_factor);
+            let pair = self.cons(sym::SCALE_FACTOR, scale);
+            attributes = self.cons(pair, attributes);
+            let mm = self.list(&[
+                Value::fixnum(mi.mm_width.into()),
+                Value::fixnum(mi.mm_height.into()),
+            ]);
+            let pair = self.cons(sym::MM_SIZE, mm);
+            attributes = self.cons(pair, attributes);
+            let pair = self.cons(sym::WORKAREA, workarea);
+            attributes = self.cons(pair, attributes);
+            let pair = self.cons(sym::GEOMETRY, geometry);
+            attributes = self.cons(pair, attributes);
+            if let Some(name) = &mi.name {
+                let s = self.make_string(name.as_bytes());
+                let pair = self.cons(sym::NAME, s);
+                attributes = self.cons(pair, attributes);
+            }
+            if i == primary_monitor {
+                primary_monitor_attributes = attributes;
+            } else {
+                attributes_list = self.cons(attributes, attributes_list);
+            }
+        }
+        if !primary_monitor_attributes.is_nil() {
+            attributes_list = self.cons(primary_monitor_attributes, attributes_list);
+        }
+        attributes_list
+    }
+
     fn mouse_position_from_hook(&mut self) -> (Value, Value, Value) {
         let mut f = self.frames.selected_frame;
         let (mut x, mut y) = (Value::NIL, Value::NIL);

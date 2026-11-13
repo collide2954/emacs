@@ -9,6 +9,7 @@ pub mod ftcrfont;
 pub mod gdkrgba;
 pub mod hbfont;
 pub mod keysym;
+pub mod monitor;
 pub mod mouse;
 pub mod pgtkdraw;
 pub mod pgtkfns;
@@ -48,5 +49,6 @@ pub fn install(lisp: &mut Lisp, display: Display) {
 
 fn mark(roots: &mut Vec<emacs_core::value::Value>) {
     pgtkterm::mark_pgtkterm(roots);
+    pgtkfns::mark_pgtkfns(roots);
     ftcrfont::mark_ftfont(roots);
 }

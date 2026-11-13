@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.155"
+version = "0.1.156"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
@@ -20,6 +20,7 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Globalization",
+    "Win32_Graphics_Gdi",
     "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem",
     "Win32_System_Console",
@@ -28,7 +29,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_HiDpi",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 flate2 = "1"
 regex = "1"

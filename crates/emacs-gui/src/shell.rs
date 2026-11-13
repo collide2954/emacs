@@ -28,6 +28,7 @@ pub enum Message {
     Window(window::Id, window::Event),
     Key(window::Id, keyboard::Event),
     Mouse(window::Id, mouse::Event),
+    Realized(window::Id, u64),
     Allocated {
         id: window::Id,
         seq: u64,
@@ -141,6 +142,12 @@ impl Shell {
                 self.mouse_event(id, event);
                 Task::none()
             }
+            Message::Realized(id, window) => {
+                if let Some(frame) = self.views.get(&id).map(|v| v.frame) {
+                    self.notify(Notice::Realize { frame, window });
+                }
+                Task::none()
+            }
             Message::Allocated {
                 id,
                 seq,
@@ -237,8 +244,11 @@ impl Shell {
                 );
                 self.frames.insert(frame, id);
                 opened.then(|id| {
-                    window::scale_factor(id)
-                        .map(move |scale| Message::Window(id, window::Event::Rescaled(scale)))
+                    Task::batch([
+                        window::scale_factor(id)
+                            .map(move |scale| Message::Window(id, window::Event::Rescaled(scale))),
+                        window::raw_id::<Message>(id).map(move |raw| Message::Realized(id, raw)),
+                    ])
                 })
             }
             Command::SetTitle { frame, title } => {

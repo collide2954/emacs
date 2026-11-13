@@ -1,13 +1,15 @@
+use emacs_core::dispextern::EmacsRectangle;
 use emacs_core::doprnt::Arg;
 use emacs_core::error::LispResult;
 use emacs_core::fns::f_provide;
-use emacs_core::frame::ResourceType;
+use emacs_core::frame::{MonitorInfo, ResourceType};
 use emacs_core::lisp::Lisp;
 use emacs_core::subr::Subr;
 use emacs_core::symbols as sym;
 use emacs_core::terminal::{FrameParmHandler, OutputMethod};
 use emacs_core::value::Value;
 
+use crate::monitor::GdkMonitor;
 use crate::pgtkterm::{
     allocate_output, fatal, frame_key, frame_title, pgtk_defined_color, pgtk_free_frame_resources,
     pgtk_make_frame_visible, pgtk_term_init, with_display_list, with_output,
@@ -38,10 +40,200 @@ static SUBRS: &[Subr] = &[
     Subr::fixed("x-display-color-cells", 0, 1, f_x_display_color_cells),
     Subr::fixed("x-display-list", 0, 0, f_x_display_list),
     Subr::fixed("x-create-frame", 1, 1, f_x_create_frame),
+    Subr::fixed(
+        "pgtk-set-monitor-scale-factor",
+        2,
+        2,
+        f_pgtk_set_monitor_scale_factor,
+    ),
+    Subr::fixed("x-display-mm-height", 0, 1, f_x_display_mm_height),
+    Subr::fixed("x-display-mm-width", 0, 1, f_x_display_mm_width),
+    Subr::fixed("x-display-pixel-width", 0, 1, f_x_display_pixel_width),
+    Subr::fixed("x-display-pixel-height", 0, 1, f_x_display_pixel_height),
+    Subr::fixed(
+        "pgtk-display-monitor-attributes-list",
+        0,
+        1,
+        f_pgtk_display_monitor_attributes_list,
+    ),
 ];
+
+thread_local! {
+    static MONITOR_SCALE_FACTOR_ALIST: std::cell::Cell<Value> = const { std::cell::Cell::new(Value::NIL) };
+}
+
+pub fn mark_pgtkfns(roots: &mut Vec<Value>) {
+    roots.push(MONITOR_SCALE_FACTOR_ALIST.with(std::cell::Cell::get));
+}
 
 fn arg(args: &[Value], i: usize) -> Value {
     args.get(i).copied().unwrap_or(Value::NIL)
+}
+
+fn pgtk_get_monitor_scale_factor(lisp: &mut Lisp, model: Option<&str>) -> LispResult<f64> {
+    let Some(model) = model else {
+        return Ok(0.0);
+    };
+    let mdl = lisp.make_string(model.as_bytes());
+    let alist = MONITOR_SCALE_FACTOR_ALIST.with(std::cell::Cell::get);
+    let tem = emacs_core::fns::f_assoc(lisp, &[mdl, alist, Value::NIL])?;
+    if tem.is_nil() {
+        return Ok(0.0);
+    }
+    let cdr = lisp.xcdr(tem);
+    if cdr.is_nil() {
+        Ok(0.0)
+    } else if let Some(n) = cdr.as_fixnum() {
+        Ok(n as f64)
+    } else if cdr.is_float() {
+        Ok(lisp.heap.float_value(cdr))
+    } else {
+        Err(lisp.error("Unknown type of scale-factor"))
+    }
+}
+
+fn f_pgtk_set_monitor_scale_factor(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (monitor_model, scale_factor) = (args[0], args[1]);
+    lisp.check_string(monitor_model)?;
+    if !scale_factor.is_nil() {
+        if !lisp.is_number(scale_factor) {
+            return Err(lisp.wrong_type(sym::NUMBERP, scale_factor));
+        }
+        if let Some(n) = scale_factor.as_fixnum() {
+            if n <= 0 {
+                return Err(lisp.error("Scale factor must be > 0"));
+            }
+        } else if scale_factor.is_float() {
+            if lisp.heap.float_value(scale_factor) <= 0.0 {
+                return Err(lisp.error("Scale factor must be > 0"));
+            }
+        } else {
+            return Err(lisp.error("Unknown type of scale-factor"));
+        }
+    }
+    let alist = MONITOR_SCALE_FACTOR_ALIST.with(std::cell::Cell::get);
+    let tem = emacs_core::fns::f_assoc(lisp, &[monitor_model, alist, Value::NIL])?;
+    if tem.is_nil() {
+        if !scale_factor.is_nil() {
+            let pair = lisp.cons(monitor_model, scale_factor);
+            let alist = lisp.cons(pair, alist);
+            MONITOR_SCALE_FACTOR_ALIST.with(|cell| cell.set(alist));
+        }
+    } else {
+        lisp.heap.set_cdr(tem, scale_factor);
+    }
+    Ok(scale_factor)
+}
+
+fn display_monitors(lisp: &mut Lisp, terminal: Value) -> LispResult<Vec<GdkMonitor>> {
+    check_pgtk_display_info(lisp, terminal)?;
+    Ok(crate::with_display(|display| display.monitors()).unwrap_or_default())
+}
+
+fn monitor_scale(lisp: &mut Lisp, monitor: &GdkMonitor) -> LispResult<f64> {
+    let scale = pgtk_get_monitor_scale_factor(lisp, monitor.model.as_deref())?;
+    Ok(if scale == 0.0 {
+        f64::from(monitor.scale_factor)
+    } else {
+        scale
+    })
+}
+
+fn scaled(r: EmacsRectangle, scale: f64) -> EmacsRectangle {
+    let s = |v: i32| (f64::from(v) * scale + 0.5) as i32;
+    EmacsRectangle {
+        x: s(r.x),
+        y: s(r.y),
+        width: s(r.width),
+        height: s(r.height),
+    }
+}
+
+fn f_x_display_mm_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let monitors = display_monitors(lisp, arg(args, 0))?;
+    let (mut height_mm_at_0, mut height_mm_at_other) = (0, 0);
+    for m in &monitors {
+        if m.geometry.y == 0 {
+            height_mm_at_0 = height_mm_at_0.max(m.height_mm);
+        } else {
+            height_mm_at_other += m.height_mm;
+        }
+    }
+    Ok(Value::fixnum(i64::from(
+        height_mm_at_0 + height_mm_at_other,
+    )))
+}
+
+fn f_x_display_mm_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let monitors = display_monitors(lisp, arg(args, 0))?;
+    let (mut width_mm_at_0, mut width_mm_at_other) = (0, 0);
+    for m in &monitors {
+        if m.geometry.x == 0 {
+            width_mm_at_0 = width_mm_at_0.max(m.width_mm);
+        } else {
+            width_mm_at_other += m.width_mm;
+        }
+    }
+    Ok(Value::fixnum(i64::from(width_mm_at_0 + width_mm_at_other)))
+}
+
+fn f_x_display_pixel_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let monitors = display_monitors(lisp, arg(args, 0))?;
+    let mut width = 0;
+    for m in &monitors {
+        let scale = monitor_scale(lisp, m)?;
+        let rec = scaled(m.geometry, scale);
+        width = width.max(rec.x + rec.width);
+    }
+    Ok(Value::fixnum(i64::from(width)))
+}
+
+fn f_x_display_pixel_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let monitors = display_monitors(lisp, arg(args, 0))?;
+    let mut height = 0;
+    for m in &monitors {
+        let scale = monitor_scale(lisp, m)?;
+        let rec = scaled(m.geometry, scale);
+        height = height.max(rec.y + rec.height);
+    }
+    Ok(Value::fixnum(i64::from(height)))
+}
+
+fn f_pgtk_display_monitor_attributes_list(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let terminal = check_pgtk_display_info(lisp, arg(args, 0))?;
+    let monitors = crate::with_display(|display| display.monitors()).unwrap_or_default();
+    let mut monitor_frames = vec![Value::NIL; monitors.len()];
+    let frames: Vec<Value> = lisp
+        .frames
+        .list
+        .iter()
+        .copied()
+        .filter(|&f| lisp.frame_live_p(f))
+        .collect();
+    for frame in frames {
+        let fr = lisp.frame(frame);
+        if fr.output_method == OutputMethod::Pgtk && fr.terminal == terminal && !fr.flags.tooltip {
+            let window = with_output(lisp, frame, |o| o.window);
+            let at = crate::with_display(|display| display.monitor_at_window(window)).unwrap_or(0);
+            if let Some(i) = monitors.iter().position(|m| m.handle == at) {
+                monitor_frames[i] = lisp.cons(frame, monitor_frames[i]);
+            }
+        }
+    }
+    let primary_monitor = monitors.iter().rposition(|m| m.primary).unwrap_or(0);
+    let mut infos = Vec::with_capacity(monitors.len());
+    for m in &monitors {
+        let scale = monitor_scale(lisp, m)?;
+        infos.push(MonitorInfo {
+            geom: scaled(m.geometry, scale),
+            work: scaled(m.workarea, scale),
+            mm_width: m.width_mm,
+            mm_height: m.height_mm,
+            name: m.model.clone(),
+            scale_factor: scale,
+        });
+    }
+    Ok(lisp.make_monitor_attribute_list(&infos, primary_monitor, &monitor_frames, Some("Gdk")))
 }
 
 pub fn check_pgtk_display_info(lisp: &mut Lisp, object: Value) -> LispResult<Value> {
