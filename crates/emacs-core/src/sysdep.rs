@@ -1,5 +1,37 @@
 use crate::lisp::Lisp;
+use crate::symbols as sym;
 use crate::timefns::current_timespec;
+use crate::value::Value;
+
+#[cfg(windows)]
+fn host_name() -> Vec<u8> {
+    emacs_w32::host_name()
+        .map(|name| name.to_string_lossy().into_owned().into_bytes())
+        .unwrap_or_default()
+}
+
+#[cfg(unix)]
+fn host_name() -> Vec<u8> {
+    emacs_unix::gethostname()
+}
+
+pub fn init_system_name(lisp: &mut Lisp) {
+    if !lisp.startup.build_details {
+        lisp.set_plain_value(sym::SYSTEM_NAME, Value::NIL);
+        return;
+    }
+    let mut hostname = host_name();
+    for b in &mut hostname {
+        if *b == b' ' || *b == b'\t' {
+            *b = b'-';
+        }
+    }
+    let current = lisp.plain_value(sym::SYSTEM_NAME);
+    if !(current.is_string() && lisp.string_bytes(current) == hostname.as_slice()) {
+        let name = lisp.make_string(&hostname);
+        lisp.set_plain_value(sym::SYSTEM_NAME, name);
+    }
+}
 
 const RAND_BITS: u32 = 31;
 const EMACS_INT_WIDTH: u32 = 64;

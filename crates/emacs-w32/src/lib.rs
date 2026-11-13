@@ -46,7 +46,9 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, RegCloseKey, RegOpenKeyExA,
     RegQueryValueExA,
 };
-use windows_sys::Win32::System::SystemInformation::GetTickCount64;
+use windows_sys::Win32::System::SystemInformation::{
+    ComputerNameDnsHostname, GetComputerNameExW, GetTickCount64,
+};
 use windows_sys::Win32::System::Threading::{
     CREATE_UNICODE_ENVIRONMENT, CreateProcessW, GetExitCodeProcess, INFINITE, PROCESS_INFORMATION,
     STARTUPINFOW, TerminateProcess, WaitForSingleObject,
@@ -566,6 +568,17 @@ fn monitor_info(handle: HMONITOR) -> Option<Monitor> {
         height_mm,
         dpi,
     })
+}
+
+pub fn host_name() -> Option<OsString> {
+    let mut size = 0u32;
+    unsafe { GetComputerNameExW(ComputerNameDnsHostname, null_mut(), &mut size) };
+    if size == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; size as usize];
+    let ok = unsafe { GetComputerNameExW(ComputerNameDnsHostname, buf.as_mut_ptr(), &mut size) };
+    (ok != 0).then(|| from_wide(&buf))
 }
 
 pub fn monitor_from_window(hwnd: u64) -> isize {

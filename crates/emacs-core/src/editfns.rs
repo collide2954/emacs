@@ -801,15 +801,21 @@ fn f_user_full_name(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(lisp.string(&name))
 }
 
+thread_local! {
+    static CACHED_SYSTEM_NAME: std::cell::Cell<Value> = const { std::cell::Cell::new(Value::NIL) };
+}
+
+pub fn init_and_cache_system_name(lisp: &mut Lisp) {
+    crate::sysdep::init_system_name(lisp);
+    let name = lisp.plain_value(sym::SYSTEM_NAME);
+    CACHED_SYSTEM_NAME.with(|cached| cached.set(name));
+}
+
 pub fn f_system_name(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
-    let v = lisp.plain_value(sym::SYSTEM_NAME);
-    if v.is_string() {
-        return Ok(v);
+    if lisp.plain_value(sym::SYSTEM_NAME) == CACHED_SYSTEM_NAME.with(std::cell::Cell::get) {
+        init_and_cache_system_name(lisp);
     }
-    let name = std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .unwrap_or_else(|_| "localhost".to_string());
-    Ok(lisp.string(&name))
+    Ok(lisp.plain_value(sym::SYSTEM_NAME))
 }
 
 fn f_emacs_pid(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {

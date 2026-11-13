@@ -906,7 +906,11 @@ fn display_open(display_name: &[u8]) -> bool {
 
 fn same_x_server(lisp: &mut Lisp, name1: &[u8], name2: &[u8]) -> LispResult<bool> {
     let sysname = f_system_name(lisp, &[])?;
-    let system_name = lisp.string_bytes(sysname).to_vec();
+    let system_name = if sysname.is_string() {
+        lisp.string_bytes(sysname).to_vec()
+    } else {
+        Vec::new()
+    };
     let length_until_period = system_name
         .iter()
         .position(|&b| b == b'.')
@@ -1030,7 +1034,9 @@ pub fn pgtk_term_init(
     let invocation_name = lisp.plain_value(sym::INVOCATION_NAME);
     let mut x_id_name = lisp.string_bytes(invocation_name).to_vec();
     x_id_name.push(b'@');
-    x_id_name.extend_from_slice(lisp.string_bytes(system_name));
+    if system_name.is_string() {
+        x_id_name.extend_from_slice(lisp.string_bytes(system_name));
+    }
     dpyinfo.x_id = PGTK.with(|p| {
         let mut p = p.borrow_mut();
         p.display_id += 1;

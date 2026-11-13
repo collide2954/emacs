@@ -197,3 +197,18 @@ pub fn sysctl_boottime() -> Option<(i64, i64)> {
     };
     (r >= 0).then_some((tv.tv_sec as i64, tv.tv_usec as i64 * 1000))
 }
+
+pub fn gethostname() -> Vec<u8> {
+    let mut size = 256usize;
+    loop {
+        let mut buf = vec![0u8; size];
+        unsafe { libc::gethostname(buf.as_mut_ptr().cast(), size - 1) };
+        buf[size - 1] = 0;
+        let len = buf.iter().position(|&b| b == 0).unwrap_or(size);
+        if len < size - 1 {
+            buf.truncate(len);
+            return buf;
+        }
+        size += size / 2 + 1;
+    }
+}

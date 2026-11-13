@@ -36,6 +36,41 @@ fn boot_eval(args: &[&str], cases: &[(&str, &str)]) {
 }
 
 #[test]
+fn system_name_comes_from_the_host_name() {
+    boot_eval(
+        &["emacs", "--batch"],
+        &[
+            ("(stringp system-name)", "t"),
+            ("(eq (system-name) system-name)", "t"),
+            ("(> (length system-name) 0)", "t"),
+            ("(string-match \"[ \\t]\" system-name)", "nil"),
+            (
+                "(progn (setq system-name \"foo bar\") (system-name))",
+                "\"foo bar\"",
+            ),
+            ("(progn (setq system-name nil) (system-name))", "nil"),
+        ],
+    );
+    boot_eval(
+        &["emacs", "--batch", "--no-build-details"],
+        &[("system-name", "nil"), ("(system-name)", "nil")],
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn system_name_is_the_dns_host_name_on_windows() {
+    let startup = decode(&["emacs", "--batch"]).expect("decode");
+    let computer = std::env::var("COMPUTERNAME").expect("COMPUTERNAME");
+    on_big_stack(move || {
+        let mut lisp = Lisp::boot(startup);
+        let name = eval(&mut lisp, "system-name");
+        let name = name.trim_matches('"');
+        assert!(name.eq_ignore_ascii_case(&computer), "{name} vs {computer}");
+    });
+}
+
+#[test]
 fn sorting_by_priority() {
     let mut a = argv(&["emacs", "foo", "--batch", "-l", "x", "-Q"]);
     sort_args(a.len(), &mut a).expect("sort");

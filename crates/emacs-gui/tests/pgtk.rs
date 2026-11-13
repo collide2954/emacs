@@ -129,6 +129,32 @@ fn x_open_connection_makes_a_pgtk_terminal() {
 }
 
 #[test]
+fn x_open_connection_without_a_system_name() {
+    on_big_stack(|| {
+        let mut startup = Startup::program(false);
+        startup.build_details = false;
+        let mut lisp = booted(startup);
+        assert_eq!(eval(&mut lisp, "system-name"), "nil");
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(progn (setq x-resource-name \"emacs\") (x-open-connection nil nil t) (x-open-connection \"\") (length (x-display-list)))"
+            ),
+            "2"
+        );
+        let invocation = eval(&mut lisp, "invocation-name");
+        let expected = format!("{}@", invocation.trim_matches('"'));
+        let names = emacs_gui::pgtkterm::with_display_list(|displays| {
+            displays
+                .iter()
+                .map(|d| String::from_utf8_lossy(&d.x_id_name).into_owned())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(names, [expected.clone(), expected]);
+    });
+}
+
+#[test]
 fn display_queries() {
     on_big_stack(|| {
         let mut lisp = booted(Startup::program(false));
