@@ -384,6 +384,18 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("window-pixel-height", 0, 1, f_window_pixel_height),
     Subr::fixed("window-old-pixel-width", 0, 1, f_window_old_pixel_width),
     Subr::fixed("window-old-pixel-height", 0, 1, f_window_old_pixel_height),
+    Subr::fixed(
+        "window-old-body-pixel-width",
+        0,
+        1,
+        f_window_old_body_pixel_width,
+    ),
+    Subr::fixed(
+        "window-old-body-pixel-height",
+        0,
+        1,
+        f_window_old_body_pixel_height,
+    ),
     Subr::fixed("window-total-height", 0, 2, f_window_total_height),
     Subr::fixed("window-total-width", 0, 2, f_window_total_width),
     Subr::fixed("window-body-width", 0, 2, f_window_body_width),
@@ -436,6 +448,24 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("set-window-prev-buffers", 2, 2, f_set_window_prev_buffers),
     Subr::fixed("window-next-buffers", 0, 1, f_window_next_buffers),
     Subr::fixed("set-window-next-buffers", 2, 2, f_set_window_next_buffers),
+    Subr::fixed(
+        "window-discard-buffer-from-window",
+        2,
+        3,
+        f_window_discard_buffer,
+    ),
+    Subr::fixed(
+        "run-window-configuration-change-hook",
+        0,
+        1,
+        f_run_window_configuration_change_hook,
+    ),
+    Subr::fixed("force-window-update", 0, 1, f_force_window_update),
+    Subr::fixed("window-text-width", 0, 2, f_window_text_width),
+    Subr::fixed("window-text-height", 0, 2, f_window_text_height),
+    Subr::fixed("set-window-cursor-type", 2, 2, f_set_window_cursor_type),
+    Subr::fixed("window-cursor-type", 0, 1, f_window_cursor_type),
+    Subr::fixed("window-cursor-info", 0, 1, f_window_cursor_info),
     Subr::fixed("window-parameters", 0, 1, f_window_parameters),
     Subr::fixed("window-parameter", 2, 2, f_window_parameter),
     Subr::fixed("set-window-parameter", 3, 3, f_set_window_parameter),
@@ -505,6 +535,7 @@ fn f_set_window_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 pub enum WindowLoop {
     GetBufferWindow,
     ReplaceBufferInWindowsSafely,
+    RedisplayBufferWindows,
 }
 
 pub fn init_vars(lisp: &mut Lisp) {
@@ -932,6 +963,15 @@ impl Lisp {
                         {
                             crate::buffer::f_set_buffer(self, &[contents])?;
                         }
+                    }
+                }
+                WindowLoop::RedisplayBufferWindows => {
+                    if self.window(window).contents == obj {
+                        self.mark_window_display_accurate(window, false);
+                        self.window_mut(window).flags.update_mode_line = true;
+                        self.buffer_mut(obj).prevent_redisplay_optimizations_p = true;
+                        self.windows.update_mode_lines = 27;
+                        best_window = window;
                     }
                 }
             }
@@ -4053,6 +4093,148 @@ fn f_window_fringes(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         outside,
         persistent,
     ]))
+}
+
+fn f_window_old_body_pixel_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window(w).old_body_pixel_width))
+}
+
+fn f_window_old_body_pixel_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(Value::fixnum(lisp.window(w).old_body_pixel_height))
+}
+
+fn f_window_discard_buffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (buffer, window, all) = (args[0], args[1], arg(args, 2));
+    if !lisp.is_buffer(buffer) || !lisp.buffer_live_p(buffer) {
+        return Err(lisp.error("Not a live buffer"));
+    }
+    if !lisp.window_live_p(window) {
+        return Err(lisp.error("Not a live window"));
+    }
+    if all.is_nil() {
+        lisp.window_discard_buffer_from_window(buffer, window);
+    } else {
+        lisp.window_discard_buffer_from_window_all(buffer, window)?;
+    }
+    Ok(Value::NIL)
+}
+
+fn f_run_window_configuration_change_hook(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(arg(args, 0))?;
+    lisp.run_window_configuration_change_hook(f)?;
+    Ok(Value::NIL)
+}
+
+fn f_force_window_update(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let mut object = arg(args, 0);
+    if object.is_nil() {
+        lisp.windows.windows_or_buffers_changed = 29;
+        lisp.windows.update_mode_lines = 28;
+        return Ok(sym::T);
+    }
+    if lisp.window_live_p(object) {
+        lisp.mark_window_display_accurate(object, false);
+        lisp.window_mut(object).flags.update_mode_line = true;
+        let contents = lisp.window(object).contents;
+        if lisp.is_buffer(contents) {
+            lisp.buffer_mut(contents).prevent_redisplay_optimizations_p = true;
+        }
+        lisp.windows.update_mode_lines = 29;
+        return Ok(sym::T);
+    }
+    if object.is_string() {
+        object = crate::buffer::f_get_buffer(lisp, &[object])?;
+    }
+    if lisp.is_buffer(object) && lisp.buffer_live_p(object) && lisp.buffer(object).window_count > 0
+    {
+        let found = lisp.window_loop(
+            WindowLoop::RedisplayBufferWindows,
+            object,
+            false,
+            sym::VISIBLE,
+        )?;
+        return Ok(lisp.bool(!found.is_nil()));
+    }
+    Ok(Value::NIL)
+}
+
+fn f_window_text_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    let width = lisp.window_box_width(w, GlyphRowArea::Text);
+    if arg(args, 1).is_nil() {
+        let f = lisp.window(w).frame;
+        Ok(Value::fixnum(width / lisp.frame(f).geometry.column_width))
+    } else {
+        Ok(Value::fixnum(width))
+    }
+}
+
+fn f_window_text_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    let height = lisp.window_box_height(w);
+    if arg(args, 1).is_nil() {
+        let f = lisp.window(w).frame;
+        Ok(Value::fixnum(height / lisp.frame(f).geometry.line_height))
+    } else {
+        Ok(Value::fixnum(height))
+    }
+}
+
+fn f_set_window_cursor_type(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(args[0])?;
+    let kind = args[1];
+    let valid = kind.is_nil()
+        || [sym::T, sym::BOX, sym::HOLLOW, sym::BAR, sym::HBAR].contains(&kind)
+        || (kind.is_cons()
+            && [sym::BOX, sym::BAR, sym::HBAR].contains(&lisp.xcar(kind))
+            && lisp.is_integer(lisp.xcdr(kind)));
+    if !valid {
+        return Err(lisp.error("Invalid cursor type"));
+    }
+    lisp.window_mut(w).cursor_type = kind;
+    lisp.wset_redisplay(w);
+    Ok(kind)
+}
+
+fn f_window_cursor_type(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    Ok(lisp.window(w).cursor_type)
+}
+
+fn f_window_cursor_info(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    use crate::dispextern::{GlyphType, TextCursorKind};
+    let w = lisp.decode_live_window(arg(args, 0))?;
+    if !lisp.window(w).flags.phys_cursor_on_p {
+        return Ok(Value::NIL);
+    }
+    let (mut width, mut height, mut ascent) = (1, 1, 1);
+    let f = lisp.window(w).frame;
+    let glyph = lisp.get_phys_cursor_glyph(w);
+    if lisp.frame_window_p(f) {
+        let win = lisp.window(w);
+        width = win.phys_cursor_width;
+        height = win.phys_cursor_height;
+        ascent = win.phys_cursor_ascent;
+    }
+    let phys_cursor_type = lisp.window(w).phys_cursor_type;
+    if glyph.is_some_and(|g| g.kind == GlyphType::Stretch)
+        && !matches!(phys_cursor_type, TextCursorKind::Bar | TextCursorKind::Hbar)
+        && !lisp.var_true(sym::X_STRETCH_CURSOR)
+    {
+        width = width.min(lisp.frame(f).geometry.column_width);
+    }
+    let win = lisp.window(w);
+    let items = vec![
+        win.cursor_type,
+        Value::fixnum(win.phys_cursor.x),
+        Value::fixnum(win.phys_cursor.y),
+        Value::fixnum(width),
+        Value::fixnum(height),
+        Value::fixnum(ascent),
+    ];
+    Ok(lisp.vector(items))
 }
 
 fn f_window_configuration_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {

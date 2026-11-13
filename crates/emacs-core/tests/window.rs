@@ -505,3 +505,87 @@ fn window_fringes_scroll_bars_and_margins_on_a_tty() {
         ),
     ]);
 }
+
+#[test]
+fn window_cursor_type_text_size_and_old_body_size() {
+    check(&[
+        ("(window-cursor-type)", "t"),
+        ("(set-window-cursor-type nil 'bar)", "bar"),
+        ("(window-cursor-type)", "bar"),
+        ("(set-window-cursor-type nil '(hbar . 3))", "(hbar . 3)"),
+        ("(set-window-cursor-type nil nil)", "nil"),
+        (
+            "(set-window-cursor-type nil 'foo)",
+            "error: (error \"Invalid cursor type\")",
+        ),
+        (
+            "(set-window-cursor-type nil '(hollow . 2))",
+            "error: (error \"Invalid cursor type\")",
+        ),
+        (
+            "(set-window-cursor-type nil '(box . x))",
+            "error: (error \"Invalid cursor type\")",
+        ),
+        (
+            "(window-cursor-type 'x)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+        ("(window-cursor-info)", "nil"),
+        ("(window-text-width)", "80"),
+        ("(window-text-width nil t)", "80"),
+        ("(window-text-height)", "23"),
+        ("(window-text-height nil t)", "23"),
+        ("(window-old-body-pixel-width)", "0"),
+        ("(window-old-body-pixel-height)", "0"),
+        (
+            "(window-old-body-pixel-height 'x)",
+            "error: (wrong-type-argument window-live-p x)",
+        ),
+    ]);
+}
+
+#[test]
+fn discarding_buffers_running_the_change_hook_and_forcing_updates() {
+    check(&[
+        (
+            "(progn (setq a (get-buffer-create \"a\") b (get-buffer-create \"b\")) (set-window-prev-buffers nil (list (list a 1 1) (list b 1 1))) (set-window-next-buffers nil (list a b)) (window-discard-buffer-from-window a (selected-window)))",
+            "nil",
+        ),
+        (
+            "(list (mapcar (function car) (window-prev-buffers)) (window-next-buffers))",
+            "((#<buffer b>) (#<buffer b>))",
+        ),
+        (
+            "(progn (set-window-parameter nil 'quit-restore (list 'window 'window nil b)) (window-discard-buffer-from-window b (selected-window)) (window-parameter nil 'quit-restore))",
+            "(window window nil #<buffer b>)",
+        ),
+        (
+            "(progn (window-discard-buffer-from-window b (selected-window) t) (list (window-prev-buffers) (window-next-buffers) (window-parameter nil 'quit-restore)))",
+            "(nil nil nil)",
+        ),
+        (
+            "(window-discard-buffer-from-window b nil)",
+            "error: (error \"Not a live window\")",
+        ),
+        (
+            "(progn (kill-buffer a) (window-discard-buffer-from-window a (selected-window)))",
+            "error: (error \"Not a live buffer\")",
+        ),
+        (
+            "(progn (setq ran 0 window-configuration-change-hook (list (function (lambda () (setq ran (1+ ran)))))) (list (run-window-configuration-change-hook) ran))",
+            "(nil 1)",
+        ),
+        (
+            "(run-window-configuration-change-hook 'x)",
+            "error: (wrong-type-argument frame-live-p x)",
+        ),
+        ("(force-window-update)", "t"),
+        ("(force-window-update (selected-window))", "t"),
+        ("(force-window-update \"b\")", "nil"),
+        (
+            "(progn (fset 'record-window-buffer (function (lambda (w) nil))) (set-window-buffer nil b) (force-window-update \"b\"))",
+            "t",
+        ),
+        ("(force-window-update 'x)", "nil"),
+    ]);
+}

@@ -181,6 +181,38 @@ fn remember_mouse_glyph_finds_the_glyph_under_the_mouse() {
 }
 
 #[test]
+fn window_cursor_info_describes_the_drawn_cursor() {
+    on_big_stack(|| {
+        let (mut lisp, f, w) = displayed();
+        let cw = lisp.frame(f).geometry.column_width;
+        let lh = lisp.frame(f).geometry.line_height;
+        let win = lisp.window(w);
+        assert!(win.flags.phys_cursor_on_p);
+        assert_eq!((win.phys_cursor_width, win.phys_cursor_height), (cw, lh));
+        let ascent = win.phys_cursor_ascent;
+        assert_eq!(
+            eval(&mut lisp, "(window-cursor-info)"),
+            format!("[t 0 0 {cw} {lh} {ascent}]")
+        );
+        let mini = lisp.frame(f).minibuffer_window;
+        let win = lisp.window(mini);
+        assert_eq!(
+            win.phys_cursor_type,
+            emacs_core::dispextern::TextCursorKind::NoCursor
+        );
+        assert_eq!(
+            eval(&mut lisp, "(window-cursor-info (minibuffer-window))"),
+            format!("[t 0 0 0 {lh} 0]")
+        );
+        lisp.window_mut(mini).flags.phys_cursor_on_p = false;
+        assert_eq!(
+            eval(&mut lisp, "(window-cursor-info (minibuffer-window))"),
+            "nil"
+        );
+    });
+}
+
+#[test]
 fn coordinates_in_window_p_and_window_at() {
     on_big_stack(|| {
         let (mut lisp, f, w) = displayed();
