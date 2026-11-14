@@ -940,6 +940,18 @@ fn svg_images_are_wrapped_with_foreground_background_and_size() {
         let boxed = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 3 1\"><rect width=\"3\" height=\"1\"/></svg>";
         let boxed_spec = t.data_spec(sym::SVG, boxed.as_bytes(), &[]);
         assert_eq!(t.pixels(boxed_spec), [0, 0, 0]);
+        let em = "<svg xmlns=\"http://www.w3.org/2000/svg\" height=\"1em\" viewBox=\"0 0 16 16\"><rect width=\"16\" height=\"16\"/></svg>";
+        let em_spec = t.data_spec(sym::SVG, em.as_bytes(), &[]);
+        let id = t.lisp.lookup_image(t.f, em_spec, -1).unwrap();
+        let img = t.lisp.image(t.f, id).unwrap();
+        let font_size = img.face_font_size;
+        assert!(font_size > 0);
+        assert_eq!((img.width, img.height), (font_size, font_size));
+        let half = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"2em\" viewBox=\"0 0 20 10\"><rect width=\"20\" height=\"10\"/></svg>";
+        let half_spec = t.data_spec(sym::SVG, half.as_bytes(), &[]);
+        let id = t.lisp.lookup_image(t.f, half_spec, -1).unwrap();
+        let img = t.lisp.image(t.f, id).unwrap();
+        assert_eq!((img.width, img.height), (2 * font_size, font_size));
         let css = t.lisp.string("rect { fill: blue }");
         let styled = t.data_spec(sym::SVG, boxed.as_bytes(), &[sym::K_CSS, css]);
         assert_eq!(t.pixels(styled), [B, B, B]);

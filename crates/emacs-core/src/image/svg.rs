@@ -14,6 +14,7 @@ use crate::value::Value;
 const SVG_DATA: usize = 1;
 const SVG_FILE: usize = 2;
 const FRAME_SCALE_FACTOR: f64 = 1.0;
+const RSVG_DEFAULT_DPI: f64 = 90.0;
 
 fn svg_format() -> [ImageKeyword; 13] {
     use ImageValueType as T;
@@ -100,6 +101,106 @@ fn svg_error(lisp: &mut Lisp, error: &usvg::Error) -> LispResult<bool> {
     Ok(false)
 }
 
+enum CssLength {
+    Absolute(f64),
+    Percent,
+    Unknown,
+}
+
+fn parse_css_length(text: &str) -> Option<(f64, &str)> {
+    let text = text.trim();
+    let bytes = text.as_bytes();
+    let mut end = 0;
+    if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
+        end += 1;
+    }
+    while end < bytes.len() && (bytes[end].is_ascii_digit() || bytes[end] == b'.') {
+        end += 1;
+    }
+    if end < bytes.len() && (bytes[end] == b'e' || bytes[end] == b'E') {
+        let mut exp = end + 1;
+        if exp < bytes.len() && (bytes[exp] == b'+' || bytes[exp] == b'-') {
+            exp += 1;
+        }
+        if exp < bytes.len() && bytes[exp].is_ascii_digit() {
+            end = exp;
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+        }
+    }
+    let value = text[..end].parse::<f64>().ok()?;
+    Some((value, text[end..].trim()))
+}
+
+fn svg_css_length_to_pixels(value: f64, unit: &str, dpi: f64, font_size: f64) -> CssLength {
+    CssLength::Absolute(match unit {
+        "" | "px" => value,
+        "cm" => dpi * value / 2.54,
+        "mm" => dpi * value / 25.4,
+        "pt" => dpi * value / 72.0,
+        "pc" => dpi * value / 6.0,
+        "in" => value * dpi,
+        "em" => value * font_size,
+        "ex" | "ch" => value * font_size / 2.0,
+        "%" => return CssLength::Percent,
+        _ => return CssLength::Unknown,
+    })
+}
+
+fn intrinsic_size(
+    lisp: &mut Lisp,
+    text: &str,
+    dpi: f64,
+    font_size: f64,
+) -> LispResult<Option<(f64, f64)>> {
+    let options = usvg::roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    };
+    let Ok(doc) = usvg::roxmltree::Document::parse_with_options(text, options) else {
+        return Ok(None);
+    };
+    let root = doc.root_element();
+    let mut length = |name: &str| -> LispResult<Option<CssLength>> {
+        let Some((value, unit)) = root.attribute(name).and_then(parse_css_length) else {
+            return Ok(None);
+        };
+        let length = svg_css_length_to_pixels(value, unit, dpi, font_size);
+        if let CssLength::Unknown = length {
+            let unit = lisp.string(unit);
+            lisp.image_error("Unknown RSVG unit, code: %s", &[unit])?;
+        }
+        Ok(Some(length))
+    };
+    let (width, height) = (length("width")?, length("height")?);
+    if let (Some(CssLength::Absolute(w)), Some(CssLength::Absolute(h))) = (&width, &height) {
+        return Ok(Some((*w, *h)));
+    }
+    let pixels = |l: &Option<CssLength>| match l {
+        Some(CssLength::Absolute(v)) => *v,
+        _ => 0.0,
+    };
+    let (explicit_width, explicit_height) = (pixels(&width), pixels(&height));
+    let viewbox = root.attribute("viewBox").and_then(|v| {
+        let n: Vec<f64> = v
+            .split(|c: char| c.is_ascii_whitespace() || c == ',')
+            .filter(|s| !s.is_empty())
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .ok()?;
+        (n.len() == 4 && n[2] > 0.0 && n[3] > 0.0).then(|| (n[2], n[3]))
+    });
+    let (w, h) = match viewbox {
+        _ if explicit_width > 0.0 && explicit_height > 0.0 => (explicit_width, explicit_height),
+        Some((vw, vh)) if explicit_width > 0.0 => (explicit_width, explicit_width * vh / vw),
+        Some((vw, vh)) if explicit_height > 0.0 => (explicit_height * vw / vh, explicit_height),
+        Some((vw, vh)) => (vw, vh),
+        None => (0.0, 0.0),
+    };
+    Ok((w > 0.0 && h > 0.0).then_some((w, h)))
+}
+
 fn root_element_start(text: &str) -> usize {
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -155,27 +256,53 @@ fn svg_load_image(
         "svg{{  font-family: \"{family}\";  font-size:{}px;}}{user_css}",
         img.face_font_size
     );
-    let mut opt = usvg::Options::default();
-    if dpi > 0.0 {
-        opt.dpi = dpi as f32;
-    }
-    opt.resources_dir = filename
-        .as_ref()
-        .and_then(|name| std::path::Path::new(name).parent().map(|p| p.to_path_buf()));
-    opt.fontdb = font_database();
-    opt.style_sheet = Some(css);
+    let dpi = if dpi > 0.0 { dpi } else { RSVG_DEFAULT_DPI };
+    let mut opt = usvg::Options {
+        dpi: dpi as f32,
+        resources_dir: filename
+            .as_ref()
+            .and_then(|name| std::path::Path::new(name).parent().map(|p| p.to_path_buf())),
+        fontdb: font_database(),
+        style_sheet: Some(css),
+        ..Default::default()
+    };
     if !family.is_empty() {
         opt.font_family = family;
     }
     if img.face_font_size > 0 {
         opt.font_size = img.face_font_size as f32;
     }
-    let tree = match usvg::Tree::from_data(contents, &opt) {
+    let decompressed;
+    let source: &[u8] = if contents.starts_with(&[0x1f, 0x8b]) {
+        match usvg::decompress_svgz(contents) {
+            Ok(data) => {
+                decompressed = data;
+                &decompressed
+            }
+            Err(e) => return svg_error(lisp, &e),
+        }
+    } else {
+        contents
+    };
+    let text = match std::str::from_utf8(source) {
+        Ok(text) => text,
+        Err(_) => return svg_error(lisp, &usvg::Error::NotAnUtf8Str),
+    };
+    let tree = match usvg::Tree::from_str(text, &opt) {
         Ok(tree) => tree,
         Err(e) => return svg_error(lisp, &e),
     };
-    let size = tree.size();
-    let (viewbox_width, viewbox_height) = (f64::from(size.width()), f64::from(size.height()));
+    let (viewbox_width, viewbox_height) =
+        match intrinsic_size(lisp, text, dpi, f64::from(img.face_font_size))? {
+            Some(size) => size,
+            None => {
+                let bbox = tree.root().abs_bounding_box();
+                (
+                    f64::from(bbox.x() + bbox.width()),
+                    f64::from(bbox.y() + bbox.height()),
+                )
+            }
+        };
     let (width, height) = lisp.compute_image_size(f, viewbox_width, viewbox_height, img)?;
     let width = scale_image_size(f64::from(width), 1.0, FRAME_SCALE_FACTOR);
     let height = scale_image_size(f64::from(height), 1.0, FRAME_SCALE_FACTOR);
@@ -196,22 +323,6 @@ fn svg_load_image(
         img.background_valid = true;
     }
     let (color, fill) = (foreground & 0xFF_FFFF, background & 0xFF_FFFF);
-    let decompressed;
-    let source: &[u8] = if contents.starts_with(&[0x1f, 0x8b]) {
-        match usvg::decompress_svgz(contents) {
-            Ok(data) => {
-                decompressed = data;
-                &decompressed
-            }
-            Err(e) => return svg_error(lisp, &e),
-        }
-    } else {
-        contents
-    };
-    let text = match std::str::from_utf8(source) {
-        Ok(text) => text,
-        Err(_) => return svg_error(lisp, &usvg::Error::NotAnUtf8Str),
-    };
     let root = root_element_start(text);
     let wrapped = format!(
         "{}<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" xmlns:xi=\"http://www.w3.org/2001/XInclude\" style=\"color: #{color:06X};\" width=\"{width}\" height=\"{height}\" preserveAspectRatio=\"none\" viewBox=\"0 0 {viewbox_width:.6} {viewbox_height:.6}\"><rect width=\"100%\" height=\"100%\" fill=\"#{fill:06X}\"/>{}</svg>",
