@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.1.168"
+version = "0.1.169"
 edition = "2024"
 rust-version = "1.99"
 license = "GPL-3.0-or-later"
@@ -48,6 +48,8 @@ num-traits = "0.2"
 jiff = "0.2"
 png = "0.18"
 zune-jpeg = "0.5"
+weezl = "0.1"
+gif = "0.14"
 image = { version = "0.25", default-features = false }
 
 [workspace.lints.rust]

@@ -1248,6 +1248,7 @@ impl Lisp {
     }
 
     pub fn garbage_collect(&mut self) -> usize {
+        self.image_prune_animation_caches(false);
         let roots = self.roots();
         self.heap.collect(&roots)
     }

@@ -1,4 +1,5 @@
 mod algorithms;
+mod gif;
 mod jpeg;
 mod pbm;
 mod png;
@@ -142,6 +143,12 @@ static IMAGE_TYPES: &[ImageType] = &[
         free_img: image_clear_image,
     },
     ImageType {
+        type_: sym::GIF,
+        valid_p: gif::gif_image_p,
+        load_img: gif::gif_load,
+        free_img: image_clear_image,
+    },
+    ImageType {
         type_: sym::JPEG,
         valid_p: jpeg::jpeg_image_p,
         load_img: jpeg::jpeg_load,
@@ -199,9 +206,18 @@ pub struct ImageCache {
     scaling_col_width: i64,
 }
 
+pub(crate) struct AnimCache {
+    pub(crate) spec: Value,
+    pub(crate) gif: gif::GifAnimHandle,
+    pub(crate) index: i32,
+    pub(crate) byte_size: i64,
+    pub(crate) update_time: Timespec,
+}
+
 #[derive(Default)]
 pub struct Images {
     caches: Vec<Option<ImageCache>>,
+    anim: Vec<AnimCache>,
 }
 
 impl Images {
@@ -211,6 +227,39 @@ impl Images {
                 roots.extend_from_slice(&[img.spec, img.dependencies, img.lisp_data]);
             }
         }
+        roots.extend(self.anim.iter().map(|cache| cache.spec));
+    }
+}
+
+impl Lisp {
+    fn anim_prune_animation_cache(&mut self, clear: Value) {
+        let old = timespec_sub(current_timespec(), (60, 0));
+        self.images.anim.retain(|cache| {
+            !(clear == sym::T || (clear.is_nil() && old > cache.update_time) || clear == cache.spec)
+        });
+    }
+
+    pub(crate) fn anim_get_animation_cache(&mut self, spec: Value) -> usize {
+        self.anim_prune_animation_cache(Value::NIL);
+        let index = match self.images.anim.iter().position(|c| c.spec == spec) {
+            Some(index) => index,
+            None => {
+                self.images.anim.push(AnimCache {
+                    spec,
+                    gif: gif::GifAnimHandle::default(),
+                    index: -1,
+                    byte_size: 0,
+                    update_time: (0, 0),
+                });
+                self.images.anim.len() - 1
+            }
+        };
+        self.images.anim[index].update_time = current_timespec();
+        index
+    }
+
+    pub fn image_prune_animation_caches(&mut self, clear: bool) {
+        self.anim_prune_animation_cache(if clear { sym::T } else { Value::NIL });
     }
 }
 
@@ -229,6 +278,7 @@ pub(crate) enum ImageValueType {
     StringOrNil,
     Symbol,
     PositiveInteger,
+    NonNegativeInteger,
     NonNegativeIntegerOrPair,
     Ascent,
     Integer,
@@ -428,6 +478,7 @@ impl Lisp {
                     ImageValueType::StringOrNil => value.is_string() || value.is_nil(),
                     ImageValueType::Symbol => value.is_symbol(),
                     ImageValueType::PositiveInteger => ranged_fixnum(value, 1, i64::from(i32::MAX)),
+                    ImageValueType::NonNegativeInteger => value.as_fixnum().is_some_and(|n| n >= 0),
                     ImageValueType::NonNegativeIntegerOrPair => {
                         ranged_fixnum(value, 0, i64::from(i32::MAX))
                             || (value.is_cons()
@@ -1485,6 +1536,8 @@ fn f_clear_image_cache(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         if !animation_filter.is_cons() {
             return Err(lisp.wrong_type(sym::CONSP, animation_filter));
         }
+        let plist = lisp.xcdr(animation_filter);
+        lisp.anim_prune_animation_cache(plist);
         return Ok(Value::NIL);
     }
     if !(filter.is_nil() || lisp.is_frame(filter)) {
@@ -1493,6 +1546,7 @@ fn f_clear_image_cache(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         let f = lisp.decode_window_system_frame(filter)?;
         lisp.clear_image_cache(f, sym::T)?;
     }
+    lisp.image_prune_animation_caches(true);
     Ok(Value::NIL)
 }
 
@@ -1529,6 +1583,7 @@ fn f_image_cache_size(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
             total += lisp.image_frame_cache_size(f);
         }
     }
+    total += lisp.images.anim.iter().map(|c| c.byte_size).sum::<i64>();
     Ok(Value::fixnum(total))
 }
 
@@ -1543,7 +1598,7 @@ pub fn init_vars(lisp: &mut Lisp) {
         lisp.set_plain_value(sym::LIBJPEG_VERSION, Value::fixnum(-1));
     }
     let mut image_types = Value::NIL;
-    for type_ in [sym::PBM, sym::XBM, sym::JPEG, sym::PNG] {
+    for type_ in [sym::PBM, sym::XBM, sym::JPEG, sym::GIF, sym::PNG] {
         image_types = lisp.cons(type_, image_types);
     }
     lisp.defvar(sym::IMAGE_TYPES, image_types);

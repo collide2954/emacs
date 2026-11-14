@@ -433,3 +433,174 @@ fn jpeg_pixels_load_from_files_and_data() {
         );
     });
 }
+
+const GIF_PALETTE: [u8; 12] = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+
+fn gif_frame(
+    (left, top, width, height): (u16, u16, u16, u16),
+    buffer: &[u8],
+    delay: u16,
+    dispose: gif::DisposalMethod,
+    transparent: Option<u8>,
+) -> gif::Frame<'_> {
+    gif::Frame {
+        left,
+        top,
+        width,
+        height,
+        delay,
+        dispose,
+        transparent,
+        buffer: std::borrow::Cow::Borrowed(buffer),
+        ..gif::Frame::default()
+    }
+}
+
+fn encode_gif(width: u16, height: u16, frames: &[gif::Frame<'_>], repeat: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut e = gif::Encoder::new(&mut out, width, height, &GIF_PALETTE).unwrap();
+        if repeat {
+            e.set_repeat(gif::Repeat::Infinite).unwrap();
+        }
+        for frame in frames {
+            e.write_frame(frame).unwrap();
+        }
+    }
+    out
+}
+
+fn animation() -> Vec<u8> {
+    use gif::DisposalMethod::{Any, Background, Keep};
+    encode_gif(
+        2,
+        1,
+        &[
+            gif_frame((0, 0, 2, 1), &[0, 1], 0, Any, None),
+            gif_frame((1, 0, 1, 1), &[2], 10, Keep, None),
+            gif_frame((0, 0, 2, 1), &[3, 0], 0, Keep, Some(0)),
+            gif_frame((0, 0, 2, 1), &[0, 1], 0, Background, Some(0)),
+        ],
+        true,
+    )
+}
+
+#[test]
+fn gif_frames_are_composited_with_disposal_and_transparency() {
+    on_big_stack(|| {
+        let mut t = Images::new();
+        let data = animation();
+        let expected = [
+            [0xFF0000, 0x00FF00],
+            [0xFF0000, 0x0000FF],
+            [0xFFFFFF, 0x0000FF],
+            [0xFFFFFF, 0x00FF00],
+        ];
+        for (index, pixels) in expected.iter().enumerate() {
+            let spec = t.data_spec(
+                sym::GIF,
+                &data,
+                &[sym::K_INDEX, Value::fixnum(index as i64)],
+            );
+            assert_eq!(t.pixels(spec), pixels, "frame {index}");
+            assert_eq!(t.mask(spec), None);
+        }
+        let plain = t.data_spec(sym::GIF, &data, &[]);
+        assert_eq!(t.pixels(plain), [0xFF0000, 0x00FF00]);
+        let black = t.lisp.string("black");
+        let over_black = t.data_spec(
+            sym::GIF,
+            &data,
+            &[sym::K_INDEX, Value::fixnum(3), sym::K_BACKGROUND, black],
+        );
+        assert_eq!(t.pixels(over_black), [0x000000, 0x00FF00]);
+        let small = encode_gif(
+            3,
+            2,
+            &[gif_frame(
+                (1, 1, 1, 1),
+                &[2],
+                0,
+                gif::DisposalMethod::Any,
+                None,
+            )],
+            false,
+        );
+        let small = t.data_spec(sym::GIF, &small, &[]);
+        assert_eq!(
+            t.pixels(small),
+            [0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0x0000FF, 0xFFFFFF]
+        );
+        let mut interlaced = gif_frame(
+            (0, 0, 1, 4),
+            &[0, 2, 1, 3],
+            0,
+            gif::DisposalMethod::Any,
+            None,
+        );
+        interlaced.interlaced = true;
+        let interlaced = encode_gif(1, 4, &[interlaced], false);
+        let path = t.file("interlaced.gif", &interlaced);
+        let interlaced = t.file_spec("gif", &path, "");
+        assert_eq!(
+            t.pixels(interlaced),
+            [0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF]
+        );
+        assert_eq!(eval(&mut t.lisp, "(and (memq 'gif image-types) t)"), "t");
+    });
+}
+
+#[test]
+fn gif_metadata_animation_caches_and_failures() {
+    on_big_stack(|| {
+        let mut t = Images::new();
+        let data = animation();
+        let before: i64 = eval(&mut t.lisp, "(image-cache-size)").parse().unwrap();
+        let first = t.data_spec(sym::GIF, &data, &[sym::K_INDEX, Value::fixnum(0)]);
+        let second = t.data_spec(sym::GIF, &data, &[sym::K_INDEX, Value::fixnum(1)]);
+        let plain = t.data_spec(sym::GIF, &data, &[]);
+        for (name, spec) in [("first", first), ("second", second), ("plain", plain)] {
+            let symbol = t.lisp.intern(name);
+            t.lisp.set_plain_value(symbol, spec);
+        }
+        let describe = "(function (lambda (spec) (let ((m (image-metadata spec))) (list (plist-get m 'count) (plist-get m 'delay) (mapcar (function (lambda (x) (if (stringp x) (append x nil) x))) (car (cdr (memq 'extension-data m))))))))";
+        assert_eq!(
+            eval(&mut t.lisp, &format!("(funcall {describe} first)")),
+            "(4 t (249 (0 0 0 0) 0 (1 0 0) 255 (78 69 84 83 67 65 80 69 50 46 48)))"
+        );
+        assert_eq!(
+            eval(&mut t.lisp, &format!("(funcall {describe} second)")),
+            "(4 0.1 (249 (4 10 0 0)))"
+        );
+        let after: i64 = eval(&mut t.lisp, "(image-cache-size)").parse().unwrap();
+        assert!(after >= before + 2 * data.len() as i64, "{before} {after}");
+        assert_eq!(eval(&mut t.lisp, "(clear-image-cache nil second)"), "nil");
+        let pruned: i64 = eval(&mut t.lisp, "(image-cache-size)").parse().unwrap();
+        assert_eq!(pruned, after - data.len() as i64);
+        assert_eq!(
+            eval(&mut t.lisp, "(clear-image-cache nil 5)"),
+            "error: (wrong-type-argument consp 5)"
+        );
+        let out_of_range = t.data_spec(sym::GIF, &data, &[sym::K_INDEX, Value::fixnum(5)]);
+        let id = t.lisp.lookup_image(t.f, out_of_range, -1).unwrap();
+        assert!(t.lisp.image(t.f, id).unwrap().pixmap.is_none());
+        let truncated = t.data_spec(sym::GIF, &data[..data.len() - 8], &[]);
+        let id = t.lisp.lookup_image(t.f, truncated, -1).unwrap();
+        assert!(t.lisp.image(t.f, id).unwrap().pixmap.is_none());
+        for source in [
+            "(image-size '(image :type gif :data \"not a gif\") t)",
+            "(image-size '(image :type gif :file \"nope.gif\") t)",
+        ] {
+            assert_eq!(eval(&mut t.lisp, source), "(30 . 30)");
+        }
+        let log = messages(&mut t.lisp);
+        for expected in [
+            "Cannot open memory source \u{2018}(image :type gif :data not a gif)\u{2019}: Data is not in GIF format",
+            "Cannot find image file \u{2018}nope.gif\u{2019}",
+            "Invalid image number \u{2018}5\u{2019} in image",
+            "Error reading GIF data: ",
+        ] {
+            assert!(log.contains(expected), "{expected:?} in {log:?}");
+        }
+    });
+}
