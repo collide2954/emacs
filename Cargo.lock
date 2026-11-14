@@ -590,7 +590,7 @@ dependencies = [
 
 [[package]]
 name = "cmdproxy"
-version = "0.1.170"
+version = "0.1.171"
 dependencies = [
  "emacs-w32",
 ]
@@ -884,7 +884,7 @@ checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "emacs"
-version = "0.1.170"
+version = "0.1.171"
 dependencies = [
  "emacs-charsets",
  "emacs-core",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "emacs-charsets"
-version = "0.1.170"
+version = "0.1.171"
 dependencies = [
  "flate2",
  "regex",
@@ -902,10 +902,11 @@ dependencies = [
 
 [[package]]
 name = "emacs-core"
-version = "0.1.170"
+version = "0.1.171"
 dependencies = [
  "emacs-unix",
  "emacs-w32",
+ "image-webp",
  "jiff",
  "num-bigint",
  "num-integer",
@@ -918,7 +919,7 @@ dependencies = [
 
 [[package]]
 name = "emacs-gui"
-version = "0.1.170"
+version = "0.1.171"
 dependencies = [
  "cosmic-text",
  "emacs-core",
@@ -927,6 +928,7 @@ dependencies = [
  "harfrust",
  "iced",
  "image",
+ "image-webp",
  "png 0.18.1",
  "swash",
  "tiff",
@@ -935,21 +937,21 @@ dependencies = [
 
 [[package]]
 name = "emacs-unidata"
-version = "0.1.170"
+version = "0.1.171"
 dependencies = [
  "regex",
 ]
 
 [[package]]
 name = "emacs-unix"
-version = "0.1.170"
+version = "0.1.171"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "emacs-w32"
-version = "0.1.170"
+version = "0.1.171"
 dependencies = [
  "windows-sys 0.61.2",
 ]

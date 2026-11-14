@@ -15,6 +15,7 @@ png.workspace = true
 zune-jpeg.workspace = true
 weezl.workspace = true
 tiff.workspace = true
+image-webp.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 emacs-w32.workspace = true

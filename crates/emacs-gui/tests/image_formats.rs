@@ -745,3 +745,149 @@ fn tiff_directories_are_indexed_and_counted() {
         }
     });
 }
+
+fn webp_still(width: u32, height: u32, color: image_webp::ColorType, data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    image_webp::WebPEncoder::new(&mut out)
+        .encode(data, width, height, color)
+        .unwrap();
+    out
+}
+
+fn riff_chunk(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let mut chunk = id.to_vec();
+    chunk.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    chunk.extend_from_slice(payload);
+    if payload.len() % 2 == 1 {
+        chunk.push(0);
+    }
+    chunk
+}
+
+fn vp8l_chunk(webp: &[u8]) -> Vec<u8> {
+    let mut at = 12;
+    while at + 8 <= webp.len() {
+        let len = u32::from_le_bytes(webp[at + 4..at + 8].try_into().unwrap()) as usize;
+        if &webp[at..at + 4] == b"VP8L" {
+            return webp[at..at + 8 + len + len % 2].to_vec();
+        }
+        at += 8 + len + len % 2;
+    }
+    panic!("no VP8L chunk");
+}
+
+fn u24(v: u32) -> [u8; 3] {
+    let b = v.to_le_bytes();
+    [b[0], b[1], b[2]]
+}
+
+fn webp_animation(width: u32, height: u32, frames: &[(u32, u32, &[u8], u32)]) -> Vec<u8> {
+    let mut vp8x = vec![0x02, 0, 0, 0];
+    vp8x.extend_from_slice(&u24(width - 1));
+    vp8x.extend_from_slice(&u24(height - 1));
+    let mut body = b"WEBP".to_vec();
+    body.extend(riff_chunk(b"VP8X", &vp8x));
+    body.extend(riff_chunk(b"ANIM", &[255, 255, 255, 255, 0, 0]));
+    for &(fw, fh, pixels, duration) in frames {
+        let mut anmf = Vec::new();
+        anmf.extend_from_slice(&u24(0));
+        anmf.extend_from_slice(&u24(0));
+        anmf.extend_from_slice(&u24(fw - 1));
+        anmf.extend_from_slice(&u24(fh - 1));
+        anmf.extend_from_slice(&u24(duration));
+        anmf.push(0x02);
+        anmf.extend(vp8l_chunk(&webp_still(
+            fw,
+            fh,
+            image_webp::ColorType::Rgba8,
+            pixels,
+        )));
+        body.extend(riff_chunk(b"ANMF", &anmf));
+    }
+    let mut out = b"RIFF".to_vec();
+    out.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    out.extend(body);
+    out
+}
+
+#[test]
+fn webp_stills_and_animations_blend_alpha_with_the_background() {
+    on_big_stack(|| {
+        let mut t = Images::new();
+        let rgb = webp_still(2, 1, image_webp::ColorType::Rgb8, &[255, 0, 0, 0, 0, 255]);
+        let path = t.file("rgb.webp", &rgb);
+        let from_file = t.file_spec("webp", &path, "");
+        assert_eq!(t.pixels(from_file), [0xFF0000, 0x0000FF]);
+        assert_eq!(
+            eval(
+                &mut t.lisp,
+                &format!("(image-size '(image :type webp :file \"{path}\") t)")
+            ),
+            "(2 . 1)"
+        );
+        let rgba = webp_still(
+            2,
+            1,
+            image_webp::ColorType::Rgba8,
+            &[255, 0, 0, 128, 0, 0, 255, 255],
+        );
+        let over_frame = t.data_spec(sym::WEBP, &rgba, &[]);
+        assert_eq!(t.pixels(over_frame), [0xFF7E7E, 0x0000FF]);
+        assert_eq!(t.mask(over_frame), None);
+        let black = t.lisp.string("black");
+        let over_black = t.data_spec(sym::WEBP, &rgba, &[sym::K_BACKGROUND, black]);
+        assert_eq!(t.pixels(over_black), [0x800000, 0x0000FF]);
+        let animation = webp_animation(
+            2,
+            1,
+            &[
+                (2, 1, &[255, 0, 0, 255, 0, 255, 0, 255], 100),
+                (1, 1, &[0, 0, 255, 255], 50),
+            ],
+        );
+        let before: i64 = eval(&mut t.lisp, "(image-cache-size)").parse().unwrap();
+        let first = t.data_spec(sym::WEBP, &animation, &[sym::K_INDEX, Value::fixnum(0)]);
+        assert_eq!(t.pixels(first), [0xFF0000, 0x00FF00]);
+        let second = t.data_spec(sym::WEBP, &animation, &[sym::K_INDEX, Value::fixnum(1)]);
+        assert_eq!(t.pixels(second), [0x0000FF, 0x00FF00]);
+        let beyond = t.data_spec(sym::WEBP, &animation, &[sym::K_INDEX, Value::fixnum(7)]);
+        assert_eq!(t.pixels(beyond), [0x0000FF, 0x00FF00]);
+        let plain = t.data_spec(sym::WEBP, &animation, &[]);
+        assert_eq!(t.pixels(plain), [0xFF0000, 0x00FF00]);
+        for (name, spec) in [("first", first), ("second", second), ("plain", plain)] {
+            let symbol = t.lisp.intern(name);
+            t.lisp.set_plain_value(symbol, spec);
+        }
+        assert_eq!(
+            eval(&mut t.lisp, "(image-metadata first)"),
+            "(delay 0.1 count 2)"
+        );
+        assert_eq!(
+            eval(&mut t.lisp, "(image-metadata second)"),
+            "(delay 0.05 count 2)"
+        );
+        assert_eq!(
+            eval(&mut t.lisp, "(image-metadata plain)"),
+            "(delay 0.1 count 2)"
+        );
+        let after: i64 = eval(&mut t.lisp, "(image-cache-size)").parse().unwrap();
+        assert!(
+            after >= before + 4 * animation.len() as i64,
+            "{before} {after}"
+        );
+        assert_eq!(eval(&mut t.lisp, "(and (memq 'webp image-types) t)"), "t");
+        for source in [
+            "(image-size '(image :type webp :data \"not a webp\") t)",
+            "(image-size '(image :type webp :file \"nope.webp\") t)",
+        ] {
+            assert_eq!(eval(&mut t.lisp, source), "(30 . 30)");
+        }
+        let log = messages(&mut t.lisp);
+        for expected in [
+            "Error parsing WebP headers from image data",
+            "Cannot find image file \u{2018}nope.webp\u{2019}",
+        ] {
+            assert!(log.contains(expected), "{expected:?} in {log:?}");
+        }
+    });
+}

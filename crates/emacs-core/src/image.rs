@@ -4,6 +4,7 @@ mod jpeg;
 mod pbm;
 mod png;
 mod tiff;
+mod webp;
 mod xbm;
 
 use crate::error::LispResult;
@@ -167,6 +168,12 @@ static IMAGE_TYPES: &[ImageType] = &[
         load_img: png::png_load,
         free_img: image_clear_image,
     },
+    ImageType {
+        type_: sym::WEBP,
+        valid_p: webp::webp_image_p,
+        load_img: webp::webp_load,
+        free_img: image_clear_image,
+    },
 ];
 
 pub struct Image {
@@ -216,7 +223,11 @@ pub struct ImageCache {
 pub(crate) struct AnimCache {
     pub(crate) spec: Value,
     pub(crate) gif: gif::GifAnimHandle,
+    pub(crate) webp: webp::WebpAnimHandle,
     pub(crate) index: i32,
+    pub(crate) frames: i32,
+    pub(crate) width: i32,
+    pub(crate) height: i32,
     pub(crate) byte_size: i64,
     pub(crate) update_time: Timespec,
 }
@@ -254,7 +265,11 @@ impl Lisp {
                 self.images.anim.push(AnimCache {
                     spec,
                     gif: gif::GifAnimHandle::default(),
+                    webp: webp::WebpAnimHandle::default(),
                     index: -1,
+                    frames: -1,
+                    width: -1,
+                    height: -1,
                     byte_size: 0,
                     update_time: (0, 0),
                 });
@@ -1605,7 +1620,15 @@ pub fn init_vars(lisp: &mut Lisp) {
         lisp.set_plain_value(sym::LIBJPEG_VERSION, Value::fixnum(-1));
     }
     let mut image_types = Value::NIL;
-    for type_ in [sym::PBM, sym::XBM, sym::JPEG, sym::TIFF, sym::GIF, sym::PNG] {
+    for type_ in [
+        sym::PBM,
+        sym::XBM,
+        sym::JPEG,
+        sym::TIFF,
+        sym::GIF,
+        sym::PNG,
+        sym::WEBP,
+    ] {
         image_types = lisp.cons(type_, image_types);
     }
     lisp.defvar(sym::IMAGE_TYPES, image_types);
