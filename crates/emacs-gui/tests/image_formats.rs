@@ -363,3 +363,73 @@ fn png_backgrounds_come_from_bkgd_and_failures_are_logged() {
         assert!(log.contains("PNG warning: invalid color"), "{log:?}");
     });
 }
+
+fn jpeg(width: u32, height: u32, color: image::ExtendedColorType, data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 100)
+        .encode(data, width, height, color)
+        .unwrap();
+    out
+}
+
+fn near(pixel: u64, rgb: u64) -> bool {
+    (0..3).all(|i| {
+        let shift = i * 8;
+        ((pixel >> shift) & 0xff).abs_diff((rgb >> shift) & 0xff) <= 3
+    })
+}
+
+#[test]
+fn jpeg_pixels_load_from_files_and_data() {
+    on_big_stack(|| {
+        let mut t = Images::new();
+        let gray = jpeg(8, 8, image::ExtendedColorType::L8, &[0x80; 64]);
+        let gray_spec = t.data_spec(sym::JPEG, &gray, &[]);
+        assert_eq!(t.pixels(gray_spec), [0x808080; 64]);
+        assert_eq!(t.mask(gray_spec), None);
+        assert_eq!(t.background(gray_spec), (true, 0x808080));
+        let color: Vec<u8> = [200, 100, 50].repeat(64);
+        let color = jpeg(8, 8, image::ExtendedColorType::Rgb8, &color);
+        let path = t.file("color.jpg", &color);
+        let from_file = t.file_spec("jpeg", &path, "");
+        let pixels = t.pixels(from_file);
+        assert_eq!(pixels.len(), 64);
+        assert!(
+            pixels.iter().all(|&p| near(p, 0xC86432)),
+            "{:06x?}",
+            &pixels[..4]
+        );
+        assert_eq!(
+            eval(
+                &mut t.lisp,
+                &format!("(image-size '(image :type jpeg :file \"{path}\") t)")
+            ),
+            "(8 . 8)"
+        );
+        assert_eq!(eval(&mut t.lisp, "(and (memq 'jpeg image-types) t)"), "t");
+        assert_eq!(
+            eval(
+                &mut t.lisp,
+                "(list (imagep '(image :type jpeg :data \"x\" :conversions disabled)) (imagep '(image :type jpeg :file \"a\" :data \"x\")) (imagep '(image :type jpeg)))"
+            ),
+            "(t nil nil)"
+        );
+        for source in [
+            "(image-size '(image :type jpeg :data \"not a jpeg\") t)",
+            "(image-size '(image :type jpeg :file \"nope.jpg\") t)",
+        ] {
+            assert_eq!(eval(&mut t.lisp, source), "(30 . 30)");
+        }
+        let log = messages(&mut t.lisp);
+        assert!(
+            log.contains(
+                "Error reading JPEG image \u{2018}(image :type jpeg :data not a jpeg)\u{2019}: "
+            ),
+            "{log:?}"
+        );
+        assert!(
+            log.contains("Cannot find image file \u{2018}nope.jpg\u{2019}"),
+            "{log:?}"
+        );
+    });
+}
