@@ -3,6 +3,7 @@ mod gif;
 mod jpeg;
 mod pbm;
 mod png;
+mod svg;
 mod tiff;
 mod webp;
 mod xbm;
@@ -172,6 +173,12 @@ static IMAGE_TYPES: &[ImageType] = &[
         type_: sym::WEBP,
         valid_p: webp::webp_image_p,
         load_img: webp::webp_load,
+        free_img: image_clear_image,
+    },
+    ImageType {
+        type_: sym::SVG,
+        valid_p: svg::svg_image_p,
+        load_img: svg::svg_load,
         free_img: image_clear_image,
     },
 ];
@@ -1166,8 +1173,12 @@ impl Lisp {
     }
 
     fn image_set_transform(&mut self, f: Value, img: &mut Image) -> LispResult<()> {
-        let (mut width, mut height) =
-            self.compute_image_size(f, f64::from(img.width), f64::from(img.height), img)?;
+        let (mut width, mut height) = if self.image_spec_value(img.spec, sym::K_TYPE).0 == sym::SVG
+        {
+            (img.width, img.height)
+        } else {
+            self.compute_image_size(f, f64::from(img.width), f64::from(img.height), img)?
+        };
         let rotation = self.compute_image_rotation(img)?;
         let flip = !self.image_spec_value(img.spec, sym::K_FLIP).0.is_nil();
         let (s, _) = self.image_spec_value(img.spec, sym::K_TRANSFORM_SMOOTHING);
@@ -1628,6 +1639,7 @@ pub fn init_vars(lisp: &mut Lisp) {
         sym::GIF,
         sym::PNG,
         sym::WEBP,
+        sym::SVG,
     ] {
         image_types = lisp.cons(type_, image_types);
     }

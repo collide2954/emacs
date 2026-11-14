@@ -891,3 +891,71 @@ fn webp_stills_and_animations_blend_alpha_with_the_background() {
         }
     });
 }
+
+const SVG_BLOCKS: &str = "<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"6\" height=\"2\"><rect width=\"2\" height=\"2\" fill=\"red\"/><rect x=\"2\" width=\"2\" height=\"2\" fill=\"currentColor\"/></svg>";
+
+#[test]
+fn svg_images_are_wrapped_with_foreground_background_and_size() {
+    on_big_stack(|| {
+        let mut t = Images::new();
+        const R: u64 = 0xFF0000;
+        let plain = t.data_spec(sym::SVG, SVG_BLOCKS.as_bytes(), &[]);
+        assert_eq!(
+            t.pixels(plain),
+            [
+                R, R, 0, 0, 0xFFFFFF, 0xFFFFFF, R, R, 0, 0, 0xFFFFFF, 0xFFFFFF
+            ]
+        );
+        let (blue, green) = (t.lisp.string("blue"), t.lisp.string("green"));
+        let colored = t.data_spec(
+            sym::SVG,
+            SVG_BLOCKS.as_bytes(),
+            &[sym::K_FOREGROUND, blue, sym::K_BACKGROUND, green],
+        );
+        const B: u64 = 0x0000FF;
+        const G: u64 = 0x00FF00;
+        assert_eq!(t.pixels(colored), [R, R, B, B, G, G, R, R, B, B, G, G]);
+        assert_eq!(t.background(colored), (true, G));
+        let wide = t.data_spec(
+            sym::SVG,
+            SVG_BLOCKS.as_bytes(),
+            &[sym::K_WIDTH, Value::fixnum(12)],
+        );
+        let pixels = t.pixels(wide);
+        assert_eq!(pixels.len(), 48);
+        assert_eq!(
+            (pixels[0], pixels[3], pixels[4], pixels[8], pixels[47]),
+            (R, R, 0, 0xFFFFFF, 0xFFFFFF)
+        );
+        let path = t.file("blocks.svg", SVG_BLOCKS.as_bytes());
+        assert_eq!(
+            eval(
+                &mut t.lisp,
+                &format!(
+                    "(list (image-size '(image :type svg :file \"{path}\") t) (image-size '(image :type svg :file \"{path}\" :scale 2) t))"
+                )
+            ),
+            "((6 . 2) (12 . 4))"
+        );
+        let boxed = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 3 1\"><rect width=\"3\" height=\"1\"/></svg>";
+        let boxed_spec = t.data_spec(sym::SVG, boxed.as_bytes(), &[]);
+        assert_eq!(t.pixels(boxed_spec), [0, 0, 0]);
+        let css = t.lisp.string("rect { fill: blue }");
+        let styled = t.data_spec(sym::SVG, boxed.as_bytes(), &[sym::K_CSS, css]);
+        assert_eq!(t.pixels(styled), [B, B, B]);
+        assert_eq!(eval(&mut t.lisp, "(and (memq 'svg image-types) t)"), "t");
+        for source in [
+            "(image-size '(image :type svg :data \"not svg\") t)",
+            "(image-size '(image :type svg :file \"nope.svg\") t)",
+        ] {
+            assert_eq!(eval(&mut t.lisp, source), "(30 . 30)");
+        }
+        let log = messages(&mut t.lisp);
+        for expected in [
+            "Error parsing SVG image: ",
+            "Cannot find image file \u{2018}nope.svg\u{2019}",
+        ] {
+            assert!(log.contains(expected), "{expected:?} in {log:?}");
+        }
+    });
+}
