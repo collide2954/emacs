@@ -64,7 +64,11 @@ Then byte-compile the preloaded Lisp. First compile `emacs-lisp/macroexp.el`, `c
 does. Then compile the files a batch boot lists in `load-history` (except the loaddefs
 files and `subdirs.el`) with `load-prefer-newer` and `byte-compile-warnings` set as in
 `BYTE_COMPILE_FLAGS`; one session for all of them works, since loadup has already loaded
-them all, as upstream's bootstrap Emacs has. The `.elc` files are ignored by git. This
+them all, as upstream's bootstrap Emacs has. A batch boot skips the files loadup loads only
+for a window system, so compile `fringe.el`, `image.el`, `international/fontset.el`,
+`pgtk-dnd.el` and `term/pgtk-win.el` too. Loaded from source, `pgtk-win.el`'s cl-lib macros
+pull in `cl-macs`, whose advice on `pcase--mutually-exclusive-p` makes loadup log "Advice
+installed on preloaded function" at every start. The `.elc` files are ignored by git. This
 takes about 8 minutes with a debug build. `.elc` files written before 0.1.69 have wrong
 docstring positions (their bytecode strings hold raw bytes instead of octal escapes), so
 rebuild them.
