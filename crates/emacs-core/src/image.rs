@@ -1,5 +1,6 @@
 mod algorithms;
 mod pbm;
+mod png;
 mod xbm;
 
 use crate::error::LispResult;
@@ -137,6 +138,12 @@ static IMAGE_TYPES: &[ImageType] = &[
         type_: sym::PBM,
         valid_p: pbm::pbm_image_p,
         load_img: pbm::pbm_load,
+        free_img: image_clear_image,
+    },
+    ImageType {
+        type_: sym::PNG,
+        valid_p: png::png_image_p,
+        load_img: png::png_load,
         free_img: image_clear_image,
     },
 ];
@@ -1529,7 +1536,7 @@ pub fn init_vars(lisp: &mut Lisp) {
         lisp.set_plain_value(sym::LIBJPEG_VERSION, Value::fixnum(-1));
     }
     let mut image_types = Value::NIL;
-    for type_ in [sym::PBM, sym::XBM] {
+    for type_ in [sym::PBM, sym::XBM, sym::PNG] {
         image_types = lisp.cons(type_, image_types);
     }
     lisp.defvar(sym::IMAGE_TYPES, image_types);

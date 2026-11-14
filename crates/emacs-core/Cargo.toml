@@ -11,6 +11,7 @@ jiff.workspace = true
 num-bigint.workspace = true
 num-integer.workspace = true
 num-traits.workspace = true
+png.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 emacs-w32.workspace = true

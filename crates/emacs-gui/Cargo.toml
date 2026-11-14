@@ -14,6 +14,9 @@ cosmic-text.workspace = true
 swash.workspace = true
 harfrust.workspace = true
 
+[dev-dependencies]
+png.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 emacs-w32.workspace = true
 
