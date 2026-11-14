@@ -623,7 +623,7 @@ fn frame_unhighlight(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     lisp.gui_update_cursor(f, true)
 }
 
-fn pgtk_frame_rehighlight(lisp: &mut Lisp, terminal: Value) -> LispResult<()> {
+pub(crate) fn pgtk_frame_rehighlight(lisp: &mut Lisp, terminal: Value) -> LispResult<()> {
     let old_highlight = lisp.display_info(terminal).highlight_frame;
     let focus = with_display_list(|displays| {
         displays
@@ -751,7 +751,7 @@ fn xg_frame_resized(lisp: &mut Lisp, f: Value, width: i64, height: i64) -> LispR
     Ok(())
 }
 
-fn pgtk_cr_update_surface_desired_size(
+pub(crate) fn pgtk_cr_update_surface_desired_size(
     lisp: &mut Lisp,
     f: Value,
     width: i64,

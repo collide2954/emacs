@@ -19,6 +19,7 @@ pub struct Display {
     shown: HashSet<u64>,
     popups: HashSet<u64>,
     positions: HashMap<u64, (i32, i32)>,
+    sizes: HashMap<u64, (u32, u32)>,
     monitor_source: Box<dyn MonitorSource + Send>,
 }
 
@@ -32,6 +33,7 @@ impl Display {
             shown: HashSet::new(),
             popups: HashSet::new(),
             positions: HashMap::new(),
+            sizes: HashMap::new(),
             monitor_source: Box::new(SystemMonitors),
         }
     }
@@ -104,6 +106,7 @@ impl Display {
         self.shown.insert(frame);
         if self.popups.contains(&frame) {
             let (x, y) = self.positions.get(&frame).copied().unwrap_or((0, 0));
+            let (width, height) = self.sizes.get(&frame).copied().unwrap_or((width, height));
             self.send(Command::OpenPopup {
                 frame,
                 x,
@@ -115,6 +118,17 @@ impl Display {
             self.send(Command::OpenFrame {
                 frame,
                 title: title.to_string(),
+                width,
+                height,
+            });
+        }
+    }
+
+    pub fn resize_window(&mut self, frame: u64, width: u32, height: u32) {
+        self.sizes.insert(frame, (width, height));
+        if self.shown.contains(&frame) {
+            self.send(Command::ResizeFrame {
+                frame,
                 width,
                 height,
             });
@@ -200,6 +214,7 @@ impl Display {
         self.shown.remove(&frame);
         self.popups.remove(&frame);
         self.positions.remove(&frame);
+        self.sizes.remove(&frame);
         self.send(Command::CloseFrame { frame });
     }
 

@@ -1865,7 +1865,7 @@ pub(crate) fn f_barf_if_buffer_read_only(lisp: &mut Lisp, args: &[Value]) -> Lis
     Ok(Value::NIL)
 }
 
-pub(crate) fn f_erase_buffer(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub fn f_erase_buffer(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     lisp.widen();
     let (beg, end) = (1, lisp.cur().z());
     lisp.del_range(beg, end)?;

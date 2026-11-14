@@ -941,7 +941,7 @@ fn general_insert(
     Ok(Value::NIL)
 }
 
-pub(crate) fn f_insert(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_insert(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     general_insert(lisp, args, false, false)
 }
 

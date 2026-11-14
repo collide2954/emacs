@@ -114,7 +114,7 @@ impl Lisp {
         &mut self.display_info_mut(t).mouse_highlight
     }
 
-    pub(crate) fn frame_internal_border_width(&self, f: Value) -> i64 {
+    pub fn frame_internal_border_width(&self, f: Value) -> i64 {
         self.frame(f).geometry.internal_border_width
     }
 

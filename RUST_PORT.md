@@ -341,11 +341,10 @@ per-frame `PgtkOutput`, registers the `ftcr` and `ftcrhb` drivers, picks the def
 default parameters, realizes faces, sizes the frame with `gui_figure_window_size`, creates the
 frame's surface (C's `xg_create_frame_widgets`) and, when visible, asks iced to open the window
 (`pgtk_make_frame_visible`); `pgtk_set_window_size` resizes the surface and the window. The
-frame's handlers so far are the colors, cursor and mouse color, name and title; menu, tab and
-tool bar lines, borders, icons, cursor types, child frames and the window-manager hints are
-not ported. A frame becomes visible only when its map event is handled, which needs the
-command loop, so `frame-visible-p` is nil for now; making a frame invisible only clears its
-flags; a frame whose font can't be opened is unwound instead of going through
+frame's handlers so far are the colors, cursor and mouse color, border color, internal border
+width, name and title; menu, tab and tool bar lines, dividers, icons, child frames and the
+window-manager hints are not ported. A frame becomes visible when its map event arrives, and
+making it invisible hides its window (`gtk_widget_hide`); a frame whose font can't be opened is unwound instead of going through
 `delete_frame`. Deleting a pgtk frame (`pgtk_destroy_window`) frees its faces and output and
 closes its iced window; as in GTK builds, a pgtk terminal is kept when its last frame goes, and
 `x-close-connection` or `delete-terminal` (`pgtk_delete_terminal`, `pgtk_delete_display`)
@@ -362,7 +361,12 @@ them the way GDK's Windows backend does (`EnumDisplayMonitors`, `GetMonitorInfoW
 other platforms report no monitors yet. Geometry is in logical pixels with a GDK scale of 1,
 the units of Lisp frame pixels, since the iced shell does the device scaling. The shell sends
 each window's raw id (the HWND) in a `Realize` notice so a frame's monitor can be found with
-`MonitorFromWindow`. An interactive
+`MonitorFromWindow`. Tooltips are ported (`x-show-tip`, `x-hide-tip`, `pgtk_create_tip_frame`,
+`compute_tip_xy`, `pgtk_hide_tip`). With `use-system-tooltips` (the default) the text becomes the
+frame widget's tooltip, as pgtk's `xg_show_tooltip` does; otherwise a tip frame in a popup window
+shows it. Tip frames get no frame id, as in C, so their Display key is 0. The pointer's root
+position that GDK gives `compute_tip_xy` comes from `GetCursorPos` on Windows, scaled by the
+DPI of its monitor. An interactive
 `emacs -Q` runs all of `command-line`: it creates the first frame, deletes the initial
 terminal frame and its terminal, sets up faces and fonts (non-ASCII characters get faces
 through the realized fontsets) and then enters the command loop. Key and focus events from

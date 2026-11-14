@@ -15,6 +15,8 @@ use crate::pgtkterm::{
     pgtk_make_frame_visible, pgtk_term_init, with_display_list, with_output,
 };
 
+mod tip;
+
 const ICED_VERSION: &str = "0.14.0";
 const TINY_SKIA_VERSION: &str = "0.11.4";
 
@@ -56,6 +58,8 @@ static SUBRS: &[Subr] = &[
         1,
         f_pgtk_display_monitor_attributes_list,
     ),
+    Subr::fixed("x-show-tip", 1, 6, tip::f_x_show_tip),
+    Subr::fixed("x-hide-tip", 0, 0, tip::f_x_hide_tip),
 ];
 
 thread_local! {
@@ -64,6 +68,7 @@ thread_local! {
 
 pub fn mark_pgtkfns(roots: &mut Vec<Value>) {
     roots.push(MONITOR_SCALE_FACTOR_ALIST.with(std::cell::Cell::get));
+    tip::mark_tip(roots);
 }
 
 fn arg(args: &[Value], i: usize) -> Value {
@@ -527,7 +532,7 @@ pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
     Some(Lisp::gui_set_autoraise),
     Some(Lisp::gui_set_autolower),
     Some(pgtk_set_background_color),
-    None,
+    Some(pgtk_set_border_color),
     Some(Lisp::gui_set_border_width),
     Some(pgtk_set_cursor_color),
     Some(Lisp::gui_set_cursor_type),
@@ -536,7 +541,7 @@ pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
     None,
     None,
     None,
-    None,
+    Some(pgtk_set_internal_border_width),
     None,
     None,
     None,
@@ -701,6 +706,46 @@ fn pgtk_set_background_color(
     lisp.update_face_from_frame_parameter(f, sym::BACKGROUND_COLOR, arg)?;
     if lisp.frame(f).flags.visible {
         lisp.set_frame_garbaged(f);
+    }
+    Ok(())
+}
+
+fn pgtk_set_border_color(lisp: &mut Lisp, f: Value, arg: Value, _oldval: Value) -> LispResult<()> {
+    lisp.check_string(arg)?;
+    let pix = x_decode_color(lisp, f, arg, BLACK_PIX_DEFAULT)?;
+    with_output(lisp, f, |output| output.border_pixel = pix);
+    let terminal = lisp.frame(f).terminal;
+    crate::pgtkterm::pgtk_frame_rehighlight(lisp, terminal)
+}
+
+fn check_int_nonnegative(lisp: &mut Lisp, x: Value) -> LispResult<i64> {
+    lisp.check_integer(x)?;
+    let natnump = lisp.intern("natnump");
+    if lisp.funcall(natnump, &[x])?.is_nil() {
+        return Ok(0);
+    }
+    match x.as_fixnum() {
+        Some(n) if n <= i64::from(i32::MAX) => Ok(n),
+        _ => {
+            let (lo, hi) = (Value::fixnum(0), Value::fixnum(i64::from(i32::MAX)));
+            Err(lisp.signal_list(sym::ARGS_OUT_OF_RANGE, &[x, lo, hi]))
+        }
+    }
+}
+
+fn pgtk_set_internal_border_width(
+    lisp: &mut Lisp,
+    f: Value,
+    arg: Value,
+    _oldval: Value,
+) -> LispResult<()> {
+    let border = check_int_nonnegative(lisp, arg)?;
+    if border != lisp.frame_internal_border_width(f) {
+        lisp.frame_mut(f).geometry.internal_border_width = border;
+        if with_output(lisp, f, |output| output.widget) {
+            lisp.adjust_frame_size(f, -1, -1, 3, sym::INTERNAL_BORDER_WIDTH)?;
+            crate::pgtkdraw::pgtk_clear_under_internal_border(lisp, f);
+        }
     }
     Ok(())
 }

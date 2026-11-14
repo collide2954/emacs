@@ -2813,7 +2813,7 @@ fn f_frame_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(alist)
 }
 
-fn f_frame_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_frame_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_any_frame(args[0])?;
     let parameter = lisp.check_symbol(args[1])?;
     if !lisp.frame_live_p(f) {
@@ -2827,7 +2827,7 @@ fn f_frame_parameter(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     })
 }
 
-pub(crate) fn f_modify_frame_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_modify_frame_parameters(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_live_frame(args[0])?;
     if lisp.frame_window_p(f) {
         lisp.gui_set_frame_parameters(f, args[1])?;

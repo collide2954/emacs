@@ -2657,7 +2657,7 @@ pub(crate) fn f_nthcdr(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(tail)
 }
 
-pub(crate) fn f_nth(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_nth(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let tail = f_nthcdr(lisp, args)?;
     lisp.car(tail)
 }
@@ -2724,7 +2724,7 @@ fn f_memql(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::NIL)
 }
 
-pub(crate) fn f_assq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_assq(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (key, alist) = (args[0], args[1]);
     let base = lisp.stack.len();
     let mut li = lisp.for_each_tail(alist);
@@ -3136,7 +3136,7 @@ pub(crate) fn f_equal(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(lisp.equal(args[0], args[1])?))
 }
 
-fn f_equal_including_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub fn f_equal_including_properties(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(bool_value(lisp.internal_equal(args[0], args[1], true, 0)?))
 }
 
