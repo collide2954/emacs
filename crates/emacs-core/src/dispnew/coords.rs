@@ -1,13 +1,21 @@
 use crate::bidi::BidiDir;
 use crate::dispextern::{
-    DisplayElementType, DisplayPos, GlyphRowArea, GlyphType, It, LEFT_MARGIN_AREA, LineWrap,
-    MOVE_TO_POS, MOVE_TO_X, MOVE_TO_Y, RIGHT_MARGIN_AREA, TEXT_AREA, TextPos, WindowPart,
+    DisplayElementType, DisplayPos, Glyph, GlyphRowArea, GlyphSlice, GlyphType, GlyphU, It,
+    LEFT_MARGIN_AREA, LineWrap, MOVE_TO_POS, MOVE_TO_X, MOVE_TO_Y, RIGHT_MARGIN_AREA, TEXT_AREA,
+    TextPos, WindowPart,
 };
 use crate::dispnew::matrix::WhichMatrix;
 use crate::error::LispResult;
 use crate::lisp::Lisp;
 use crate::symbols as sym;
 use crate::value::Value;
+
+fn slice_origin(glyph: &Glyph) -> (i64, i64) {
+    match glyph.slice {
+        GlyphSlice::Img { x, y, .. } => (i64::from(x), i64::from(y)),
+        _ => (0, 0),
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct AreaHit {
@@ -99,8 +107,8 @@ impl Lisp {
         }
         self.bidi_unshelve_cache(itdata, false);
         crate::buffer::f_set_buffer(self, &[old_current_buffer])?;
-        let dx = i64::from(to_x - it.current_x);
-        let dy = y - i64::from(it.current_y);
+        let mut dx = i64::from(to_x - it.current_x);
+        let mut dy = y - i64::from(it.current_y);
         let string = if it.string.is_string() {
             it.string
         } else {
@@ -120,8 +128,16 @@ impl Lisp {
                     .char_to_byte(pos.pos.charpos as usize) as i64
             };
         }
-        if it.what == DisplayElementType::Image {
-            unreachable!("image glyphs need image.c");
+        let mut object = None;
+        let mut img_size = None;
+        if it.what == DisplayElementType::Image
+            && it.image_id >= 0
+            && let Some(img) = self.image(it.f, it.image_id as usize)
+        {
+            if !img.spec.is_nil() {
+                object = Some(img.spec);
+            }
+            img_size = Some((img.width, img.height));
         }
         let it_vpos = it.vpos
             + i32::from(self.window_wants_header_line(w))
@@ -134,8 +150,17 @@ impl Lisp {
             let row = &m.rows[it_vpos as usize];
             if it.hpos < i32::from(row.used[TEXT_AREA]) {
                 let glyph = &row.area_glyphs(TEXT_AREA)[it.hpos as usize];
-                width = i64::from(glyph.pixel_width);
-                height = i64::from(glyph.ascent) + i64::from(glyph.descent);
+                if let Some((img_width, img_height)) = img_size {
+                    let (sx, sy) = slice_origin(glyph);
+                    dy -= i64::from(row.ascent - i32::from(glyph.ascent));
+                    dx += sx;
+                    dy += sy;
+                    width = i64::from(img_width);
+                    height = i64::from(img_height);
+                } else {
+                    width = i64::from(glyph.pixel_width);
+                    height = i64::from(glyph.ascent) + i64::from(glyph.descent);
+                }
             } else {
                 height = i64::from(row.height);
             }
@@ -147,7 +172,7 @@ impl Lisp {
         Ok(BufferPosn {
             string,
             pos,
-            object: None,
+            object,
             x: i64::from(it.hpos),
             y: i64::from(it.vpos),
             dx,
@@ -167,7 +192,7 @@ impl Lisp {
             _ => m.header_line_row(),
         };
         let row = &m.rows[vpos];
-        let y0 = y - i64::from(row.y);
+        let mut y0 = y - i64::from(row.y);
         let mut hit = AreaHit {
             string: Value::NIL,
             charpos: 0,
@@ -175,7 +200,7 @@ impl Lisp {
             x,
             y: vpos as i64 - m.first_text_row() as i64,
             dx: 0,
-            dy: y0,
+            dy: 0,
             width: 0,
             height: 0,
         };
@@ -195,7 +220,13 @@ impl Lisp {
                 hit.width = i64::from(glyph.pixel_width);
                 hit.height = i64::from(glyph.ascent) + i64::from(glyph.descent);
                 if glyph.kind == GlyphType::Image {
-                    unreachable!("image glyphs need image.c");
+                    if let Some(img) = self.image_opt_from_glyph(w, glyph) {
+                        hit.object = Some(img);
+                        let (sx, sy) = slice_origin(glyph);
+                        x0 += sx;
+                        y0 += sy;
+                    }
+                    y0 -= i64::from(row.ascent - i32::from(glyph.ascent));
                 }
             } else {
                 hit.x += x0 / self.window_frame_column_width(w);
@@ -206,7 +237,19 @@ impl Lisp {
             x0 = 0;
         }
         hit.dx = x0;
+        hit.dy = y0;
         hit
+    }
+
+    fn image_opt_from_glyph(&self, w: Value, glyph: &Glyph) -> Option<Value> {
+        let GlyphU::ImgId(id) = glyph.u else {
+            return None;
+        };
+        if id < 0 {
+            return None;
+        }
+        let f = self.window(w).frame;
+        self.image(f, id as usize).map(|img| img.spec)
     }
 
     pub fn marginal_area_string(&self, w: Value, part: WindowPart, x: i64, y: i64) -> AreaHit {
@@ -228,6 +271,7 @@ impl Lisp {
             i += 1;
         }
         let row = &m.rows[i.min(m.rows.len() - 1)];
+        let mut y0 = y - i64::from(row.y);
         let mut hit = AreaHit {
             string: Value::NIL,
             charpos: 0,
@@ -235,7 +279,7 @@ impl Lisp {
             x,
             y: i as i64 - m.first_text_row() as i64,
             dx: 0,
-            dy: y - i64::from(row.y),
+            dy: 0,
             width: 0,
             height: 0,
         };
@@ -267,7 +311,13 @@ impl Lisp {
                 hit.width = i64::from(glyph.pixel_width);
                 hit.height = i64::from(glyph.ascent) + i64::from(glyph.descent);
                 if glyph.kind == GlyphType::Image {
-                    unreachable!("image glyphs need image.c");
+                    if let Some(img) = self.image_opt_from_glyph(w, glyph) {
+                        hit.object = Some(img);
+                    }
+                    let (sx, sy) = slice_origin(glyph);
+                    y0 -= i64::from(row.ascent - i32::from(glyph.ascent));
+                    x0 += sx;
+                    y0 += sy;
                 }
             } else {
                 hit.x += x0 / self.window_frame_column_width(w);
@@ -278,6 +328,7 @@ impl Lisp {
             hit.x = 0;
         }
         hit.dx = x0;
+        hit.dy = y0;
         hit
     }
 }

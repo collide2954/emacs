@@ -524,6 +524,30 @@ impl Lisp {
         glyph
     }
 
+    fn fill_image_glyph_string(&mut self, s: &mut GlyphString) {
+        let first = self.row_glyph(s.row, s.area, s.first_glyph);
+        let GlyphU::ImgId(id) = first.u else {
+            unreachable!("image glyph without an image id");
+        };
+        let f = s.f;
+        assert!(
+            self.image(f, id as usize).is_some(),
+            "image glyph whose image is not cached"
+        );
+        s.img = Some(id as usize);
+        s.slice = first.slice;
+        let face = first.face_id as usize;
+        s.face = Some(face);
+        s.font = self.face_font(f, face);
+        if self.mouse_face_override_p(s) {
+            let face = self.mouse_face_id(f);
+            s.face = Some(face);
+            self.prepare_face_for_display(f, face);
+        }
+        s.width = i32::from(first.pixel_width);
+        s.ybase += i32::from(first.voffset);
+    }
+
     fn left_overwritten(&self, s: &GlyphString) -> i64 {
         if s.left_overhang == 0 {
             return -1;
@@ -596,15 +620,32 @@ impl Lisp {
         k
     }
 
-    fn adjust_glyph_width_for_mouse_face(
+    pub(super) fn adjust_glyph_width_for_mouse_face(
         &self,
         g: &Glyph,
+        reversed_p: bool,
         original_face: usize,
         mouse_face: usize,
         f: Value,
     ) -> i32 {
+        let mut do_left_box_p = g.left_box_line_p;
+        let mut do_right_box_p = g.right_box_line_p;
         if g.kind == GlyphType::Image {
-            unreachable!("image glyphs need image.c");
+            let (GlyphU::ImgId(id), GlyphSlice::Img { x, width, .. }) = (g.u, g.slice) else {
+                unreachable!("image glyph without an image slice");
+            };
+            let img_width = self
+                .image(f, id as usize)
+                .expect("image in the frame's cache")
+                .width;
+            let (at_left, at_right) = (x == 0, i32::from(x) + i32::from(width) == img_width);
+            if !reversed_p {
+                do_left_box_p = g.left_box_line_p && at_left;
+                do_right_box_p = g.right_box_line_p && at_right;
+            } else {
+                do_left_box_p = g.left_box_line_p && at_right;
+                do_right_box_p = g.right_box_line_p && at_left;
+            }
         }
         let original = self
             .face_from_id(f, original_face)
@@ -615,10 +656,10 @@ impl Lisp {
             .expect("realized face")
             .box_vertical_line_width;
         let mut sum = 0;
-        if g.left_box_line_p {
+        if do_left_box_p {
             sum -= original.max(0);
         }
-        if g.right_box_line_p {
+        if do_right_box_p {
             sum -= original.max(0);
         }
         if g.left_box_line_p {
@@ -665,8 +706,10 @@ impl Lisp {
                 && self.cursor_in_mouse_face_p(s.w)
             {
                 let g = self.row_glyph(s.row, s.area, s.first_glyph);
+                let reversed_p = self.glyph_row(s.row).reversed_p;
                 let adjust = self.adjust_glyph_width_for_mouse_face(
                     &g,
+                    reversed_p,
                     g.face_id as usize,
                     s.face.expect("glyph string face"),
                     s.f,
@@ -797,7 +840,16 @@ impl Lisp {
                     arena[s].x = *x;
                     s
                 }
-                GlyphType::Image => unreachable!("image glyphs need image.c"),
+                GlyphType::Image => {
+                    let mut gs = self.init_glyph_string(w, row, area, *start, hl);
+                    self.fill_image_glyph_string(&mut gs);
+                    arena.push(gs);
+                    let s = arena.len() - 1;
+                    append_glyph_string(arena, &mut head, &mut tail, s);
+                    *start += 1;
+                    arena[s].x = *x;
+                    s
+                }
                 GlyphType::Xwidget => unreachable!("xwidgets are not supported"),
                 GlyphType::Glyphless => {
                     let face_id = first_glyph.face_id as usize;

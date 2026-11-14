@@ -1,5 +1,7 @@
 use crate::composite::CompositionMethod;
-use crate::dispextern::{DisplayElementType, GlyphRowArea, GlyphlessMethod, It};
+use crate::dispextern::{
+    DisplayElementType, GlyphRowArea, GlyphSlice, GlyphlessMethod, It, LineWrap,
+};
 use crate::error::LispResult;
 use crate::font::{FONT_INVALID_CODE, FontMetrics};
 use crate::lisp::Lisp;
@@ -129,6 +131,126 @@ impl Lisp {
         }
         self.prepare_face_for_display(f, face_id);
         code & 0xFFFF
+    }
+
+    fn image_slice_value(&self, v: Value, scale: i32, current: u16) -> u16 {
+        if let Some(n) = v.as_fixnum() {
+            n as u16
+        } else if v.is_float() {
+            (self.heap.float_value(v) * f64::from(scale)) as i64 as u16
+        } else {
+            current
+        }
+    }
+
+    fn produce_image_glyph(&mut self, it: &mut It) -> LispResult<()> {
+        let f = it.f;
+        self.prepare_face_for_display(f, it.face_id as usize);
+        if it.image_id < 0 {
+            it.ascent = 0;
+            it.phys_ascent = 0;
+            it.descent = 0;
+            it.phys_descent = 0;
+            it.pixel_width = 0;
+            it.nglyphs = 0;
+            return Ok(());
+        }
+        let id = it.image_id as usize;
+        self.prepare_image_for_display(f, id)?;
+        let img = self.image(f, id).expect("image in the frame's cache");
+        let (img_w, img_h) = (img.width, img.height);
+        let mut sx = self.image_slice_value(it.slice.x, img_w, 0);
+        let mut sy = self.image_slice_value(it.slice.y, img_h, 0);
+        let mut sw = self.image_slice_value(it.slice.width, img_w, img_w as u16);
+        let mut sh = self.image_slice_value(it.slice.height, img_h, img_h as u16);
+        if i32::from(sx) >= img_w {
+            sx = img_w as u16;
+        }
+        if i32::from(sy) >= img_h {
+            sy = img_h as u16;
+        }
+        if i32::from(sx) + i32::from(sw) >= img_w {
+            sw = (img_w - i32::from(sx)) as u16;
+        }
+        if i32::from(sy) + i32::from(sh) > img_h {
+            sh = (img_h - i32::from(sy)) as u16;
+        }
+        if sw == 0 || sh == 0 {
+            return Ok(());
+        }
+        let face = self
+            .face_from_id(f, it.face_id as usize)
+            .expect("face is not realized");
+        let glyph_ascent = self.image_ascent(img, face, i32::from(sy), i32::from(sh));
+        let (hmargin, vmargin, img_id) = (img.hmargin, img.vmargin, img.id);
+        let fb = self.face_bits(f, it.face_id as usize);
+        let (sx, sy, sh) = (i32::from(sx), i32::from(sy), i32::from(sh));
+        it.ascent = glyph_ascent;
+        it.phys_ascent = glyph_ascent;
+        it.descent = sh - glyph_ascent;
+        if sy == 0 {
+            it.descent += vmargin;
+        }
+        if sy + sh == img_h {
+            it.descent += vmargin;
+        }
+        it.phys_descent = it.descent;
+        it.pixel_width = i32::from(sw);
+        if sx == 0 {
+            it.pixel_width += hmargin;
+        }
+        if sx + i32::from(sw) == img_w {
+            it.pixel_width += hmargin;
+        }
+        if it.descent < 0 {
+            it.descent = 0;
+        }
+        it.nglyphs = 1;
+        if fb.box_type != FaceBoxType::NoBox {
+            if fb.box_horizontal_line_width > 0 {
+                if sy == 0 {
+                    it.ascent += fb.box_horizontal_line_width;
+                }
+                if sy + sh == img_h {
+                    it.descent += fb.box_horizontal_line_width;
+                }
+            }
+            if fb.box_vertical_line_width > 0 {
+                if it.start_of_box_run_p && sx == 0 {
+                    it.pixel_width += fb.box_vertical_line_width;
+                }
+                if it.end_of_box_run_p && sx + i32::from(sw) == img_w {
+                    it.pixel_width += fb.box_vertical_line_width;
+                }
+            }
+        }
+        Self::take_vertical_position_into_account(it);
+        let lnum_hpos = if it.lnum_width != 0 {
+            it.lnum_width + 2
+        } else {
+            0
+        };
+        let column_width = self.frame(f).geometry.column_width as i32;
+        if it.line_wrap != LineWrap::WordWrap
+            || it.hpos == lnum_hpos
+            || it.pixel_width > it.last_visible_x - it.lnum_pixel_width - column_width
+        {
+            let crop = it.pixel_width - (it.last_visible_x - it.current_x);
+            if crop > 0 && (it.hpos == lnum_hpos || it.pixel_width > it.last_visible_x / 4) {
+                it.pixel_width -= crop;
+                sw = (i32::from(sw) - crop) as u16;
+            }
+        }
+        if it.glyph_row.is_some() {
+            let slice = GlyphSlice::Img {
+                x: sx as u16,
+                y: sy as u16,
+                width: sw,
+                height: sh as u16,
+            };
+            self.append_image_glyph(it, glyph_ascent, img_id, slice);
+        }
+        Ok(())
     }
 
     fn char_metric(&mut self, font: Value, c: i32) -> Option<FontMetrics> {
@@ -875,7 +997,7 @@ impl Lisp {
         } else if it.what == DisplayElementType::Glyphless {
             self.produce_glyphless_glyph_gui(it, false, Value::NIL)?;
         } else if it.what == DisplayElementType::Image {
-            unreachable!("image glyphs need image.c");
+            self.produce_image_glyph(it)?;
         } else if it.what == DisplayElementType::Stretch {
             self.produce_stretch_glyph(it)?;
         } else if it.what == DisplayElementType::Xwidget {

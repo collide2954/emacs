@@ -1,6 +1,6 @@
 use crate::dispextern::{
-    DrawGlyphsFace, EmacsCursorKind, Glyph, GlyphMatrix, GlyphRow, GlyphRowArea, GlyphType,
-    LAST_AREA, LEFT_MARGIN_AREA, RIGHT_MARGIN_AREA, TEXT_AREA, WindowPart,
+    DrawGlyphsFace, EmacsCursorKind, Glyph, GlyphMatrix, GlyphRow, GlyphRowArea, GlyphSlice,
+    GlyphType, GlyphU, LAST_AREA, LEFT_MARGIN_AREA, RIGHT_MARGIN_AREA, TEXT_AREA, WindowPart,
 };
 use crate::dispnew::matrix::WhichMatrix;
 use crate::error::LispResult;
@@ -31,7 +31,152 @@ fn row_enabled(m: &GlyphMatrix, i: usize) -> bool {
     m.rows.get(i).is_some_and(|r| r.enabled_p)
 }
 
+pub(crate) fn f_lookup_image_map(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let (map, x, y) = (args[0], args[1], args[2]);
+    if map.is_nil() {
+        return Ok(Value::NIL);
+    }
+    let x = lisp.check_fixnum(x)?;
+    let y = lisp.check_fixnum(y)?;
+    let clip = |n: i64| n.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    Ok(lisp.find_hot_spot(map, clip(x), clip(y)))
+}
+
 impl Lisp {
+    fn on_hot_spot_p(&self, hot_spot: Value, x: i32, y: i32) -> bool {
+        if !hot_spot.is_cons() {
+            return false;
+        }
+        let (x, y) = (i64::from(x), i64::from(y));
+        let kind = self.xcar(hot_spot);
+        if kind == sym::RECT {
+            let rect = self.xcdr(hot_spot);
+            if !rect.is_cons() {
+                return false;
+            }
+            let (top_left, bottom_right) = (self.xcar(rect), self.xcdr(rect));
+            if !top_left.is_cons() || !bottom_right.is_cons() {
+                return false;
+            }
+            let at_least = |v: Value, n: i64| v.as_fixnum().is_some_and(|m| n >= m);
+            let at_most = |v: Value, n: i64| v.as_fixnum().is_some_and(|m| n <= m);
+            return at_least(self.xcar(top_left), x)
+                && at_least(self.xcdr(top_left), y)
+                && at_most(self.xcar(bottom_right), x)
+                && at_most(self.xcdr(bottom_right), y);
+        }
+        if kind == sym::CIRCLE {
+            let circ = self.xcdr(hot_spot);
+            if circ.is_cons() && self.xcar(circ).is_cons() {
+                let lr = self.xcdr(circ);
+                let center = self.xcar(circ);
+                if self.is_number(lr)
+                    && let (Some(x0), Some(y0)) =
+                        (self.xcar(center).as_fixnum(), self.xcdr(center).as_fixnum())
+                {
+                    let r = self.xfloatint(lr);
+                    let dx = (x0 - x) as f64;
+                    let dy = (y0 - y) as f64;
+                    return dx * dx + dy * dy <= r * r;
+                }
+            }
+            return false;
+        }
+        if kind == sym::POLY {
+            let v = self.xcdr(hot_spot);
+            if !self.is_vector(v) {
+                return false;
+            }
+            let poly = self.vector_items(v);
+            let n = poly.len();
+            if n < 6 || n & 1 != 0 {
+                return false;
+            }
+            let Some(lx) = poly[n - 2].as_fixnum() else {
+                return false;
+            };
+            let ly = poly[n - 1].as_fixnum().unwrap_or(0);
+            let (mut x0, mut y0) = (lx as i32 as i64, ly as i32 as i64);
+            let mut inside = false;
+            for pair in poly.chunks(2) {
+                let (x1, y1) = (x0, y0);
+                let (Some(lx), Some(ly)) = (pair[0].as_fixnum(), pair[1].as_fixnum()) else {
+                    return false;
+                };
+                (x0, y0) = (lx as i32 as i64, ly as i32 as i64);
+                if x0 >= x {
+                    if x1 >= x {
+                        continue;
+                    }
+                } else if x1 < x {
+                    continue;
+                }
+                if y > y0 && y > y1 {
+                    continue;
+                }
+                if y < y0 + ((y1 - y0) * (x - x0)) / (x1 - x0) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+        false
+    }
+
+    pub fn find_hot_spot(&self, map: Value, x: i32, y: i32) -> Value {
+        let mut map = map;
+        while map.is_cons() {
+            let area = self.xcar(map);
+            if area.is_cons() && self.on_hot_spot_p(self.xcar(area), x, y) {
+                return area;
+            }
+            map = self.xcdr(map);
+        }
+        Value::NIL
+    }
+
+    fn image_hot_spot_plist(&self, spec: Value, x: i32, y: i32) -> Option<Value> {
+        let image_map = self.plist_get(self.xcdr(spec), sym::K_MAP);
+        if image_map.is_nil() {
+            return None;
+        }
+        let hotspot = self.find_hot_spot(image_map, x, y);
+        if !hotspot.is_cons() {
+            return None;
+        }
+        let hotspot = self.xcdr(hotspot);
+        if !hotspot.is_cons() {
+            return None;
+        }
+        let hotspot = self.xcdr(hotspot);
+        if hotspot.is_cons() && self.xcar(hotspot).is_cons() {
+            Some(self.xcar(hotspot))
+        } else {
+            None
+        }
+    }
+
+    fn note_image_pointer(
+        &mut self,
+        spec: Value,
+        x: i32,
+        y: i32,
+        pointer: &mut Value,
+    ) -> Option<Value> {
+        let mut help = None;
+        if let Some(plist) = self.image_hot_spot_plist(spec, x, y) {
+            *pointer = self.plist_get(plist, sym::POINTER);
+            if pointer.is_nil() {
+                *pointer = sym::HAND;
+            }
+            help = Some(self.plist_get(plist, sym::HELP_ECHO));
+        }
+        if pointer.is_nil() {
+            *pointer = self.plist_get(self.xcdr(spec), sym::K_POINTER);
+        }
+        help
+    }
+
     fn hl_matrix(&self, w: Value) -> &GlyphMatrix {
         self.window_matrix(w, WhichMatrix::Current)
             .expect("glyph matrix")
@@ -615,21 +760,35 @@ impl Lisp {
             self.marginal_area_string(w, area, x, y)
         };
         let (string, charpos, x, dx) = (hit.string, hit.charpos, hit.x, hit.dx);
+        let mut help = Value::NIL;
+        if let Some(object) = hit.object
+            && self.is_image_spec(object)
+            && let Some(h) =
+                self.note_image_pointer(object, hit.dx as i32, hit.dy as i32, &mut pointer)
+        {
+            help = h;
+            if !help.is_nil() {
+                let contents = self.window(w).contents;
+                self.set_help_echo(help, w, contents, charpos);
+            }
+        }
         let mut pos = Value::NIL;
         if string.is_string() {
             pos = Value::fixnum(charpos.min(self.string_chars(string) as i64 - 1));
         }
         if string.is_string() || on_line {
-            let help = if string.is_string() {
-                f_get_text_property(self, &[pos, sym::HELP_ECHO, string])?
-            } else {
-                Value::NIL
-            };
-            if !help.is_nil() {
-                self.set_help_echo(help, w, string, charpos);
-            } else if area == WindowPart::ModeLine && !self.window(w).mode_line_help_echo.is_nil() {
-                let help = self.window(w).mode_line_help_echo;
-                self.set_help_echo(help, w, Value::NIL, -1);
+            if help.is_nil() {
+                if string.is_string() {
+                    help = f_get_text_property(self, &[pos, sym::HELP_ECHO, string])?;
+                }
+                if !help.is_nil() {
+                    self.set_help_echo(help, w, string, charpos);
+                } else if area == WindowPart::ModeLine
+                    && !self.window(w).mode_line_help_echo.is_nil()
+                {
+                    let help = self.window(w).mode_line_help_echo;
+                    self.set_help_echo(help, w, Value::NIL, -1);
+                }
             }
             if self.frame_window_p(f) {
                 let draggable_window_bottom_line = area == WindowPart::ModeLine
@@ -976,8 +1135,21 @@ impl Lisp {
             && !self.window_outdated(w)
         {
             let hit = self.x_y_to_hpos_vpos(w, x, y);
-            if hit.glyph.is_some_and(|g| g.kind == GlyphType::Image) {
-                unreachable!("image hot spots need image.c");
+            if let Some(g) = hit.glyph
+                && g.kind == GlyphType::Image
+                && let (GlyphU::ImgId(id), GlyphSlice::Img { x: sx, y: sy, .. }) = (g.u, g.slice)
+                && let Some(spec) = self.image(f, id as usize).map(|img| img.spec)
+                && self.is_image_spec(spec)
+            {
+                let (hx, hy) = (
+                    (i64::from(sx) + hit.dx) as i32,
+                    (i64::from(sy) + hit.dy) as i32,
+                );
+                if let Some(help) = self.note_image_pointer(spec, hx, hy, &mut pointer)
+                    && !help.is_nil()
+                {
+                    self.set_help_echo(help, window, g.object, g.charpos);
+                }
             }
             let off_text = match hit.glyph {
                 None => true,

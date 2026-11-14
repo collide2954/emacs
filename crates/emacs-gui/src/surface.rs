@@ -1,3 +1,4 @@
+use emacs_core::image::{CrData, CrFilter, CrFormat, CrSurface};
 use tiny_skia::{
     BlendMode, Color, FillRule, LineCap, Mask, Paint, Path, PathBuilder, Pixmap, PixmapPaint,
     PremultipliedColorU8, Stroke, StrokeDash, Transform,
@@ -66,6 +67,43 @@ fn premultiply(value: u8, alpha: u8) -> u8 {
 fn premultiplied(r: u8, g: u8, b: u8, a: u8) -> PremultipliedColorU8 {
     PremultipliedColorU8::from_rgba(premultiply(r, a), premultiply(g, a), premultiply(b, a), a)
         .unwrap_or(PremultipliedColorU8::TRANSPARENT)
+}
+
+fn texel(image: &CrSurface, x: i64, y: i64) -> [u8; 4] {
+    if x < 0 || y < 0 || x >= i64::from(image.width) || y >= i64::from(image.height) {
+        return [0; 4];
+    }
+    let at = y as usize * image.stride + x as usize * 4;
+    let v = u32::from_ne_bytes(
+        image.data[at..at + 4]
+            .try_into()
+            .expect("four bytes per pixel"),
+    );
+    let a = if image.format == CrFormat::Argb32 {
+        (v >> 24) as u8
+    } else {
+        255
+    };
+    [(v >> 16) as u8, (v >> 8) as u8, v as u8, a]
+}
+
+fn bilinear(image: &CrSurface, sx: f64, sy: f64) -> [u8; 4] {
+    let (tx, ty) = (sx - 0.5, sy - 0.5);
+    let (ix, iy) = (tx.floor(), ty.floor());
+    let (fx, fy) = (tx - ix, ty - iy);
+    let (ix, iy) = (ix as i64, iy as i64);
+    let corners = [
+        (texel(image, ix, iy), (1.0 - fx) * (1.0 - fy)),
+        (texel(image, ix + 1, iy), fx * (1.0 - fy)),
+        (texel(image, ix, iy + 1), (1.0 - fx) * fy),
+        (texel(image, ix + 1, iy + 1), fx * fy),
+    ];
+    let mut out = [0u8; 4];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let v: f64 = corners.iter().map(|(t, w)| f64::from(t[i]) * w).sum();
+        *slot = v.round().clamp(0.0, 255.0) as u8;
+    }
+    out
 }
 
 fn new_pixmap(width: u32, height: u32) -> Pixmap {
@@ -406,6 +444,49 @@ impl Surface {
             .map(|&a| premultiplied(r, g, b, a))
             .collect();
         self.blit(rect, pixels);
+    }
+
+    pub fn draw_image(&mut self, rect: Rect, origin: (i32, i32), pattern: &CrData) {
+        let Some(image) = pattern.surface.as_ref() else {
+            return;
+        };
+        let Some(area) = rect.intersect(self.bounds()) else {
+            return;
+        };
+        let [xx, yx, xy, yy, x0, y0] = pattern.matrix;
+        let width = self.width() as usize;
+        for y in area.y..area.y + area.height {
+            for x in area.x..area.x + area.width {
+                if self.clipped(x, y) {
+                    continue;
+                }
+                let ux = f64::from(x - origin.0) + 0.5;
+                let uy = f64::from(y - origin.1) + 0.5;
+                let sx = xx * ux + xy * uy + x0;
+                let sy = yx * ux + yy * uy + y0;
+                let [r, g, b, a] = if pattern.filter == CrFilter::Nearest {
+                    texel(image, sx.floor() as i64, sy.floor() as i64)
+                } else {
+                    bilinear(image, sx, sy)
+                };
+                if a == 0 {
+                    continue;
+                }
+                let slot = &mut self.pixmap.pixels_mut()[y as usize * width + x as usize];
+                let inv = 255 - u16::from(a);
+                let over =
+                    |s: u8, d: u8| (u16::from(s) + (u16::from(d) * inv + 127) / 255).min(255);
+                let alpha = over(a, slot.alpha()) as u8;
+                let channel = |s: u8, d: u8| over(s, d).min(u16::from(alpha)) as u8;
+                *slot = PremultipliedColorU8::from_rgba(
+                    channel(r, slot.red()),
+                    channel(g, slot.green()),
+                    channel(b, slot.blue()),
+                    alpha,
+                )
+                .unwrap_or(*slot);
+            }
+        }
     }
 
     pub fn draw_rgba(&mut self, rect: Rect, rgba: &[u8]) {

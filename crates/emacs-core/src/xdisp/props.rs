@@ -522,7 +522,20 @@ impl Lisp {
                 it.position = start_pos;
                 retval = 1 + i32::from(it.area == GlyphRowArea::Text);
             } else {
-                unreachable!("image display specs need image.c's lookup_image");
+                it.what = DisplayElementType::Image;
+                let count = self.specpdl_index();
+                self.specbind(sym::INHIBIT_QUIT, sym::T)?;
+                let id = self.lookup_image(it.f, value, i64::from(it.face_id));
+                self.unbind_to(count)?;
+                it.image_id = id? as i64;
+                it.position = start_pos;
+                it.object = if object.is_nil() {
+                    self.window(it.window).contents
+                } else {
+                    object
+                };
+                it.method = ItMethod::FromImage;
+                Self::store_spec_position(it, which, start_pos);
             }
             return Ok(retval);
         }

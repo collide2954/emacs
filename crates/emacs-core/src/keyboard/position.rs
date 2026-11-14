@@ -224,7 +224,16 @@ impl Lisp {
                 }
             }
             if object.is_cons() && self.xcar(object) == sym::IMAGE {
-                unreachable!("image hot spots need image.c's find_hot_spot");
+                let image_map = self.plist_get(self.xcdr(object), sym::K_MAP);
+                if !image_map.is_nil() {
+                    let hotspot = self.find_hot_spot(image_map, dx as i32, dy as i32);
+                    if hotspot.is_cons() {
+                        let hotspot = self.xcdr(hotspot);
+                        if hotspot.is_cons() {
+                            posn = self.xcar(hotspot);
+                        }
+                    }
+                }
             }
             let d = self.cons(Value::fixnum(dx), Value::fixnum(dy));
             let size = self.cons(Value::fixnum(width), Value::fixnum(height));

@@ -622,6 +622,26 @@ impl Lisp {
         img.background_transparent
     }
 
+    pub fn image_ascent(&self, img: &Image, face: &crate::xfaces::Face, y: i32, h: i32) -> i32 {
+        let height = if h == img.height {
+            img.height + img.vmargin
+        } else if y == 0 {
+            h + img.vmargin
+        } else {
+            h
+        };
+        if img.ascent == CENTERED_IMAGE_ASCENT {
+            if face.font.is_nil() {
+                height / 2
+            } else {
+                let font = self.font_object(face.font);
+                (height + font.ascent - font.descent + 1) / 2
+            }
+        } else {
+            (f64::from(height) * (f64::from(img.ascent) / 100.0)) as i32
+        }
+    }
+
     pub fn prepare_image_for_display(&mut self, f: Value, id: usize) -> LispResult<()> {
         self.with_gc_deferred(|lisp| {
             let Some(mut img) = lisp.take_image(f, id) else {

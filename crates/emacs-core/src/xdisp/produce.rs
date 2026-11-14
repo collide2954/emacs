@@ -377,8 +377,14 @@ impl Lisp {
             let mut car = self.xcar(prop);
             let mut cdr = self.xcdr(prop);
             if car.is_symbol() {
-                if self.frame_window_p(it.f) && car == sym::IMAGE {
-                    unreachable!("image sizes need image.c's lookup_image");
+                if self.frame_window_p(it.f) && self.valid_image_p(prop) {
+                    let id = self.lookup_image(it.f, prop, i64::from(it.face_id))?;
+                    let img = self.image(it.f, id).expect("image in the frame's cache");
+                    return Ok(Some(f64::from(if width_p {
+                        img.width
+                    } else {
+                        img.height
+                    })));
                 }
                 if car == sym::PLUS || car == sym::MINUS {
                     let mut first = true;
@@ -1113,7 +1119,10 @@ impl Lisp {
             it.object = prop;
             it.string_from_prefix_prop_p = true;
         } else if self.frame_window_p(it.f) && prop.is_cons() && self.xcar(prop) == sym::IMAGE {
-            unreachable!("image prefixes need image.c's lookup_image");
+            it.what = DisplayElementType::Image;
+            it.image_id = self.lookup_image(it.f, prop, i64::from(it.face_id))? as i64;
+            it.method = ItMethod::FromImage;
+            it.string_from_prefix_prop_p = true;
         } else {
             self.pop_it(it)?;
             return Ok(false);

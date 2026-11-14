@@ -60,6 +60,7 @@ pub const SUBRS: &[Subr] = &[
         f_bidi_find_overridden_directionality,
     ),
     Subr::fixed("remember-mouse-glyph", 3, 3, f_remember_mouse_glyph),
+    Subr::fixed("lookup-image-map", 3, 3, mouse::f_lookup_image_map),
     Subr::fixed(
         "window-text-pixel-size",
         0,

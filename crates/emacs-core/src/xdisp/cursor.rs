@@ -1,6 +1,6 @@
 use crate::dispextern::{
-    DrawGlyphsFace, EmacsCursorKind, GlyphRowArea, GlyphRowRef, GlyphType, OVERLAPS_ERASED_CURSOR,
-    TEXT_AREA, TextCursorKind,
+    DrawGlyphsFace, EmacsCursorKind, GlyphRowArea, GlyphRowRef, GlyphType, GlyphU,
+    OVERLAPS_ERASED_CURSOR, TEXT_AREA, TextCursorKind,
 };
 use crate::dispnew::matrix::WhichMatrix;
 use crate::error::LispResult;
@@ -77,7 +77,7 @@ impl Lisp {
     fn get_window_cursor_type(
         &mut self,
         w: Value,
-        glyph: Option<GlyphType>,
+        glyph: Option<crate::dispextern::Glyph>,
         width: &mut i32,
         active_cursor: &mut bool,
     ) -> LispResult<TextCursorKind> {
@@ -144,11 +144,30 @@ impl Lisp {
             return Ok(cursor_type);
         }
         if !self.window(w).flags.cursor_off_p {
-            if glyph == Some(GlyphType::Xwidget) {
+            if glyph.is_some_and(|g| g.kind == GlyphType::Xwidget) {
                 return Ok(TextCursorKind::NoCursor);
             }
-            if glyph == Some(GlyphType::Image) {
-                unreachable!("image glyphs need image.c");
+            if let Some(g) = glyph
+                && g.kind == GlyphType::Image
+            {
+                if cursor_type == TextCursorKind::FilledBox {
+                    let GlyphU::ImgId(id) = g.u else {
+                        unreachable!("image glyph without an image id");
+                    };
+                    if let Some(img) = self.image(f, id as usize)
+                        && self.is_image_spec(img.spec)
+                        && (img.mask.is_none()
+                            || (buffer_cursor_type.is_cons()
+                                && i64::from(img.width)
+                                    > i64::from(*width).max(self.window_frame_column_width(w))
+                                && i64::from(img.height)
+                                    > i64::from(*width).max(self.window_frame_line_height(w))))
+                    {
+                        cursor_type = TextCursorKind::HollowBox;
+                    }
+                } else if cursor_type != TextCursorKind::NoCursor {
+                    cursor_type = TextCursorKind::HollowBox;
+                }
             }
             return Ok(cursor_type);
         }
@@ -393,7 +412,7 @@ impl Lisp {
             return Ok(());
         }
         let glyph = (0 <= hpos && hpos < used)
-            .then(|| self.glyph_row(glyph_row).area_glyphs(TEXT_AREA)[hpos as usize].kind);
+            .then(|| self.glyph_row(glyph_row).area_glyphs(TEXT_AREA)[hpos as usize]);
         let mut new_cursor_width = 0;
         let mut active_cursor = false;
         let new_cursor_type =
@@ -543,7 +562,13 @@ impl Lisp {
         let mut sum = 0;
         while if reversed_p { start > end } else { start < end } {
             let g = self.glyph_row(row).area_glyphs(TEXT_AREA)[start as usize];
-            sum += self.mouse_face_glyph_width_adjustment(&g, mouse_face, f);
+            sum += self.adjust_glyph_width_for_mouse_face(
+                &g,
+                reversed_p,
+                g.face_id as usize,
+                mouse_face,
+                f,
+            );
             if reversed_p {
                 start -= 1;
             } else {
@@ -551,39 +576,6 @@ impl Lisp {
             }
         }
         if reversed_p { -sum } else { sum }
-    }
-
-    fn mouse_face_glyph_width_adjustment(
-        &self,
-        g: &crate::dispextern::Glyph,
-        mouse_face: usize,
-        f: Value,
-    ) -> i32 {
-        if g.kind == GlyphType::Image {
-            unreachable!("image glyphs need image.c");
-        }
-        let original = self
-            .face_from_id(f, g.face_id as usize)
-            .expect("realized face")
-            .box_vertical_line_width;
-        let mouse = self
-            .face_from_id(f, mouse_face)
-            .expect("realized face")
-            .box_vertical_line_width;
-        let mut sum = 0;
-        if g.left_box_line_p {
-            sum -= original.max(0);
-        }
-        if g.right_box_line_p {
-            sum -= original.max(0);
-        }
-        if g.left_box_line_p {
-            sum += mouse.max(0);
-        }
-        if g.right_box_line_p {
-            sum += mouse.max(0);
-        }
-        sum
     }
 
     pub fn show_mouse_face(

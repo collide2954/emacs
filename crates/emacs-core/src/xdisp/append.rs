@@ -217,6 +217,42 @@ impl Lisp {
         });
     }
 
+    pub(super) fn append_image_glyph(
+        &mut self,
+        it: &It,
+        glyph_ascent: i32,
+        img_id: usize,
+        slice: GlyphSlice,
+    ) {
+        let Some(index) = self.append_slot(it) else {
+            let area = it.area.index();
+            self.it_expand_matrix_width(it, area);
+            return;
+        };
+        self.finish_append(it, index, |glyph, _| {
+            glyph.charpos = it.position.charpos;
+            glyph.object = it.object;
+            glyph.pixel_width = it.pixel_width.clamp(-1, i32::from(i16::MAX)) as i16;
+            glyph.ascent = glyph_ascent as i16;
+            glyph.descent = it.descent as i16;
+            glyph.voffset = it.voffset;
+            glyph.kind = GlyphType::Image;
+            glyph.avoid_cursor_p = it.avoid_cursor_p;
+            glyph.multibyte_p = it.multibyte_p;
+            glyph.overlaps_vertically_p = false;
+            glyph.padding_p = false;
+            glyph.glyph_not_available_p = false;
+            glyph.face_id = it.face_id as u32;
+            glyph.u = GlyphU::ImgId(img_id as i32);
+            glyph.slice = slice;
+            glyph.font_type = 0;
+            if it.bidi_p {
+                glyph.resolved_level = it.bidi_it.resolved_level as u8;
+                glyph.bidi_type = it.bidi_it.type_ as u8;
+            }
+        });
+    }
+
     pub(super) fn append_stretch_glyph(
         &mut self,
         it: &It,

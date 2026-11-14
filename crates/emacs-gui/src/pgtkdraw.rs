@@ -2,11 +2,12 @@ use std::cell::RefCell;
 
 use emacs_core::dispextern::{
     DrawFringeBitmapParams, DrawGlyphsFace, EmacsCursorKind, EmacsGc, EmacsRectangle, Glyph,
-    GlyphRowArea, GlyphRowRef, GlyphString, GlyphType, GlyphU, RedisplayInterface, Run, TEXT_AREA,
-    TextCursorKind,
+    GlyphRowArea, GlyphRowRef, GlyphSlice, GlyphString, GlyphType, GlyphU, RedisplayInterface, Run,
+    TEXT_AREA, TextCursorKind,
 };
 use emacs_core::error::LispResult;
 use emacs_core::font::FontMetrics;
+use emacs_core::image::{CrData, Image};
 use emacs_core::lisp::Lisp;
 use emacs_core::symbols as sym;
 use emacs_core::value::Value;
@@ -15,9 +16,9 @@ use emacs_core::xdisp::draw::{
     gui_write_glyphs,
 };
 use emacs_core::xfaces::{
-    CHILD_FRAME_BORDER_FACE_ID, FaceBoxType, FaceUnderlineType, INTERNAL_BORDER_FACE_ID,
-    VERTICAL_BORDER_FACE_ID, WINDOW_DIVIDER_FACE_ID, WINDOW_DIVIDER_FIRST_PIXEL_FACE_ID,
-    WINDOW_DIVIDER_LAST_PIXEL_FACE_ID,
+    CHILD_FRAME_BORDER_FACE_ID, Face, FaceBoxType, FaceUnderlineType, INTERNAL_BORDER_FACE_ID,
+    TAB_BAR_FACE_ID, TOOL_BAR_FACE_ID, VERTICAL_BORDER_FACE_ID, WINDOW_DIVIDER_FACE_ID,
+    WINDOW_DIVIDER_FIRST_PIXEL_FACE_ID, WINDOW_DIVIDER_LAST_PIXEL_FACE_ID,
 };
 
 use crate::pgtkterm::{frame_key, with_output};
@@ -32,6 +33,7 @@ const CORNER_LAST: i32 = 4;
 const GLYPHLESS_DISPLAY_THIN_SPACE: u8 = 0;
 const GLYPHLESS_DISPLAY_ACRONYM: u8 = 2;
 const GLYPHLESS_DISPLAY_HEX_CODE: u8 = 3;
+const DEFAULT_BAR_BUTTON_RELIEF: i32 = 1;
 
 pub static PGTK_REDISPLAY_INTERFACE: RedisplayInterface = RedisplayInterface {
     write_glyphs: Some(gui_write_glyphs),
@@ -784,10 +786,20 @@ fn pgtk_erase_corners_for_relief(
 fn pgtk_setup_relief_colors(lisp: &Lisp, s: &GlyphString) {
     let face = face_of(lisp, s);
     let first = first_glyph(lisp, s);
+    let image_background = (first.kind == GlyphType::Image)
+        .then(|| glyph_string_image(lisp, s))
+        .filter(|img| img.pixmap.is_some() && !image_background_transparent_p(img))
+        .map(|img| {
+            assert!(
+                img.background_valid,
+                "image background computed for display"
+            );
+            img.background
+        });
     let color = if face.use_box_color_for_shadows_p {
         face.box_color
-    } else if first.kind == GlyphType::Image {
-        unreachable!("image glyphs need image.c");
+    } else if let Some(background) = image_background {
+        background
     } else {
         s.xgcv.background
     };
@@ -1149,6 +1161,238 @@ fn pgtk_draw_glyph_string_bg_rect(lisp: &Lisp, s: &GlyphString, x: i32, y: i32, 
     }
 }
 
+fn glyph_string_slice(s: &GlyphString) -> (i32, i32, i32, i32) {
+    match s.slice {
+        GlyphSlice::Img {
+            x,
+            y,
+            width,
+            height,
+        } => (x.into(), y.into(), width.into(), height.into()),
+        _ => (0, 0, 0, 0),
+    }
+}
+
+fn glyph_string_image<'a>(lisp: &'a Lisp, s: &GlyphString) -> &'a Image {
+    lisp.image(s.f, s.img.expect("image glyph string"))
+        .expect("image in the frame's cache")
+}
+
+fn image_background_transparent_p(img: &Image) -> bool {
+    assert!(
+        img.background_transparent_valid,
+        "image transparency computed for display"
+    );
+    img.background_transparent
+}
+
+fn image_position(lisp: &Lisp, s: &GlyphString, face: &Face) -> (i32, i32) {
+    let img = glyph_string_image(lisp, s);
+    let (sx, sy, _, sh) = glyph_string_slice(s);
+    let mut x = s.x;
+    let mut y = s.ybase - lisp.image_ascent(img, face, sy, sh);
+    if face.box_type != FaceBoxType::NoBox && first_glyph(lisp, s).left_box_line_p && sx == 0 {
+        x += face.box_vertical_line_width.max(0);
+    }
+    if sx == 0 {
+        x += img.hmargin;
+    }
+    if sy == 0 {
+        y += img.vmargin;
+    }
+    (x, y)
+}
+
+fn button_margin(lisp: &Lisp, var: Value) -> Option<(i32, i32)> {
+    let margin = lisp.find_symbol_value(var);
+    if margin.is_cons()
+        && let (Some(x), Some(y)) = (lisp.xcar(margin).as_fixnum(), lisp.xcdr(margin).as_fixnum())
+    {
+        return Some((x as i32, y as i32));
+    }
+    margin.as_fixnum().map(|n| (n as i32, n as i32))
+}
+
+fn pgtk_draw_image_relief(lisp: &mut Lisp, arena: &mut [GlyphString], si: usize) {
+    let s = &arena[si];
+    let face = face_of(lisp, s);
+    let (mut x, mut y) = image_position(lisp, s, &face);
+    let img = glyph_string_image(lisp, s);
+    let (relief, img_width, img_height) = (img.relief, img.width, img.height);
+    let (sx, sy, sw, sh) = glyph_string_slice(s);
+    let (thick, raised_p) = if matches!(
+        s.hl,
+        DrawGlyphsFace::ImageSunken | DrawGlyphsFace::ImageRaised
+    ) {
+        let relief = if face.id == TAB_BAR_FACE_ID {
+            int_var(lisp, sym::TAB_BAR_BUTTON_RELIEF)
+        } else {
+            int_var(lisp, sym::TOOL_BAR_BUTTON_RELIEF)
+        };
+        (
+            if relief < 0 {
+                DEFAULT_BAR_BUTTON_RELIEF
+            } else {
+                relief.min(1_000_000) as i32
+            },
+            s.hl == DrawGlyphsFace::ImageRaised,
+        )
+    } else {
+        (relief.abs(), relief > 0)
+    };
+    let mut x1 = x + sw - 1;
+    let mut y1 = y + sh - 1;
+    let (mut extra_x, mut extra_y) = (0, 0);
+    if face.id == TAB_BAR_FACE_ID
+        && let Some((mx, my)) = button_margin(lisp, sym::TAB_BAR_BUTTON_MARGIN)
+    {
+        extra_x = mx - thick;
+        extra_y = my - thick;
+    }
+    if face.id == TOOL_BAR_FACE_ID
+        && let Some((mx, my)) = button_margin(lisp, sym::TOOL_BAR_BUTTON_MARGIN)
+    {
+        extra_x = mx;
+        extra_y = my;
+    }
+    let (mut top_p, mut bot_p, mut left_p, mut right_p) = (false, false, false, false);
+    if sx == 0 {
+        x -= thick + extra_x;
+        left_p = true;
+    }
+    if sy == 0 {
+        y -= thick + extra_y;
+        top_p = true;
+    }
+    if sx + sw == img_width {
+        x1 += thick + extra_x;
+        right_p = true;
+    }
+    if sy + sh == img_height {
+        y1 += thick + extra_y;
+        bot_p = true;
+    }
+    pgtk_setup_relief_colors(lisp, s);
+    let f = s.f;
+    let r = lisp.get_glyph_string_clip_rect(arena, si);
+    pgtk_draw_relief_rect(
+        lisp, f, x, y, x1, y1, thick, thick, raised_p, top_p, bot_p, left_p, right_p, &r,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pgtk_cr_draw_image(
+    lisp: &Lisp,
+    f: Value,
+    gc: &EmacsGc,
+    image: &CrData,
+    src_x: i32,
+    src_y: i32,
+    width: i32,
+    height: i32,
+    dest_x: i32,
+    dest_y: i32,
+    overlay_p: bool,
+) {
+    begin_cr_clip(lisp, f);
+    if !overlay_p {
+        with_surface(lisp, f, |s| {
+            s.fill_rectangle(
+                gc.background as u32,
+                Rect::new(dest_x, dest_y, width, height),
+                false,
+            )
+        });
+    }
+    with_surface(lisp, f, |s| {
+        s.draw_image(
+            Rect::new(dest_x, dest_y, width, height),
+            (dest_x - src_x, dest_y - src_y),
+            image,
+        )
+    });
+    end_cr_clip(lisp, f);
+}
+
+fn pgtk_draw_image_foreground(lisp: &mut Lisp, arena: &mut [GlyphString], si: usize) {
+    let s = &arena[si];
+    let face = face_of(lisp, s);
+    let (x, y) = image_position(lisp, s, &face);
+    let (sx, sy, sw, sh) = glyph_string_slice(s);
+    let (f, gc, hl) = (s.f, s.xgcv, s.hl);
+    if glyph_string_image(lisp, s).cr_data.is_some() {
+        begin_cr_clip(lisp, f);
+        pgtk_set_glyph_string_clipping(lisp, arena, si);
+        let img = glyph_string_image(lisp, &arena[si]);
+        let image = img.cr_data.as_ref().expect("image pattern");
+        pgtk_cr_draw_image(lisp, f, &gc, image, sx, sy, sw, sh, x, y, true);
+        if img.mask.is_none() && hl == DrawGlyphsFace::Cursor {
+            let relief = img.relief.abs();
+            pgtk_draw_rectangle(
+                lisp,
+                f,
+                gc.foreground,
+                x - relief,
+                y - relief,
+                sw + relief * 2 - 1,
+                sh + relief * 2 - 1,
+                false,
+            );
+        }
+        end_cr_clip(lisp, f);
+    } else {
+        pgtk_draw_rectangle(lisp, f, gc.foreground, x, y, sw - 1, sh - 1, false);
+    }
+}
+
+fn pgtk_draw_image_glyph_string(lisp: &mut Lisp, arena: &mut [GlyphString], si: usize) {
+    let s = &arena[si];
+    let face = face_of(lisp, s);
+    let box_line_hwidth = face.box_vertical_line_width.max(0);
+    let box_line_vwidth = face.box_horizontal_line_width.max(0);
+    let img = glyph_string_image(lisp, s);
+    let (sx, sy, _, sh) = glyph_string_slice(s);
+    let mut height = s.height;
+    if sy == 0 {
+        height -= box_line_vwidth;
+    }
+    if sy + sh >= img.height {
+        height -= box_line_vwidth;
+    }
+    let fill = height > sh
+        || img.hmargin != 0
+        || img.vmargin != 0
+        || img.mask.is_some()
+        || img.pixmap.is_none()
+        || s.width != s.background_width;
+    let relief = img.relief;
+    arena[si].stippled_p = face.stipple != 0;
+    if fill {
+        let s = &arena[si];
+        let mut x = s.x;
+        let mut y = s.y;
+        let mut width = s.background_width;
+        if first_glyph(lisp, s).left_box_line_p && sx == 0 {
+            x += box_line_hwidth;
+            width -= box_line_hwidth;
+        }
+        if sy == 0 {
+            y += box_line_vwidth;
+        }
+        pgtk_draw_glyph_string_bg_rect(lisp, s, x, y, width, height);
+        arena[si].background_filled_p = true;
+    }
+    pgtk_draw_image_foreground(lisp, arena, si);
+    if relief != 0
+        || matches!(
+            arena[si].hl,
+            DrawGlyphsFace::ImageRaised | DrawGlyphsFace::ImageSunken
+        )
+    {
+        pgtk_draw_image_relief(lisp, arena, si);
+    }
+}
+
 fn pgtk_draw_stretch_glyph_string(lisp: &mut Lisp, arena: &mut [GlyphString], si: usize) {
     let s = &arena[si];
     let reversed_p = lisp.glyph_row(s.row).reversed_p;
@@ -1470,7 +1714,7 @@ pub fn pgtk_draw_glyph_string(lisp: &mut Lisp, arena: &mut [GlyphString], si: us
         pgtk_set_glyph_string_clipping(lisp, arena, si);
     }
     match kind {
-        GlyphType::Image => unreachable!("image glyphs need image.c"),
+        GlyphType::Image => pgtk_draw_image_glyph_string(lisp, arena, si),
         GlyphType::Xwidget => unreachable!("xwidgets are not supported"),
         GlyphType::Stretch => pgtk_draw_stretch_glyph_string(lisp, arena, si),
         GlyphType::Char => {

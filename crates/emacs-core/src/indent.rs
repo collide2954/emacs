@@ -265,7 +265,49 @@ impl Lisp {
         Ok((pos, next_boundary))
     }
 
-    fn check_display_width(&mut self, pos: i64, col: i64) -> LispResult<Option<(i64, i64)>> {
+    fn image_display_width(&mut self, window: Value, pos: i64) -> LispResult<i64> {
+        let count = self.specpdl_index();
+        let w = self.decode_live_window(window)?;
+        let contents = self.window(w).contents;
+        if contents != self.current_buffer {
+            let pointm = self.window(w).pointm;
+            let (charpos, bytepos) = (self.marker(pointm).charpos, self.marker(pointm).bytepos);
+            let old = self.list(&[
+                window,
+                contents,
+                Value::fixnum(charpos as i64),
+                Value::fixnum(bytepos as i64),
+            ]);
+            self.record_unwind(restore_window_buffer, old);
+            let buffer = self.current_buffer;
+            self.wset_buffer(w, buffer);
+            self.set_marker_position(pointm, pos as usize, buffer);
+        }
+        let pos_byte = self.cur().text.char_to_byte(pos as usize) as i64;
+        let startpos = TextPos::new(pos, pos_byte);
+        let itdata = self.bidi_shelve_cache();
+        self.record_unwind(unwind_display_working_on_window, Value::NIL);
+        self.xdisp.display_working_on_window_p = true;
+        let r = self.with_gc_deferred(|lisp| {
+            let mut it = It::default();
+            lisp.start_display(&mut it, w, startpos)?;
+            it.last_visible_x = 1_000_000;
+            it.hpos = 1;
+            lisp.move_it_in_display_line(&mut it, pos + 1, -1, MOVE_TO_POS)?;
+            let column_width = lisp.frame(it.f).geometry.column_width as f64;
+            Ok((f64::from(it.current_x) / column_width + 0.5) as i32 as i64)
+        });
+        self.bidi_unshelve_cache(itdata, false);
+        self.unbind_to(count)?;
+        r
+    }
+
+    fn check_display_width(
+        &mut self,
+        window: Value,
+        pos: i64,
+        col: i64,
+    ) -> LispResult<Option<(i64, i64)>> {
         let (val, overlay) =
             self.get_char_property_and_overlay(Value::fixnum(pos), sym::DISPLAY, Value::NIL)?;
         if val.is_nil() {
@@ -309,9 +351,11 @@ impl Lisp {
                 || xcar == sym::SLICE
                 || (xcar.is_cons() && self.xcar(xcar) == sym::SLICE)
             {
-                return Err(
-                    self.error("Measuring an image's display width needs the display iterator")
-                );
+                let base = self.stack.len();
+                self.stack.push(overlay);
+                let r = self.image_display_width(window, pos);
+                self.stack.truncate(base);
+                width = r?;
             }
         } else if val.is_string() {
             width = f_string_width(self, &[val, Value::NIL, Value::NIL])?
@@ -444,7 +488,7 @@ impl Lisp {
                 prev_col = col;
                 prev_pos = scan;
                 prev_bpos = scan_byte;
-                if let Some((width, endp)) = self.check_display_width(scan, col)? {
+                if let Some((width, endp)) = self.check_display_width(window, scan, col)? {
                     col += width;
                     if endp > scan {
                         scan = endp;
