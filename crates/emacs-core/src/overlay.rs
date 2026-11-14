@@ -206,6 +206,25 @@ impl Lisp {
         self.overlays_in(pos, pos + 1, false, true)
     }
 
+    pub(crate) fn mouse_face_overlay_overlaps(&self, overlay: Value) -> bool {
+        let (start, end) = {
+            let ov = self.overlay(overlay);
+            (ov.start, ov.end)
+        };
+        let b = self.cur();
+        let limit = end.min(b.zv) + 1;
+        b.overlays.iter().copied().any(|o| {
+            let node = self.overlay(o);
+            node.start <= limit
+                && node.end >= start
+                && node.start < end
+                && node.end > start
+                && node.start < node.end
+                && o != overlay
+                && !self.overlay_get(overlay, sym::MOUSE_FACE).is_nil()
+        })
+    }
+
     fn overlay_matches_window(&self, w: Value, ov: Value) -> bool {
         let window = self.overlay_get(ov, sym::WINDOW);
         !self.is_window(window) || window == w

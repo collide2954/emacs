@@ -1168,6 +1168,12 @@ impl Lisp {
         roots.extend_from_slice(&self.xdisp.echo_buffer);
         roots.push(self.xdisp.with_echo_area_save_vector);
         roots.push(self.xdisp.displayed_buffer);
+        roots.extend_from_slice(&[
+            self.xdisp.help_echo_string,
+            self.xdisp.help_echo_window,
+            self.xdisp.help_echo_object,
+            self.xdisp.previous_help_echo_string,
+        ]);
         self.bidi.roots(&mut roots);
         self.keyboard.roots(&mut roots);
         roots.push(self.fileio.annotation_buffers);

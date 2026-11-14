@@ -13,6 +13,7 @@ pub mod line;
 pub mod lnum;
 pub mod menu_bar;
 pub mod modeline;
+pub mod mouse;
 pub mod move_it;
 pub mod next;
 pub mod produce;
@@ -455,6 +456,11 @@ pub struct Xdisp {
     pub echo_area_window: Value,
     pub echo_area_buffer: [Value; 2],
     pub help_echo_showing_p: bool,
+    pub help_echo_string: Value,
+    pub help_echo_window: Value,
+    pub help_echo_object: Value,
+    pub help_echo_pos: i64,
+    pub previous_help_echo_string: Value,
     pub display_working_on_window_p: bool,
     pub redisplay_ticks_window: Value,
     pub window_ticks: i64,
@@ -511,6 +517,11 @@ impl Default for Xdisp {
             echo_area_window: Value::NIL,
             echo_area_buffer: [Value::NIL; 2],
             help_echo_showing_p: false,
+            help_echo_string: Value::NIL,
+            help_echo_window: Value::NIL,
+            help_echo_object: Value::NIL,
+            help_echo_pos: -1,
+            previous_help_echo_string: Value::NIL,
             display_working_on_window_p: false,
             redisplay_ticks_window: Value::NIL,
             window_ticks: 0,

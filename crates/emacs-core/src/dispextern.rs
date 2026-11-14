@@ -160,6 +160,18 @@ pub enum EmacsCursorKind {
     Text,
     Nontext,
     Hand,
+    Modeline,
+    Hourglass,
+    HorizontalDrag,
+    VerticalDrag,
+    LeftEdge,
+    TopLeftCorner,
+    TopEdge,
+    TopRightCorner,
+    RightEdge,
+    BottomRightCorner,
+    BottomEdge,
+    BottomLeftCorner,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

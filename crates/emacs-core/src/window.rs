@@ -1569,7 +1569,7 @@ impl Lisp {
         win.pixel_left + win.pixel_width == root.pixel_left + root.pixel_width
     }
 
-    fn window_bottommost_p(&self, w: Value) -> bool {
+    pub(crate) fn window_bottommost_p(&self, w: Value) -> bool {
         let win = self.window(w);
         let root = self.window(self.frame(win.frame).root_window);
         win.pixel_top + win.pixel_height == root.pixel_top + root.pixel_height

@@ -29,7 +29,7 @@ fn mr_partially_visible(row: &GlyphRow) -> bool {
     row.height != row.visible_height
 }
 
-fn ends_in_middle_of_char_p(row: &GlyphRow) -> bool {
+pub(crate) fn ends_in_middle_of_char_p(row: &GlyphRow) -> bool {
     row.end.dpvec_index > 0 || row.end.overlay_string_index >= 0 || row.ends_in_middle_of_char_p
 }
 
