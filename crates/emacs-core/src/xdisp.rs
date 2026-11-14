@@ -696,7 +696,7 @@ impl Lisp {
             self.do_pending_window_change(false)?;
             let t = self.frame(mbf).terminal;
             if let Some(hook) = self.terminal(t).hooks.frame_up_to_date {
-                hook(self, mbf);
+                hook(self, mbf)?;
             }
             self.unbind_to(count)?;
         }

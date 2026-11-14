@@ -9,7 +9,7 @@ use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::keyboard;
 use iced::mouse;
 use iced::widget::image::{FilterMethod, Handle};
-use iced::widget::{image, space};
+use iced::widget::{image, mouse_area, space};
 use iced::{ContentFit, Element, Event, Length, Point, Size, Subscription, Task, event, window};
 
 use crate::display::Display;
@@ -21,7 +21,7 @@ const LISP_STACK_SIZE: usize = 1 << 30;
 
 static LISP_MAIN: OnceLock<fn(Display)> = OnceLock::new();
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Message {
     Connected(Sender<Notice>),
     Lisp(Command),
@@ -50,6 +50,7 @@ struct View {
     size: Size,
     cursor: Point,
     wheel: WheelAccumulator,
+    interaction: mouse::Interaction,
 }
 
 pub struct Shell {
@@ -77,6 +78,12 @@ impl Shell {
 
     pub fn has_image(&self, id: window::Id) -> bool {
         self.views.get(&id).is_some_and(|v| v.image.is_some())
+    }
+
+    pub fn interaction(&self, id: window::Id) -> mouse::Interaction {
+        self.views
+            .get(&id)
+            .map_or(mouse::Interaction::Idle, |v| v.interaction)
     }
 
     pub fn image_size(&self, id: window::Id) -> Option<(u32, u32)> {
@@ -186,6 +193,10 @@ impl Shell {
                 });
                 return;
             }
+            mouse::Event::CursorLeft => {
+                self.notify(Notice::Leave { frame });
+                return;
+            }
             mouse::Event::ButtonPressed(button) => vec![button_event(
                 button,
                 true,
@@ -240,6 +251,7 @@ impl Shell {
                         size,
                         cursor: Point::ORIGIN,
                         wheel: WheelAccumulator::default(),
+                        interaction: mouse::Interaction::Idle,
                     },
                 );
                 self.frames.insert(frame, id);
@@ -304,6 +316,12 @@ impl Shell {
                 Some(id) => window::maximize(id, on),
                 None => Task::none(),
             },
+            Command::SetCursor { frame, cursor } => {
+                if let Some(view) = self.window_of(frame).and_then(|id| self.views.get_mut(&id)) {
+                    view.interaction = cursor;
+                }
+                Task::none()
+            }
             Command::CloseFrame { frame } => match self.frames.remove(&frame) {
                 Some(id) => {
                     self.views.remove(&id);
@@ -384,17 +402,21 @@ impl Shell {
             Some(View {
                 image: Some((handle, width, height)),
                 scale,
+                interaction,
                 ..
-            }) => image(handle.clone())
-                .width(Length::Fixed(*width as f32))
-                .height(Length::Fixed(*height as f32))
-                .content_fit(ContentFit::Fill)
-                .filter_method(if scale.fract() == 0.0 {
-                    FilterMethod::Nearest
-                } else {
-                    FilterMethod::Linear
-                })
-                .into(),
+            }) => mouse_area(
+                image(handle.clone())
+                    .width(Length::Fixed(*width as f32))
+                    .height(Length::Fixed(*height as f32))
+                    .content_fit(ContentFit::Fill)
+                    .filter_method(if scale.fract() == 0.0 {
+                        FilterMethod::Nearest
+                    } else {
+                        FilterMethod::Linear
+                    }),
+            )
+            .interaction(*interaction)
+            .into(),
             _ => space().into(),
         }
     }

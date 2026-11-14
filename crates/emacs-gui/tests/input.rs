@@ -199,6 +199,96 @@ fn motion_notices_move_the_mouse() {
 }
 
 #[test]
+fn motion_highlights_mouse_faces_and_sends_help_echo() {
+    use emacs_core::dispextern::{EmacsCursorKind, GlyphRowArea};
+    use emacs_gui::protocol::Command;
+    use iced::mouse::Interaction;
+    on_big_stack(|| {
+        let (tx, notices) = mpsc::channel();
+        let (commands_tx, mut commands) = fmpsc::unbounded();
+        let mut lisp = Lisp::boot(Startup::program(false));
+        emacs_gui::install(&mut lisp, Display::new(commands_tx, notices));
+        lisp.init_display();
+        eval(
+            &mut lisp,
+            "(progn (set-char-table-range char-script-table '(0 . #x24F) 'latin) (set-char-table-extra-slot char-script-table 0 '(latin)))",
+        );
+        eval(
+            &mut lisp,
+            "(progn (fset 'window--pixel-to-total (function (lambda (&rest _) nil))) (fset 'record-window-buffer (function (lambda (w) nil))) (setq x-resource-name \"emacs\") (x-open-connection nil) (setq f (x-create-frame '((name . \"i\") (width . 20) (height . 5)))) (select-frame f) (set-window-buffer nil (get-buffer-create \"text\")) (set-buffer \"text\") (setq bidi-paragraph-direction 'left-to-right) (insert \"line 0\\nline 1\\nline 2\\n\") (put-text-property 8 14 'mouse-face 'highlight) (put-text-property 8 14 'help-echo \"hello\") (goto-char 1))",
+        );
+        let symbol = lisp.intern("f");
+        let f = lisp.find_symbol_value(symbol);
+        let w = lisp.frame(f).root_window;
+        lisp.frame_mut(f).flags.visible = true;
+        lisp.redisplay().unwrap();
+        let id = lisp.frame(f).id as u64;
+        let frame = lisp.prin1_to_string(f);
+        let window = lisp.prin1_to_string(w);
+        let g = lisp.frame(f).geometry.clone();
+        let text_left = lisp.window_box_left(w, GlyphRowArea::Text);
+        let spot = |row: i64, col: i64| {
+            (
+                text_left + col * g.column_width + 1,
+                g.internal_border_width + row * g.line_height + 2,
+            )
+        };
+        let mut cursors = move || {
+            let mut out = Vec::new();
+            while let Ok(command) = commands.try_recv() {
+                if let Command::SetCursor { frame, cursor } = command {
+                    out.push((frame, cursor));
+                }
+            }
+            out
+        };
+        cursors();
+        let motion = |(x, y): (i64, i64), timestamp: u64| Notice::Motion {
+            frame: id,
+            x,
+            y,
+            timestamp,
+        };
+        tx.send(motion(spot(1, 2), 100)).unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(lisp.mouse_hl_info(f).mouse_face_window, w);
+        assert_eq!(
+            emacs_gui::pgtkterm::with_output(&lisp, f, |o| o.current_cursor),
+            Some(EmacsCursorKind::Hand)
+        );
+        assert_eq!(cursors().last(), Some(&(id, Interaction::Pointer)));
+        assert_eq!(
+            next_event(&mut lisp),
+            format!("(help-echo {frame} \"hello\" {window} #<buffer text> 10)")
+        );
+        tx.send(motion(spot(2, 2), 200)).unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(lisp.mouse_hl_info(f).mouse_face_window, Value::NIL);
+        assert_eq!(cursors().last(), Some(&(id, Interaction::Text)));
+        assert_eq!(
+            next_event(&mut lisp),
+            format!("(help-echo {frame} nil {window} #<buffer text> 10)")
+        );
+        assert_eq!(eval(&mut lisp, "(input-pending-p)"), "nil");
+        tx.send(Notice::Leave { frame: id }).unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(lisp.mouse_hl_info(f).mouse_face_mouse_frame, Value::NIL);
+        assert_eq!(
+            next_event(&mut lisp),
+            format!("(help-echo {frame} nil nil nil 0)")
+        );
+        tx.send(motion(spot(1, 3), 300)).unwrap();
+        lisp.gobble_input().unwrap();
+        next_event(&mut lisp);
+        assert_eq!(lisp.mouse_hl_info(f).mouse_face_window, w);
+        eval(&mut lisp, "(progn (goto-char 1) (insert \"new\\n\"))");
+        lisp.redisplay().unwrap();
+        assert_eq!(lisp.mouse_hl_info(f).mouse_face_window, Value::NIL);
+        assert_eq!(lisp.mouse_hl_info(f).mouse_face_mouse_frame, f);
+    });
+}
+
+#[test]
 fn notices_become_lisp_events() {
     on_big_stack(|| {
         let (tx, notices) = mpsc::channel();

@@ -63,7 +63,7 @@ pub struct TerminalHooks {
     pub redeem_scroll_bar: Option<FrameHook>,
     pub implicit_set_name: Option<FrameParmHandler>,
     pub clear_frame: Option<fn(&mut Lisp, Value)>,
-    pub frame_up_to_date: Option<fn(&mut Lisp, Value)>,
+    pub frame_up_to_date: Option<fn(&mut Lisp, Value) -> crate::error::LispResult<()>>,
     pub buffer_flipping_unblocked: Option<fn(&mut Lisp, Value)>,
     pub condemn_scroll_bars: Option<fn(&mut Lisp, Value)>,
     pub judge_scroll_bars: Option<fn(&mut Lisp, Value)>,

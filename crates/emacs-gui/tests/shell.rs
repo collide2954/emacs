@@ -140,6 +140,37 @@ fn cursor_motion_becomes_a_motion_notice() {
 }
 
 #[test]
+fn leaving_a_window_and_pointer_shapes() {
+    use iced::mouse::{self, Interaction};
+    let mut shell = Shell::boot();
+    let (tx, rx) = mpsc::channel();
+    let _ = shell.update(Message::Connected(tx));
+    let _ = shell.update(Message::Lisp(Command::OpenFrame {
+        frame: 8,
+        title: "l".into(),
+        width: 10,
+        height: 10,
+    }));
+    let id = shell.window_of(8).expect("window for frame");
+    assert_eq!(shell.interaction(id), Interaction::Idle);
+    let _ = shell.update(Message::Mouse(id, mouse::Event::CursorLeft));
+    assert_eq!(
+        rx.try_iter().collect::<Vec<_>>(),
+        [Notice::Leave { frame: 8 }]
+    );
+    let _ = shell.update(Message::Lisp(Command::SetCursor {
+        frame: 8,
+        cursor: Interaction::Pointer,
+    }));
+    assert_eq!(shell.interaction(id), Interaction::Pointer);
+    let _ = shell.update(Message::Lisp(Command::SetCursor {
+        frame: 99,
+        cursor: Interaction::Text,
+    }));
+    assert_eq!(shell.interaction(id), Interaction::Pointer);
+}
+
+#[test]
 fn a_realized_window_reports_its_raw_id() {
     let mut shell = Shell::boot();
     let (tx, rx) = mpsc::channel();

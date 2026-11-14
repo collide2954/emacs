@@ -49,6 +49,7 @@ struct Pgtk {
     initial_display: Option<Vec<u8>>,
     displays: Vec<PgtkDisplayInfo>,
     evq: Vec<KbdEvent>,
+    any_help_event_p: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -129,13 +130,19 @@ fn flip_cr_context_and_queue_draw(lisp: &Lisp, f: Value) {
     crate::with_display(|display| display.flush(key));
 }
 
-fn pgtk_frame_up_to_date(lisp: &mut Lisp, f: Value) {
-    if lisp.frame_live_p(f) && f == lisp.mouse_hl_info(f).mouse_face_mouse_frame {
-        unreachable!("FRAME_MOUSE_UPDATE needs note_mouse_highlight");
+fn pgtk_frame_up_to_date(lisp: &mut Lisp, f: Value) -> LispResult<()> {
+    let hlinfo = *lisp.mouse_hl_info(f);
+    if f == hlinfo.mouse_face_mouse_frame {
+        lisp.note_mouse_highlight(
+            f,
+            i64::from(hlinfo.mouse_face_mouse_x),
+            i64::from(hlinfo.mouse_face_mouse_y),
+        )?;
     }
     if !lisp.buffer_flipping_blocked_p() {
         flip_cr_context_and_queue_draw(lisp, f);
     }
+    Ok(())
 }
 
 fn pgtk_buffer_flipping_unblocked_hook(lisp: &mut Lisp, f: Value) {
@@ -426,9 +433,15 @@ fn scroll_event(lisp: &mut Lisp, input: InputEvent) {
     );
 }
 
-fn note_mouse_movement(lisp: &mut Lisp, frame: Value, x: i64, y: i64, timestamp: u64) -> bool {
+fn note_mouse_movement(
+    lisp: &mut Lisp,
+    frame: Value,
+    x: i64,
+    y: i64,
+    timestamp: u64,
+) -> LispResult<bool> {
     if !has_output(lisp, frame) {
-        return false;
+        return Ok(false);
     }
     let (glyph_frame, r) = with_dpyinfo(lisp, frame, |d| {
         d.last_mouse_movement_time = timestamp;
@@ -445,18 +458,21 @@ fn note_mouse_movement(lisp: &mut Lisp, frame: Value, x: i64, y: i64, timestamp:
         || y >= ry + i64::from(r.height)
     {
         lisp.frame_mut(frame).flags.mouse_moved = true;
+        lisp.note_mouse_highlight(frame, x, y)?;
         let rect = lisp.remember_mouse_glyph(frame, x, y);
         with_dpyinfo(lisp, frame, |d| {
             d.last_mouse_glyph = rect;
             d.last_mouse_glyph_frame = frame;
         });
         lisp.frame_mut(frame).last_mouse_device = sym::T;
-        return true;
+        return Ok(true);
     }
-    false
+    Ok(false)
 }
 
 fn motion_notify_event(lisp: &mut Lisp, id: u64, x: i64, y: i64, timestamp: u64) -> LispResult<()> {
+    lisp.xdisp.previous_help_echo_string = lisp.xdisp.help_echo_string;
+    lisp.xdisp.help_echo_string = Value::NIL;
     let Some(frame) = pgtk_any_window_to_frame(lisp, id) else {
         return Ok(());
     };
@@ -485,9 +501,37 @@ fn motion_notify_event(lisp: &mut Lisp, id: u64, x: i64, y: i64, timestamp: u64)
         }
         lisp.windows.last_mouse_window = window;
     }
-    note_mouse_movement(lisp, f, x, y, timestamp);
+    if !note_mouse_movement(lisp, f, x, y, timestamp)? {
+        lisp.xdisp.help_echo_string = lisp.xdisp.previous_help_echo_string;
+    }
     if let Some(event) = event {
         evq_enqueue(lisp, event);
+    }
+    if !lisp.xdisp.help_echo_string.is_nil() || !lisp.xdisp.previous_help_echo_string.is_nil() {
+        PGTK.with(|p| p.borrow_mut().any_help_event_p = true);
+        let x = &lisp.xdisp;
+        let (help, window, object, pos) = (
+            x.help_echo_string,
+            x.help_echo_window,
+            x.help_echo_object,
+            x.help_echo_pos,
+        );
+        lisp.gen_help_event(help, f, window, object, pos)?;
+    }
+    Ok(())
+}
+
+fn leave_notify_event(lisp: &mut Lisp, id: u64) -> LispResult<()> {
+    let Some(frame) = pgtk_any_window_to_frame(lisp, id) else {
+        return Ok(());
+    };
+    if frame == lisp.mouse_hl_info(frame).mouse_face_mouse_frame {
+        lisp.clear_mouse_face(frame)?;
+        lisp.mouse_hl_info_mut(frame).mouse_face_mouse_frame = Value::NIL;
+    }
+    if PGTK.with(|p| p.borrow().any_help_event_p) {
+        lisp.xdisp.help_echo_string = Value::NIL;
+        lisp.gen_help_event(Value::NIL, frame, Value::NIL, Value::NIL, 0)?;
     }
     Ok(())
 }
@@ -809,6 +853,7 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             _ => {}
         },
         Notice::Map { frame } => map_event(lisp, frame)?,
+        Notice::Leave { frame } => leave_notify_event(lisp, frame)?,
         Notice::Realize { frame, window } => {
             if let Some(f) = pgtk_any_window_to_frame(lisp, frame) {
                 with_output(lisp, f, |o| o.window = window);

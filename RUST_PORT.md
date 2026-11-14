@@ -261,7 +261,10 @@ stands in for GTK, tiny-skia for cairo, and cosmic-text for FreeType and HarfBuz
   GTK reports discrete scrolling; pixel deltas (touchpads) are not handled yet. Cursor motion
   goes to pgtk's `motion_notify_event` and `note_mouse_movement`. iced can't be asked where the
   pointer is, so `pgtk_mouse_position` answers from the last motion and reports nothing
-  before one; mouse highlighting and help echo are not handled yet.
+  before one. Motion runs `note_mouse_highlight` and queues help echo events as pgtk does.
+  The mouse face is drawn at the next `frame_up_to_date`. Leaving a window clears the
+  highlight; there is no crossing focus to track. `pgtk_define_frame_cursor` sends the pointer
+  shape to the shell, which sets it on the frame's `mouse_area`.
 - Output: redisplay draws each frame into a tiny-skia pixmap on the Lisp thread, as pgtk
   draws into a cairo image surface. A flush hands the pixels to iced, which shows them once
   `image::allocate` has them on the GPU. iced uploads images of 2 MiB or more on a worker

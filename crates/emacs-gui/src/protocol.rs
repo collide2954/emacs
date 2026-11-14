@@ -1,6 +1,6 @@
 use emacs_core::termhooks::InputEvent;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Command {
     OpenFrame {
         frame: u64,
@@ -34,6 +34,10 @@ pub enum Command {
     CloseFrame {
         frame: u64,
     },
+    SetCursor {
+        frame: u64,
+        cursor: iced::mouse::Interaction,
+    },
     Exit,
 }
 
@@ -52,6 +56,9 @@ pub enum Notice {
     Realize {
         frame: u64,
         window: u64,
+    },
+    Leave {
+        frame: u64,
     },
     Motion {
         frame: u64,

@@ -1807,7 +1807,34 @@ pub fn pgtk_update_end(lisp: &mut Lisp, f: Value) {
     lisp.mouse_hl_info_mut(f).mouse_face_defer = false;
 }
 
+fn gdk_cursor(cursor: EmacsCursorKind) -> iced::mouse::Interaction {
+    use iced::mouse::Interaction;
+    match cursor {
+        EmacsCursorKind::Text | EmacsCursorKind::Modeline => Interaction::Text,
+        EmacsCursorKind::Nontext => Interaction::Idle,
+        EmacsCursorKind::Hand => Interaction::Pointer,
+        EmacsCursorKind::Hourglass => Interaction::Wait,
+        EmacsCursorKind::HorizontalDrag
+        | EmacsCursorKind::LeftEdge
+        | EmacsCursorKind::RightEdge => Interaction::ResizingHorizontally,
+        EmacsCursorKind::VerticalDrag | EmacsCursorKind::TopEdge | EmacsCursorKind::BottomEdge => {
+            Interaction::ResizingVertically
+        }
+        EmacsCursorKind::TopLeftCorner | EmacsCursorKind::BottomRightCorner => {
+            Interaction::ResizingDiagonallyDown
+        }
+        EmacsCursorKind::TopRightCorner | EmacsCursorKind::BottomLeftCorner => {
+            Interaction::ResizingDiagonallyUp
+        }
+    }
+}
+
 fn pgtk_define_frame_cursor(lisp: &mut Lisp, f: Value, cursor: EmacsCursorKind) {
+    let current = with_output(lisp, f, |o| o.current_cursor);
+    if !lisp.frame(f).flags.pointer_invisible && current != Some(cursor) {
+        let key = crate::pgtkterm::frame_key(lisp, f) as u64;
+        crate::with_display(|display| display.set_cursor(key, gdk_cursor(cursor)));
+    }
     with_output(lisp, f, |o| o.current_cursor = Some(cursor));
 }
 

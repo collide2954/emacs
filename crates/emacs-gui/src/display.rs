@@ -146,6 +146,10 @@ impl Display {
         self.send(Command::SetMaximized { frame, on });
     }
 
+    pub fn set_cursor(&self, frame: u64, cursor: iced::mouse::Interaction) {
+        self.send(Command::SetCursor { frame, cursor });
+    }
+
     pub fn close_frame(&mut self, frame: u64) {
         self.surfaces.remove(&frame);
         self.shown.remove(&frame);

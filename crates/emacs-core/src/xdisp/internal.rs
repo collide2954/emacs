@@ -167,11 +167,12 @@ impl Lisp {
         Ok(Value::NIL)
     }
 
-    fn frame_up_to_date(&mut self, f: Value) {
+    fn frame_up_to_date(&mut self, f: Value) -> LispResult<()> {
         let t = self.frame(f).terminal;
         if let Some(hook) = self.terminal(t).hooks.frame_up_to_date {
-            hook(self, f);
+            hook(self, f)?;
         }
+        Ok(())
     }
 
     fn ainc(&mut self, var: Value, i: i64) -> LispResult<()> {
@@ -595,7 +596,7 @@ impl Lisp {
                         fl.garbaged = false;
                         let root = self.frame(f).root_window;
                         self.mark_window_display_accurate(root, true);
-                        self.frame_up_to_date(f);
+                        self.frame_up_to_date(f)?;
                     }
                 }
             } else if after != After::Update && self.frame_redisplay_p(sf) {
@@ -651,7 +652,7 @@ impl Lisp {
                 }
                 self.mark_window_display_accurate_1(w, true);
                 self.update_overlay_arrows(1);
-                self.frame_up_to_date(sf);
+                self.frame_up_to_date(sf)?;
             }
             self.windows.update_mode_lines = 0;
             self.windows.windows_or_buffers_changed = 0;

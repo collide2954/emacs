@@ -121,6 +121,30 @@ fn mouse_position_and_movement() {
 }
 
 #[test]
+fn help_events_carry_the_help_text() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        let f = lisp.frames.selected_frame;
+        let w = lisp.windows.selected_window;
+        let frame = lisp.prin1_to_string(f);
+        let window = lisp.prin1_to_string(w);
+        let help = lisp.string("tip");
+        let buffer = lisp.current_buffer;
+        lisp.gen_help_event(help, f, w, buffer, 7).unwrap();
+        assert_eq!(
+            read(&mut lisp),
+            format!("(help-echo {frame} \"tip\" {window} #<buffer *scratch*> 7)")
+        );
+        lisp.gen_help_event(Value::NIL, f, Value::NIL, Value::NIL, -1)
+            .unwrap();
+        assert_eq!(
+            read(&mut lisp),
+            format!("(help-echo {frame} nil nil nil -1)")
+        );
+    });
+}
+
+#[test]
 fn posn_point_and_track_mouse() {
     check(&[
         ("(posn-point '(w nil nil nil nil 42))", "42"),
