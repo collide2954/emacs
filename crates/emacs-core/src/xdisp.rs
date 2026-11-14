@@ -23,6 +23,7 @@ pub mod reseat;
 pub mod reuse;
 pub mod scroll;
 pub mod stack;
+pub mod text_size;
 pub mod visible;
 
 use crate::character;
@@ -59,6 +60,18 @@ pub const SUBRS: &[Subr] = &[
         f_bidi_find_overridden_directionality,
     ),
     Subr::fixed("remember-mouse-glyph", 3, 3, f_remember_mouse_glyph),
+    Subr::fixed(
+        "window-text-pixel-size",
+        0,
+        7,
+        text_size::f_window_text_pixel_size,
+    ),
+    Subr::fixed(
+        "buffer-text-pixel-size",
+        0,
+        6,
+        text_size::f_buffer_text_pixel_size,
+    ),
 ];
 
 fn f_remember_mouse_glyph(lisp: &mut Lisp, args: &[Value]) -> LispResult {

@@ -105,7 +105,7 @@ impl Lisp {
         Ok((rc, value))
     }
 
-    fn with_echo_area_buffer_unwind_data(&mut self, w: Option<Value>) -> Value {
+    pub(crate) fn with_echo_area_buffer_unwind_data(&mut self, w: Option<Value>) -> Value {
         let mut vector = self.xdisp.with_echo_area_save_vector;
         self.xdisp.with_echo_area_save_vector = Value::NIL;
         if vector.is_nil() {
