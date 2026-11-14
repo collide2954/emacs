@@ -64,6 +64,11 @@ use windows_sys::Win32::System::WindowsProgramming::GetUserNameA;
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::Shell::{CSIDL_APPDATA, SHGetFolderPathA};
 use windows_sys::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    GWL_EXSTYLE, GetCursorPos, GetWindowLongPtrW, HWND_TOPMOST, SW_HIDE, SW_SHOWNOACTIVATE,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, WS_EX_APPWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+};
 
 pub use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -552,13 +557,7 @@ fn monitor_info(handle: HMONITOR) -> Option<Monitor> {
     let width_mm = unsafe { GetDeviceCaps(hdc, HORZSIZE as i32) };
     let height_mm = unsafe { GetDeviceCaps(hdc, VERTSIZE as i32) };
     unsafe { DeleteDC(hdc) };
-    let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
-    let dpi =
-        if unsafe { GetDpiForMonitor(handle, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) } == S_OK {
-            dpi_x
-        } else {
-            96
-        };
+    let dpi = monitor_dpi(handle as isize);
     let mut dd: DISPLAY_DEVICEW = unsafe { std::mem::zeroed() };
     dd.cb = size_of::<DISPLAY_DEVICEW>() as u32;
     let model = (unsafe { EnumDisplayDevicesW(mi.szDevice.as_ptr(), 0, &mut dd, 0) } != 0)
@@ -687,4 +686,56 @@ pub fn monitor_from_window(hwnd: u64) -> isize {
 
 pub fn monitor_from_point(x: i32, y: i32) -> isize {
     unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST) as isize }
+}
+
+pub fn monitor_dpi(monitor: isize) -> u32 {
+    let (mut dpi_x, mut dpi_y) = (0u32, 0u32);
+    let hr = unsafe {
+        GetDpiForMonitor(
+            monitor as HMONITOR,
+            MDT_EFFECTIVE_DPI,
+            &mut dpi_x,
+            &mut dpi_y,
+        )
+    };
+    if hr == S_OK { dpi_x } else { 96 }
+}
+
+pub fn cursor_position() -> Option<(i32, i32)> {
+    let mut point = POINT { x: 0, y: 0 };
+    (unsafe { GetCursorPos(&mut point) } != 0).then_some((point.x, point.y))
+}
+
+pub fn make_popup_window(hwnd: u64) {
+    if hwnd == 0 {
+        return;
+    }
+    let hwnd = hwnd as usize as HWND;
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let style =
+            (style | (WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW) as isize) & !(WS_EX_APPWINDOW as isize);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style);
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+}
+
+pub fn show_window_no_activate(hwnd: u64) {
+    if hwnd != 0 {
+        unsafe { ShowWindow(hwnd as usize as HWND, SW_SHOWNOACTIVATE) };
+    }
+}
+
+pub fn hide_window(hwnd: u64) {
+    if hwnd != 0 {
+        unsafe { ShowWindow(hwnd as usize as HWND, SW_HIDE) };
+    }
 }

@@ -9,7 +9,7 @@ use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::keyboard;
 use iced::mouse;
 use iced::widget::image::{FilterMethod, Handle};
-use iced::widget::{image, mouse_area, space};
+use iced::widget::{container, image, mouse_area, space, text, tooltip};
 use iced::{ContentFit, Element, Event, Length, Point, Size, Subscription, Task, event, window};
 
 use crate::display::Display;
@@ -51,6 +51,91 @@ struct View {
     cursor: Point,
     wheel: WheelAccumulator,
     interaction: mouse::Interaction,
+    popup: bool,
+    visible: bool,
+    fullscreen: bool,
+    position: Option<(i32, i32)>,
+    raw: u64,
+    tooltip: Option<String>,
+}
+
+impl View {
+    fn new(frame: u64, title: String, size: Size, popup: bool) -> View {
+        View {
+            frame,
+            title,
+            image: None,
+            allocation: None,
+            presented: 0,
+            shown: 0,
+            scale: 1.0,
+            size,
+            cursor: Point::ORIGIN,
+            wheel: WheelAccumulator::default(),
+            interaction: mouse::Interaction::Idle,
+            popup,
+            visible: true,
+            fullscreen: false,
+            position: None,
+            raw: 0,
+            tooltip: None,
+        }
+    }
+}
+
+#[cfg(windows)]
+fn popup_platform() -> window::settings::PlatformSpecific {
+    window::settings::PlatformSpecific {
+        skip_taskbar: true,
+        drag_and_drop: false,
+        ..window::settings::PlatformSpecific::default()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn popup_platform() -> window::settings::PlatformSpecific {
+    window::settings::PlatformSpecific {
+        override_redirect: true,
+        ..window::settings::PlatformSpecific::default()
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn popup_platform() -> window::settings::PlatformSpecific {
+    window::settings::PlatformSpecific::default()
+}
+
+#[cfg(windows)]
+fn prepare_popup(raw: u64, visible: bool) {
+    emacs_w32::make_popup_window(raw);
+    if visible {
+        emacs_w32::show_window_no_activate(raw);
+    }
+}
+
+#[cfg(not(windows))]
+fn prepare_popup(_raw: u64, _visible: bool) {}
+
+#[cfg(windows)]
+fn popup_visibility(_id: window::Id, raw: u64, on: bool) -> Task<Message> {
+    if on {
+        emacs_w32::show_window_no_activate(raw);
+    } else {
+        emacs_w32::hide_window(raw);
+    }
+    Task::none()
+}
+
+#[cfg(not(windows))]
+fn popup_visibility(id: window::Id, _raw: u64, on: bool) -> Task<Message> {
+    window::set_mode(
+        id,
+        if on {
+            window::Mode::Windowed
+        } else {
+            window::Mode::Hidden
+        },
+    )
 }
 
 pub struct Shell {
@@ -84,6 +169,22 @@ impl Shell {
         self.views
             .get(&id)
             .map_or(mouse::Interaction::Idle, |v| v.interaction)
+    }
+
+    pub fn is_popup(&self, id: window::Id) -> bool {
+        self.views.get(&id).is_some_and(|v| v.popup)
+    }
+
+    pub fn visible(&self, id: window::Id) -> bool {
+        self.views.get(&id).is_some_and(|v| v.visible)
+    }
+
+    pub fn position(&self, id: window::Id) -> Option<(i32, i32)> {
+        self.views.get(&id).and_then(|v| v.position)
+    }
+
+    pub fn tooltip(&self, id: window::Id) -> Option<String> {
+        self.views.get(&id).and_then(|v| v.tooltip.clone())
     }
 
     pub fn image_size(&self, id: window::Id) -> Option<(u32, u32)> {
@@ -150,8 +251,14 @@ impl Shell {
                 Task::none()
             }
             Message::Realized(id, window) => {
-                if let Some(frame) = self.views.get(&id).map(|v| v.frame) {
-                    self.notify(Notice::Realize { frame, window });
+                if let Some(view) = self.views.get_mut(&id) {
+                    view.raw = window;
+                    if view.popup {
+                        prepare_popup(window, view.visible);
+                    } else {
+                        let frame = view.frame;
+                        self.notify(Notice::Realize { frame, window });
+                    }
                 }
                 Task::none()
             }
@@ -181,6 +288,9 @@ impl Shell {
         let Some(view) = self.views.get_mut(&id) else {
             return;
         };
+        if view.popup {
+            return;
+        }
         let frame = view.frame;
         let inputs = match event {
             mouse::Event::CursorMoved { position } => {
@@ -238,22 +348,7 @@ impl Shell {
                     exit_on_close_request: false,
                     ..window::Settings::default()
                 });
-                self.views.insert(
-                    id,
-                    View {
-                        frame,
-                        title,
-                        image: None,
-                        allocation: None,
-                        presented: 0,
-                        shown: 0,
-                        scale: 1.0,
-                        size,
-                        cursor: Point::ORIGIN,
-                        wheel: WheelAccumulator::default(),
-                        interaction: mouse::Interaction::Idle,
-                    },
-                );
+                self.views.insert(id, View::new(frame, title, size, false));
                 self.frames.insert(frame, id);
                 opened.then(|id| {
                     Task::batch([
@@ -263,9 +358,76 @@ impl Shell {
                     ])
                 })
             }
+            Command::OpenPopup {
+                frame,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let size = Size::new(width as f32, height as f32);
+                let (id, opened) = window::open(window::Settings {
+                    size,
+                    position: window::Position::Specific(Point::new(x as f32, y as f32)),
+                    visible: !cfg!(windows),
+                    resizable: false,
+                    minimizable: false,
+                    closeable: false,
+                    decorations: false,
+                    level: window::Level::AlwaysOnTop,
+                    exit_on_close_request: false,
+                    platform_specific: popup_platform(),
+                    ..window::Settings::default()
+                });
+                let mut view = View::new(frame, String::new(), size, true);
+                view.position = Some((x, y));
+                self.views.insert(id, view);
+                self.frames.insert(frame, id);
+                opened.then(|id| {
+                    window::raw_id::<Message>(id).map(move |raw| Message::Realized(id, raw))
+                })
+            }
             Command::SetTitle { frame, title } => {
                 if let Some(view) = self.window_of(frame).and_then(|id| self.views.get_mut(&id)) {
                     view.title = title;
+                }
+                Task::none()
+            }
+            Command::MoveFrame { frame, x, y } => {
+                let Some(id) = self.window_of(frame) else {
+                    return Task::none();
+                };
+                if let Some(view) = self.views.get_mut(&id) {
+                    view.position = Some((x, y));
+                }
+                window::move_to(id, Point::new(x as f32, y as f32))
+            }
+            Command::SetVisible { frame, on } => {
+                let Some(id) = self.window_of(frame) else {
+                    return Task::none();
+                };
+                let Some(view) = self.views.get_mut(&id) else {
+                    return Task::none();
+                };
+                view.visible = on;
+                if view.popup {
+                    return popup_visibility(id, view.raw, on);
+                }
+                if !on {
+                    return window::set_mode(id, window::Mode::Hidden);
+                }
+                let fullscreen = view.fullscreen;
+                self.notify(Notice::Map { frame });
+                let show = window::set_mode(id, window::Mode::Windowed);
+                if fullscreen {
+                    show.chain(window::set_mode(id, window::Mode::Fullscreen))
+                } else {
+                    show
+                }
+            }
+            Command::SetTooltip { frame, text } => {
+                if let Some(view) = self.window_of(frame).and_then(|id| self.views.get_mut(&id)) {
+                    view.tooltip = text;
                 }
                 Task::none()
             }
@@ -302,14 +464,19 @@ impl Shell {
                 })
             }
             Command::SetFullscreen { frame, on } => match self.window_of(frame) {
-                Some(id) => window::set_mode(
-                    id,
-                    if on {
-                        window::Mode::Fullscreen
-                    } else {
-                        window::Mode::Windowed
-                    },
-                ),
+                Some(id) => {
+                    if let Some(view) = self.views.get_mut(&id) {
+                        view.fullscreen = on;
+                    }
+                    window::set_mode(
+                        id,
+                        if on {
+                            window::Mode::Fullscreen
+                        } else {
+                            window::Mode::Windowed
+                        },
+                    )
+                }
                 None => Task::none(),
             },
             Command::SetMaximized { frame, on } => match self.window_of(frame) {
@@ -334,9 +501,16 @@ impl Shell {
     }
 
     fn window_event(&mut self, id: window::Id, event: window::Event) {
-        let Some(frame) = self.views.get(&id).map(|v| v.frame) else {
+        let Some((frame, popup)) = self.views.get(&id).map(|v| (v.frame, v.popup)) else {
             return;
         };
+        if popup {
+            if event == window::Event::Closed {
+                self.views.remove(&id);
+                self.frames.remove(&frame);
+            }
+            return;
+        }
         match event {
             window::Event::Opened { size, .. } => {
                 if let Some(view) = self.views.get_mut(&id) {
@@ -372,7 +546,7 @@ impl Shell {
         if let keyboard::Event::ModifiersChanged(modifiers) = event {
             self.modifiers = modifiers;
         }
-        let Some(frame) = self.views.get(&id).map(|v| v.frame) else {
+        let Some(frame) = self.views.get(&id).filter(|v| !v.popup).map(|v| v.frame) else {
             return;
         };
         if let keyboard::Event::KeyPressed {
@@ -403,20 +577,33 @@ impl Shell {
                 image: Some((handle, width, height)),
                 scale,
                 interaction,
+                tooltip: tip,
                 ..
-            }) => mouse_area(
-                image(handle.clone())
-                    .width(Length::Fixed(*width as f32))
-                    .height(Length::Fixed(*height as f32))
-                    .content_fit(ContentFit::Fill)
-                    .filter_method(if scale.fract() == 0.0 {
-                        FilterMethod::Nearest
-                    } else {
-                        FilterMethod::Linear
-                    }),
-            )
-            .interaction(*interaction)
-            .into(),
+            }) => {
+                let content = mouse_area(
+                    image(handle.clone())
+                        .width(Length::Fixed(*width as f32))
+                        .height(Length::Fixed(*height as f32))
+                        .content_fit(ContentFit::Fill)
+                        .filter_method(if scale.fract() == 0.0 {
+                            FilterMethod::Nearest
+                        } else {
+                            FilterMethod::Linear
+                        }),
+                )
+                .interaction(*interaction);
+                match tip {
+                    Some(tip) => tooltip(
+                        content,
+                        container(text(tip.as_str()))
+                            .padding(4)
+                            .style(container::bordered_box),
+                        tooltip::Position::FollowCursor,
+                    )
+                    .into(),
+                    None => content.into(),
+                }
+            }
             _ => space().into(),
         }
     }

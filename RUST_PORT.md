@@ -280,7 +280,13 @@ Done:
 - `surface.rs`: the frame surface with the cairo operations pgtk uses (fill, clear,
   copy-bits for scrolling, clip rectangles, glyph masks, RGBA images, alpha background).
 - `protocol.rs`, `display.rs`, `shell.rs`: the iced daemon (one window per frame, HiDPI
-  aware) and the Lisp-thread side that owns the surfaces and receives input.
+  aware) and the Lisp-thread side that owns the surfaces and receives input. Frames can be
+  hidden and shown again (`gtk_widget_hide`/`gtk_widget_show`). Popup windows stand in for
+  `GTK_WINDOW_POPUP`: undecorated, always on top, out of the taskbar, positioned in logical
+  root coordinates, and deaf to input as pgtk connects no handlers for them. iced can't open a
+  window without activating it, so on Windows the shell opens popups hidden and shows them
+  with `SW_SHOWNOACTIVATE` and `WS_EX_NOACTIVATE`. A frame's widget tooltip
+  (`gtk_widget_set_tooltip_text`) becomes an iced `tooltip` around the frame image.
 - `font.rs`: the font driver, after `ftcrfont.c`/`ftfont.c`. It lists and matches faces with
   fontconfig's numeric weight/slant/width/spacing and its generic family preferences, opens
   fonts with ftcrfont's metric rules, and provides glyph extents, rasterization (including

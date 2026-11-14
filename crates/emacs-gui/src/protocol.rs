@@ -8,9 +8,29 @@ pub enum Command {
         width: u32,
         height: u32,
     },
+    OpenPopup {
+        frame: u64,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    },
     SetTitle {
         frame: u64,
         title: String,
+    },
+    MoveFrame {
+        frame: u64,
+        x: i32,
+        y: i32,
+    },
+    SetVisible {
+        frame: u64,
+        on: bool,
+    },
+    SetTooltip {
+        frame: u64,
+        text: Option<String>,
     },
     ResizeFrame {
         frame: u64,

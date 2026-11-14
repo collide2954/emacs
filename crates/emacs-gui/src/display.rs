@@ -17,6 +17,8 @@ pub struct Display {
     pending: Vec<Notice>,
     surfaces: HashMap<u64, Surface>,
     shown: HashSet<u64>,
+    popups: HashSet<u64>,
+    positions: HashMap<u64, (i32, i32)>,
     monitor_source: Box<dyn MonitorSource + Send>,
 }
 
@@ -28,8 +30,14 @@ impl Display {
             pending: Vec::new(),
             surfaces: HashMap::new(),
             shown: HashSet::new(),
+            popups: HashSet::new(),
+            positions: HashMap::new(),
             monitor_source: Box::new(SystemMonitors),
         }
+    }
+
+    pub fn pointer_position(&self) -> Option<(i32, i32)> {
+        self.monitor_source.pointer_position()
     }
 
     pub fn set_monitor_source(&mut self, source: Box<dyn MonitorSource + Send>) {
@@ -79,8 +87,14 @@ impl Display {
             .insert(frame, Surface::new(width, height, background));
     }
 
+    pub fn create_popup(&mut self, frame: u64, width: u32, height: u32, background: u32) {
+        self.create_frame(frame, width, height, background);
+        self.popups.insert(frame);
+    }
+
     pub fn show_frame(&mut self, frame: u64, title: &str) {
         if self.shown.contains(&frame) {
+            self.send(Command::SetVisible { frame, on: true });
             return;
         }
         let Some(surface) = self.surfaces.get(&frame) else {
@@ -88,11 +102,42 @@ impl Display {
         };
         let (width, height) = (surface.width(), surface.height());
         self.shown.insert(frame);
-        self.send(Command::OpenFrame {
+        if self.popups.contains(&frame) {
+            let (x, y) = self.positions.get(&frame).copied().unwrap_or((0, 0));
+            self.send(Command::OpenPopup {
+                frame,
+                x,
+                y,
+                width,
+                height,
+            });
+        } else {
+            self.send(Command::OpenFrame {
+                frame,
+                title: title.to_string(),
+                width,
+                height,
+            });
+        }
+    }
+
+    pub fn hide_frame(&mut self, frame: u64) {
+        if self.shown.contains(&frame) {
+            self.send(Command::SetVisible { frame, on: false });
+        }
+    }
+
+    pub fn move_frame(&mut self, frame: u64, x: i32, y: i32) {
+        self.positions.insert(frame, (x, y));
+        if self.shown.contains(&frame) {
+            self.send(Command::MoveFrame { frame, x, y });
+        }
+    }
+
+    pub fn set_tooltip(&self, frame: u64, text: Option<&str>) {
+        self.send(Command::SetTooltip {
             frame,
-            title: title.to_string(),
-            width,
-            height,
+            text: text.map(str::to_string),
         });
     }
 
@@ -153,6 +198,8 @@ impl Display {
     pub fn close_frame(&mut self, frame: u64) {
         self.surfaces.remove(&frame);
         self.shown.remove(&frame);
+        self.popups.remove(&frame);
+        self.positions.remove(&frame);
         self.send(Command::CloseFrame { frame });
     }
 

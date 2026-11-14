@@ -169,6 +169,8 @@ pub fn pgtk_make_frame_visible(lisp: &mut Lisp, f: Value) {
 
 pub fn pgtk_make_frame_invisible(lisp: &mut Lisp, f: Value) {
     if lisp.frame(f).flags.visible {
+        let key = frame_key(lisp, f) as u64;
+        crate::with_display(|display| display.hide_frame(key));
         let fr = lisp.frame_mut(f);
         fr.flags.visible = false;
         fr.flags.iconified = false;

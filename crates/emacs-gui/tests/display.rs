@@ -88,6 +88,88 @@ fn notices_pass_through_and_surfaces_resize_on_request() {
     assert!(!display.resize_surface(9, 10, 6));
 }
 
+struct Pointer;
+
+impl emacs_gui::monitor::MonitorSource for Pointer {
+    fn monitors(&self) -> Vec<emacs_gui::monitor::GdkMonitor> {
+        Vec::new()
+    }
+
+    fn monitor_at_window(&self, _window: u64) -> isize {
+        0
+    }
+
+    fn pointer_position(&self) -> Option<(i32, i32)> {
+        Some((310, 145))
+    }
+}
+
+#[test]
+fn popups_open_where_they_were_moved() {
+    let (mut display, mut commands, _notices) = setup();
+    display.create_popup(4, 20, 10, 0xFFFFE0);
+    display.move_frame(4, 100, 200);
+    display.resize_frame(4, 30, 12);
+    assert!(commands.try_recv().is_err());
+    let surface = display.surface(4).expect("surface");
+    assert_eq!((surface.width(), surface.height()), (30, 12));
+    display.hide_frame(4);
+    assert!(commands.try_recv().is_err());
+    display.show_frame(4, "tooltip");
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::OpenPopup {
+            frame: 4,
+            x: 100,
+            y: 200,
+            width: 30,
+            height: 12,
+        })
+    ));
+    display.move_frame(4, 5, 6);
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::MoveFrame {
+            frame: 4,
+            x: 5,
+            y: 6
+        })
+    ));
+    display.hide_frame(4);
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::SetVisible {
+            frame: 4,
+            on: false
+        })
+    ));
+    display.show_frame(4, "tooltip");
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::SetVisible { frame: 4, on: true })
+    ));
+    display.open_frame(1, "f", 8, 8, 0);
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::OpenFrame { frame: 1, .. })
+    ));
+    display.set_tooltip(1, Some("hi"));
+    match commands.try_recv() {
+        Ok(Command::SetTooltip { frame: 1, text }) => assert_eq!(text.as_deref(), Some("hi")),
+        other => panic!("{other:?}"),
+    }
+    display.set_tooltip(1, None);
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::SetTooltip {
+            frame: 1,
+            text: None
+        })
+    ));
+    display.set_monitor_source(Box::new(Pointer));
+    assert_eq!(display.pointer_position(), Some((310, 145)));
+}
+
 #[test]
 fn closing_and_disconnection() {
     let (mut display, mut commands, notices) = setup();

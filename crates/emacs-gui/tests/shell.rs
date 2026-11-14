@@ -234,6 +234,137 @@ fn a_presented_image_is_shown_once_allocated() {
 }
 
 #[test]
+fn popup_windows_take_no_events_and_follow_commands() {
+    use iced::{Point, mouse};
+    let mut shell = Shell::boot();
+    let (tx, rx) = mpsc::channel();
+    let _ = shell.update(Message::Connected(tx));
+    let _ = shell.update(Message::Lisp(Command::OpenPopup {
+        frame: 12,
+        x: 40,
+        y: 30,
+        width: 20,
+        height: 10,
+    }));
+    let id = shell.window_of(12).expect("popup window");
+    assert!(shell.is_popup(id));
+    assert!(shell.visible(id));
+    assert_eq!(shell.position(id), Some((40, 30)));
+    let _ = shell.update(Message::Window(
+        id,
+        window::Event::Opened {
+            position: None,
+            size: Size::new(20.0, 10.0),
+        },
+    ));
+    let _ = shell.update(Message::Realized(id, 0));
+    let _ = shell.update(Message::Window(id, window::Event::Focused));
+    let _ = shell.update(Message::Window(
+        id,
+        window::Event::Resized(Size::new(30.0, 12.0)),
+    ));
+    let _ = shell.update(Message::Mouse(
+        id,
+        mouse::Event::CursorMoved {
+            position: Point::new(1.0, 1.0),
+        },
+    ));
+    let _ = shell.update(Message::Mouse(
+        id,
+        mouse::Event::ButtonPressed(mouse::Button::Left),
+    ));
+    let _ = shell.update(Message::Mouse(id, mouse::Event::CursorLeft));
+    let _ = shell.update(Message::Key(
+        id,
+        keyboard::Event::KeyPressed {
+            key: Key::Character("q".into()),
+            modified_key: Key::Character("q".into()),
+            physical_key: Physical::Code(Code::KeyQ),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: Some("q".into()),
+            repeat: false,
+        },
+    ));
+    let _ = shell.update(Message::Window(id, window::Event::CloseRequested));
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), []);
+    let _ = shell.update(Message::Lisp(Command::MoveFrame {
+        frame: 12,
+        x: 7,
+        y: 9,
+    }));
+    assert_eq!(shell.position(id), Some((7, 9)));
+    let _ = shell.update(Message::Lisp(Command::SetVisible {
+        frame: 12,
+        on: false,
+    }));
+    assert!(!shell.visible(id));
+    let _ = shell.update(Message::Lisp(Command::SetVisible {
+        frame: 12,
+        on: true,
+    }));
+    assert!(shell.visible(id));
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), []);
+    let _ = shell.view(id);
+    let _ = shell.update(Message::Lisp(Command::CloseFrame { frame: 12 }));
+    assert_eq!(shell.window_of(12), None);
+}
+
+#[test]
+fn frames_hide_show_and_carry_tooltips() {
+    let mut shell = Shell::boot();
+    let (tx, rx) = mpsc::channel();
+    let _ = shell.update(Message::Connected(tx));
+    let _ = shell.update(Message::Lisp(Command::OpenFrame {
+        frame: 2,
+        title: "v".into(),
+        width: 10,
+        height: 10,
+    }));
+    let id = shell.window_of(2).expect("window for frame");
+    assert!(!shell.is_popup(id));
+    assert!(shell.visible(id));
+    assert_eq!(shell.tooltip(id), None);
+    let _ = shell.update(Message::Lisp(Command::SetVisible {
+        frame: 2,
+        on: false,
+    }));
+    assert!(!shell.visible(id));
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), []);
+    let _ = shell.update(Message::Lisp(Command::SetVisible { frame: 2, on: true }));
+    assert!(shell.visible(id));
+    assert_eq!(
+        rx.try_iter().collect::<Vec<_>>(),
+        [Notice::Map { frame: 2 }]
+    );
+    let _ = shell.update(Message::Lisp(Command::SetTooltip {
+        frame: 2,
+        text: Some("tip text".into()),
+    }));
+    assert_eq!(shell.tooltip(id).as_deref(), Some("tip text"));
+    let _ = shell.view(id);
+    let _ = shell.update(Message::Lisp(Command::SetTooltip {
+        frame: 2,
+        text: None,
+    }));
+    assert_eq!(shell.tooltip(id), None);
+    let _ = shell.update(Message::Lisp(Command::SetTooltip {
+        frame: 77,
+        text: Some("x".into()),
+    }));
+    let _ = shell.update(Message::Lisp(Command::SetVisible {
+        frame: 77,
+        on: true,
+    }));
+    let _ = shell.update(Message::Lisp(Command::MoveFrame {
+        frame: 77,
+        x: 1,
+        y: 1,
+    }));
+    assert_eq!(rx.try_iter().collect::<Vec<_>>(), []);
+}
+
+#[test]
 fn an_opened_window_is_configured_and_then_mapped() {
     let mut shell = Shell::boot();
     let (tx, rx) = mpsc::channel();

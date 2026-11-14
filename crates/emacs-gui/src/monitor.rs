@@ -15,6 +15,9 @@ pub struct GdkMonitor {
 pub trait MonitorSource {
     fn monitors(&self) -> Vec<GdkMonitor>;
     fn monitor_at_window(&self, window: u64) -> isize;
+    fn pointer_position(&self) -> Option<(i32, i32)> {
+        None
+    }
 }
 
 pub struct SystemMonitors;
@@ -27,6 +30,23 @@ impl MonitorSource for SystemMonitors {
     fn monitor_at_window(&self, window: u64) -> isize {
         system_monitor_at_window(window)
     }
+
+    fn pointer_position(&self) -> Option<(i32, i32)> {
+        system_pointer_position()
+    }
+}
+
+#[cfg(windows)]
+fn system_pointer_position() -> Option<(i32, i32)> {
+    let (x, y) = emacs_w32::cursor_position()?;
+    let dpi = f64::from(emacs_w32::monitor_dpi(emacs_w32::monitor_from_point(x, y)).max(1));
+    let scale = |v: i32| (f64::from(v) * 96.0 / dpi).round() as i32;
+    Some((scale(x), scale(y)))
+}
+
+#[cfg(not(windows))]
+fn system_pointer_position() -> Option<(i32, i32)> {
+    None
 }
 
 #[cfg(windows)]
