@@ -18,6 +18,7 @@ harfrust.workspace = true
 png.workspace = true
 image = { workspace = true, features = ["jpeg"] }
 gif.workspace = true
+tiff.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 emacs-w32.workspace = true

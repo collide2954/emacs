@@ -604,3 +604,144 @@ fn gif_metadata_animation_caches_and_failures() {
         }
     });
 }
+
+fn tiff_image<C: tiff::encoder::colortype::ColorType>(
+    e: &mut tiff::encoder::TiffEncoder<std::io::Cursor<&mut Vec<u8>>>,
+    (width, height): (u32, u32),
+    tags: &[(tiff::tags::Tag, &[u16])],
+    data: &[C::Inner],
+) where
+    [C::Inner]: tiff::encoder::TiffValue,
+{
+    let mut image = e.new_image::<C>(width, height).unwrap();
+    for &(tag, value) in tags {
+        image.encoder().write_tag(tag, value).unwrap();
+    }
+    image.write_data(data).unwrap();
+}
+
+fn tiff_bytes(
+    write: impl FnOnce(&mut tiff::encoder::TiffEncoder<std::io::Cursor<&mut Vec<u8>>>),
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut e = tiff::encoder::TiffEncoder::new(std::io::Cursor::new(&mut out)).unwrap();
+        write(&mut e);
+    }
+    out
+}
+
+#[test]
+fn tiff_pixels_follow_libtiff_rgba_conversion() {
+    use tiff::encoder::colortype::{CMYK8, Gray8, Gray16, RGB8, RGBA8};
+    use tiff::tags::Tag;
+    on_big_stack(|| {
+        let mut t = Images::new();
+        let rgb = tiff_bytes(|e| tiff_image::<RGB8>(e, (2, 1), &[], &[255, 0, 0, 0, 0, 255]));
+        let path = t.file("rgb.tif", &rgb);
+        let from_file = t.file_spec("tiff", &path, "");
+        assert_eq!(t.pixels(from_file), [0xFF0000, 0x0000FF]);
+        assert_eq!(t.mask(from_file), None);
+        assert_eq!(
+            eval(
+                &mut t.lisp,
+                &format!("(image-size '(image :type tiff :file \"{path}\") t)")
+            ),
+            "(2 . 1)"
+        );
+        let from_data = t.data_spec(sym::TIFF, &rgb, &[]);
+        assert_eq!(t.pixels(from_data), [0xFF0000, 0x0000FF]);
+        let gray = tiff_bytes(|e| tiff_image::<Gray8>(e, (2, 1), &[], &[0x40, 0xC0]));
+        let gray = t.data_spec(sym::TIFF, &gray, &[]);
+        assert_eq!(t.pixels(gray), [0x404040, 0xC0C0C0]);
+        let inverted = tiff_bytes(|e| {
+            tiff_image::<Gray8>(
+                e,
+                (2, 1),
+                &[(Tag::PhotometricInterpretation, &[0])],
+                &[0x40, 0xC0],
+            )
+        });
+        let inverted = t.data_spec(sym::TIFF, &inverted, &[]);
+        assert_eq!(t.pixels(inverted), [0xBFBFBF, 0x3F3F3F]);
+        let deep = tiff_bytes(|e| tiff_image::<Gray16>(e, (2, 1), &[], &[0x12F0, 0xFFFF]));
+        let deep = t.data_spec(sym::TIFF, &deep, &[]);
+        assert_eq!(t.pixels(deep), [0x121212, 0xFFFFFF]);
+        let associated = tiff_bytes(|e| tiff_image::<RGBA8>(e, (1, 1), &[], &[200, 100, 50, 128]));
+        let associated = t.data_spec(sym::TIFF, &associated, &[]);
+        assert_eq!(t.pixels(associated), [0xC86432]);
+        let unassociated = tiff_bytes(|e| {
+            tiff_image::<RGBA8>(
+                e,
+                (1, 1),
+                &[(Tag::ExtraSamples, &[2])],
+                &[200, 100, 50, 128],
+            )
+        });
+        let unassociated = t.data_spec(sym::TIFF, &unassociated, &[]);
+        assert_eq!(t.pixels(unassociated), [0x643219]);
+        let cmyk =
+            tiff_bytes(|e| tiff_image::<CMYK8>(e, (2, 1), &[], &[0, 255, 255, 0, 0, 0, 0, 128]));
+        let cmyk = t.data_spec(sym::TIFF, &cmyk, &[]);
+        assert_eq!(t.pixels(cmyk), [0xFF0000, 0x7F7F7F]);
+        let square = [1, 0, 0, 2, 0, 0, 3, 0, 0, 4, 0, 0];
+        for (orientation, expected) in [
+            (1u16, [1, 2, 3, 4]),
+            (2, [2, 1, 4, 3]),
+            (3, [4, 3, 2, 1]),
+            (4, [3, 4, 1, 2]),
+            (5, [1, 2, 3, 4]),
+            (7, [4, 3, 2, 1]),
+        ] {
+            let oriented = tiff_bytes(|e| {
+                tiff_image::<RGB8>(e, (2, 2), &[(Tag::Orientation, &[orientation])], &square)
+            });
+            let oriented = t.data_spec(sym::TIFF, &oriented, &[]);
+            let expected: Vec<u64> = expected.iter().map(|&r| r << 16).collect();
+            assert_eq!(t.pixels(oriented), expected, "orientation {orientation}");
+        }
+        assert_eq!(eval(&mut t.lisp, "(and (memq 'tiff image-types) t)"), "t");
+    });
+}
+
+#[test]
+fn tiff_directories_are_indexed_and_counted() {
+    use tiff::encoder::colortype::RGB8;
+    on_big_stack(|| {
+        let mut t = Images::new();
+        let pages = tiff_bytes(|e| {
+            tiff_image::<RGB8>(e, (1, 1), &[], &[255, 0, 0]);
+            tiff_image::<RGB8>(e, (2, 1), &[], &[0, 255, 0, 0, 0, 255]);
+        });
+        let first = t.data_spec(sym::TIFF, &pages, &[]);
+        assert_eq!(t.pixels(first), [0xFF0000]);
+        let second = t.data_spec(sym::TIFF, &pages, &[sym::K_INDEX, Value::fixnum(1)]);
+        assert_eq!(t.pixels(second), [0x00FF00, 0x0000FF]);
+        let symbol = t.lisp.intern("second");
+        t.lisp.set_plain_value(symbol, second);
+        assert_eq!(eval(&mut t.lisp, "(image-metadata second)"), "(count 2)");
+        let single = tiff_bytes(|e| tiff_image::<RGB8>(e, (1, 1), &[], &[1, 2, 3]));
+        let single = t.data_spec(sym::TIFF, &single, &[]);
+        let symbol = t.lisp.intern("single");
+        t.lisp.set_plain_value(symbol, single);
+        assert_eq!(eval(&mut t.lisp, "(image-metadata single)"), "nil");
+        let missing = t.data_spec(sym::TIFF, &pages, &[sym::K_INDEX, Value::fixnum(4)]);
+        let id = t.lisp.lookup_image(t.f, missing, -1).unwrap();
+        assert!(t.lisp.image(t.f, id).unwrap().pixmap.is_none());
+        for source in [
+            "(image-size '(image :type tiff :data \"not a tiff\") t)",
+            "(image-size '(image :type tiff :file \"nope.tif\") t)",
+        ] {
+            assert_eq!(eval(&mut t.lisp, source), "(30 . 30)");
+        }
+        let log = messages(&mut t.lisp);
+        for expected in [
+            "TIFF error: memory_source ",
+            "Cannot open memory source for \u{2018}(image :type tiff :data not a tiff)\u{2019}",
+            "Cannot find image file \u{2018}nope.tif\u{2019}",
+            "Invalid image number \u{2018}4\u{2019} in image",
+        ] {
+            assert!(log.contains(expected), "{expected:?} in {log:?}");
+        }
+    });
+}
