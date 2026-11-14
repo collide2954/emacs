@@ -959,3 +959,55 @@ fn svg_images_are_wrapped_with_foreground_background_and_size() {
         }
     });
 }
+
+const XPM_ICON: &str = "/* XPM */\nstatic char *icon[] = {\n/* columns rows colors chars-per-pixel */\n\"3 2 4 1\",\n\"  c None\",\n\". m white c red\",\n\"# c #0000FF\",\n\"x g4 #808080 m white\",\n\" .#\",\n\"#x \"\n};\n";
+
+#[test]
+fn xpm_images_pick_color_keys_symbols_and_transparency() {
+    on_big_stack(|| {
+        let mut t = Images::new();
+        let icon = t.data_spec(sym::XPM, XPM_ICON.as_bytes(), &[]);
+        assert_eq!(
+            t.pixels(icon),
+            [0x000000, 0xFF0000, 0x0000FF, 0x0000FF, 0x808080, 0x000000]
+        );
+        assert_eq!(t.mask(icon), Some(vec![0, 255, 255, 255, 255, 0]));
+        let path = t.file("icon.xpm", XPM_ICON.as_bytes());
+        let from_file = t.file_spec("xpm", &path, "");
+        assert_eq!(t.pixels(from_file).len(), 6);
+        assert_eq!(
+            eval(
+                &mut t.lisp,
+                &format!("(image-size '(image :type xpm :file \"{path}\") t)")
+            ),
+            "(3 . 2)"
+        );
+        let pairs = "/* XPM */ static char *p[] = { \"2 1 2 2\", \"aa c #00FF00\", \"bb s bg c #FFFFFF\", \"aabb\" };";
+        let plain = t.data_spec(sym::XPM, pairs.as_bytes(), &[]);
+        assert_eq!(t.pixels(plain), [0x00FF00, 0xFFFFFF]);
+        assert_eq!(t.mask(plain), None);
+        let symbols = t.lisp.eval_string("'((\"bg\" . \"red\"))").unwrap();
+        let recolored = t.data_spec(sym::XPM, pairs.as_bytes(), &[sym::K_COLOR_SYMBOLS, symbols]);
+        assert_eq!(t.pixels(recolored), [0x00FF00, 0xFF0000]);
+        let none = t.lisp.eval_string("'((\"bg\" . \"none\"))").unwrap();
+        let hidden = t.data_spec(sym::XPM, pairs.as_bytes(), &[sym::K_COLOR_SYMBOLS, none]);
+        assert_eq!(t.mask(hidden), Some(vec![255, 0]));
+        assert_eq!(
+            eval(
+                &mut t.lisp,
+                "(list (imagep '(image :type xpm :data \"x\" :color-symbols ((\"a\" . \"b\")))) (imagep '(image :type xpm :data \"x\" :color-symbols ((a . \"b\")))))"
+            ),
+            "(t nil)"
+        );
+        assert_eq!(eval(&mut t.lisp, "(and (memq 'xpm image-types) t)"), "t");
+        assert_eq!(
+            eval(
+                &mut t.lisp,
+                "(image-size '(image :type xpm :data \"/* XPM */ static char *x[] = { \\\"bad\") t)"
+            ),
+            "(30 . 30)"
+        );
+        let log = messages(&mut t.lisp);
+        assert!(log.contains("Invalid XPM3 file ("), "{log:?}");
+    });
+}

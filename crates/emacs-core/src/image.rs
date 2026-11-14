@@ -7,6 +7,7 @@ mod svg;
 mod tiff;
 mod webp;
 mod xbm;
+mod xpm;
 
 use crate::error::LispResult;
 use crate::lisp::Lisp;
@@ -143,6 +144,12 @@ static IMAGE_TYPES: &[ImageType] = &[
         type_: sym::PBM,
         valid_p: pbm::pbm_image_p,
         load_img: pbm::pbm_load,
+        free_img: image_clear_image,
+    },
+    ImageType {
+        type_: sym::XPM,
+        valid_p: xpm::xpm_image_p,
+        load_img: xpm::xpm_load,
         free_img: image_clear_image,
     },
     ImageType {
@@ -1634,6 +1641,7 @@ pub fn init_vars(lisp: &mut Lisp) {
     for type_ in [
         sym::PBM,
         sym::XBM,
+        sym::XPM,
         sym::JPEG,
         sym::TIFF,
         sym::GIF,
