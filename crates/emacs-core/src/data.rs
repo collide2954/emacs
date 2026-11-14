@@ -1855,7 +1855,7 @@ fn f_rem(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     integer_remainder(lisp, x, y, false)
 }
 
-fn f_mod(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_mod(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let x = lisp.number(args[0])?;
     let y = lisp.number(args[1])?;
     if matches!(x, Num::Float(_)) || matches!(y, Num::Float(_)) {

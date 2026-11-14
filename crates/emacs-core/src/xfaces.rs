@@ -1709,6 +1709,9 @@ impl Lisp {
             let cache = self.make_face_cache();
             self.frame_mut(f).face_cache = Some(Box::new(cache));
         }
+        if self.frame_window_p(f) {
+            self.acquire_image_cache(f);
+        }
         if !self.realize_basic_faces(f)? {
             panic!("cannot realize the basic faces of a new frame");
         }
@@ -1733,6 +1736,9 @@ impl Lisp {
         if self.frame(f).face_cache.is_some() {
             self.free_realized_faces(f);
             self.frame_mut(f).face_cache = None;
+        }
+        if self.frame_window_p(f) {
+            self.release_image_cache(f);
         }
     }
 

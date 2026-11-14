@@ -1568,13 +1568,6 @@ impl Lisp {
         self.safe_call(true, &[sym::EVAL, sexpr])
     }
 
-    pub fn valid_image_p(&self, object: Value) -> bool {
-        if object.is_cons() && self.xcar(object) == sym::IMAGE {
-            unreachable!("valid_image_p needs image.c's image types");
-        }
-        false
-    }
-
     pub fn compute_display_string_pos(
         &mut self,
         (charpos, bytepos): (i64, i64),

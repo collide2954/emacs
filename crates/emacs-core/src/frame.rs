@@ -176,6 +176,7 @@ pub struct Frame {
     pub gamma: f64,
     pub alpha_background: f64,
     pub face_cache: Option<Box<crate::xfaces::FaceCache>>,
+    pub image_cache: Option<usize>,
     pub font_driver_list: Vec<crate::font::FontDriverList>,
     pub fonts_changed: bool,
     pub font: Value,
@@ -241,6 +242,7 @@ impl Frame {
             gamma: 0.0,
             alpha_background: 0.0,
             face_cache: None,
+            image_cache: None,
             font_driver_list: Vec::new(),
             fonts_changed: false,
             font: Value::NIL,
@@ -4167,6 +4169,8 @@ impl Lisp {
         self.store_frame_param(f, sym::FONT, arg)?;
         self.frame_mut(f).n_tab_bar_rows = 0;
         self.frame_mut(f).n_tool_bar_rows = 0;
+        self.rescale_image_cache(f)?;
+        self.clear_current_matrices(f);
         self.set_frame_garbaged(f);
         self.frame_mut(f).fonts_changed = true;
         Ok(())

@@ -150,6 +150,7 @@ pub struct Lisp {
     pub fonts: crate::font::Fonts,
     pub fontsets: crate::fontset::Fontsets,
     pub xdisp: crate::xdisp::Xdisp,
+    pub images: crate::image::Images,
     pub bidi: crate::bidi::Bidi,
     pub keyboard: crate::keyboard::Keyboard,
     pub atimer: crate::atimer::Atimers,
@@ -223,6 +224,7 @@ pub const ALL_SUBRS: &[&[Subr]] = &[
     crate::composite::SUBRS,
     crate::dispnew::SUBRS,
     crate::xdisp::SUBRS,
+    crate::image::SUBRS,
     crate::indent::SUBRS,
     crate::dired::SUBRS,
     crate::callint::SUBRS,
@@ -380,6 +382,7 @@ impl Lisp {
             fonts: crate::font::Fonts::default(),
             fontsets: crate::fontset::Fontsets::default(),
             xdisp: crate::xdisp::Xdisp::default(),
+            images: crate::image::Images::default(),
             bidi: crate::bidi::Bidi::default(),
             keyboard: crate::keyboard::Keyboard::default(),
             atimer: crate::atimer::Atimers::default(),
@@ -1175,6 +1178,7 @@ impl Lisp {
             self.xdisp.previous_help_echo_string,
         ]);
         self.bidi.roots(&mut roots);
+        self.images.roots(&mut roots);
         self.keyboard.roots(&mut roots);
         roots.push(self.fileio.annotation_buffers);
         for kboard in &self.kboards {

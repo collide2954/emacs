@@ -681,6 +681,7 @@ impl Lisp {
                 self.xdisp.clear_face_cache_count = 0;
             }
             if self.xdisp.clear_image_cache_count > CLEAR_IMAGE_CACHE_COUNT {
+                self.clear_image_caches(Value::NIL)?;
                 self.xdisp.clear_image_cache_count = 0;
             }
             break 'retry;
