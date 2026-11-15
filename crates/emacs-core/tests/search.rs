@@ -183,3 +183,11 @@ fn categories() {
         ("(string-match \"\\\\Cx\" \"aab\")", "2"),
     ]);
 }
+
+#[test]
+fn replace_match_keeps_markers_after_the_match_after_it() {
+    common::check(&[(
+        "(progn (set-buffer (get-buffer-create \"rm\")) (insert \"foo bar baz\") (setq m-end (copy-marker 8)) (setq m-in (copy-marker 6)) (goto-char 1) (re-search-forward \"bar\") (replace-match \"quux\") (list (buffer-string) (marker-position m-end) (marker-position m-in) (point)))",
+        "(\"foo quux baz\" 9 5 9)",
+    )]);
+}

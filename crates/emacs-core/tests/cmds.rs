@@ -102,3 +102,11 @@ fn unibyte_neighbors() {
         ("(following-char)", "200"),
     ]);
 }
+
+#[test]
+fn overwriting_keeps_a_marker_after_the_replaced_char() {
+    common::check(&[(
+        "(progn (fset 'undo-auto-amalgamate (function (lambda () nil))) (set-buffer (get-buffer-create \"ow\")) (insert \"abc\") (setq m (copy-marker 2)) (goto-char 1) (setq overwrite-mode 'overwrite-mode-textual) (self-insert-command 1 ?x) (list (buffer-string) (marker-position m) (point)))",
+        "(\"xbc\" 2 2)",
+    )]);
+}

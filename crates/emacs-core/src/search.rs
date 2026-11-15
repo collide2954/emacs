@@ -1257,10 +1257,9 @@ impl Lisp {
         let newlen = self.string_chars(newtext);
         let newpoint = sub_start + newlen;
         self.stack.push(newtext);
-        let r = self.replace_range_chars(sub_start, sub_end, newtext);
+        let r = self.replace_range(sub_start, sub_end, newtext, true, false, true);
         self.stack.pop();
         r?;
-        self.update_search_regs(sub_start, sub_end, sub_start + newlen);
         if case_action == CaseAction::AllCaps {
             let start = Value::fixnum(self.search_regs.start[sub] as i64);
             let f = self.intern("upcase-region");
@@ -1274,6 +1273,7 @@ impl Lisp {
         let restore = (opoint + if opoint <= 0 { zv } else { 0 }).clamp(begv, zv);
         self.goto_char_internal(restore as usize);
         self.goto_char_internal(newpoint);
+        self.update_compositions(sub_start, newpoint, crate::composite::CHECK_BORDER)?;
         Ok(Value::NIL)
     }
 

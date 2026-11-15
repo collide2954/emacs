@@ -1805,7 +1805,7 @@ impl Lisp {
             }
             let pt = self.cur().pt;
             let to = pt.saturating_add(chars_to_delete as usize);
-            self.replace_range_chars(pt, to, string)?;
+            self.replace_range(pt, to, string, true, true, false)?;
             f_forward_char(self, &[Value::fixnum(n)])?;
         } else if n > 1 {
             let mut strn = Vec::with_capacity(str.len() * n as usize);
