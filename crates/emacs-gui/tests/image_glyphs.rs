@@ -433,3 +433,55 @@ fn mouse_face_redraws_images_in_the_mouse_face() {
         assert_eq!(s.pixel(x + 1, base - 2), [255, 0, 0]);
     });
 }
+
+fn two_frame_gif() -> Vec<u8> {
+    let palette = [255, 0, 0, 0, 0, 255];
+    let mut out = Vec::new();
+    {
+        let mut e = gif::Encoder::new(&mut out, 2, 1, &palette).unwrap();
+        e.set_repeat(gif::Repeat::Infinite).unwrap();
+        for index in [0u8, 1] {
+            let frame = gif::Frame {
+                width: 2,
+                height: 1,
+                delay: 10,
+                buffer: std::borrow::Cow::Owned(vec![index; 2]),
+                ..gif::Frame::default()
+            };
+            e.write_frame(&frame).unwrap();
+        }
+    }
+    out
+}
+
+#[test]
+fn showing_another_frame_redraws_an_animated_image() {
+    on_big_stack(|| {
+        let mut s = shown(
+            "(insert \"a\" (propertize \"b\" 'display (setq anim (list 'image :type 'gif :index 0 :ascent 100))) \"c\")",
+        );
+        let data = s.lisp.unibyte_string(&two_frame_gif());
+        let symbol = s.lisp.intern("frames");
+        s.lisp.set_plain_value(symbol, data);
+        s.eval(
+            "(progn (plist-put (cdr anim) :data frames) (force-window-update (current-buffer)))",
+        );
+        s.lisp.redisplay().unwrap();
+        let (x, base) = (s.glyph_left(0, 1), s.baseline(0));
+        assert_eq!(s.row(0).area_glyphs(TEXT_AREA)[1].kind, GlyphType::Image);
+        assert_eq!(s.pixel(x, base - 1), [255, 0, 0]);
+        assert_eq!(
+            s.eval(
+                "(let ((m (image-metadata anim))) (list (plist-get m 'count) (plist-get m 'delay)))"
+            ),
+            "(2 0.1)"
+        );
+        s.eval("(progn (plist-put (cdr anim) :index 1) (force-window-update (current-buffer)))");
+        s.lisp.redisplay().unwrap();
+        assert_eq!(s.pixel(x, base - 1), [0, 0, 255]);
+        assert_eq!(s.pixel(x + 1, base - 1), [0, 0, 255]);
+        s.eval("(progn (plist-put (cdr anim) :index 0) (force-window-update (current-buffer)))");
+        s.lisp.redisplay().unwrap();
+        assert_eq!(s.pixel(x, base - 1), [255, 0, 0]);
+    });
+}
