@@ -57,7 +57,7 @@ impl Lisp {
                     continue;
                 }
                 menu_bar_hooks_run = self.update_menu_bar(f, false, menu_bar_hooks_run, w)?;
-                self.update_tab_bar(f)?;
+                self.update_tab_bar(f, false)?;
                 self.update_tool_bar(f, false)?;
             }
             self.unbind_to(count)
@@ -65,7 +65,7 @@ impl Lisp {
             let sw = self.windows.selected_window;
             let sf = self.window(sw).frame;
             self.update_menu_bar(sf, true, false, sw)?;
-            self.update_tab_bar(sf)?;
+            self.update_tab_bar(sf, true)?;
             self.update_tool_bar(sf, true)
         }
     }
@@ -140,7 +140,7 @@ impl Lisp {
             || self.window_buffer_changed(w)
     }
 
-    fn update_tab_bar(&mut self, f: Value) -> LispResult<()> {
+    pub(crate) fn update_tab_bar(&mut self, f: Value, save_match_data: bool) -> LispResult<()> {
         let tab_bar_window = self.frame(f).tab_bar_window;
         let do_update = if self.frame_window_p(f) && self.is_window(tab_bar_window) {
             self.window(tab_bar_window).total_lines > 0
@@ -148,7 +148,38 @@ impl Lisp {
             self.frame(f).geometry.tab_bar_lines > 0
         };
         if do_update && self.bar_needs_update(f) {
-            unreachable!("update_tab_bar needs tab_bar_items");
+            let w = self.frame(f).selected_window;
+            let prev = self.current_buffer;
+            let count = self.specpdl_index();
+            let contents = self.window(w).contents;
+            self.set_buffer_internal(contents);
+            if save_match_data {
+                self.record_unwind_save_match_data()?;
+            }
+            if self
+                .find_symbol_value(sym::OVERRIDING_LOCAL_MAP_MENU_FLAG)
+                .is_nil()
+            {
+                self.specbind(sym::OVERRIDING_TERMINAL_LOCAL_MAP, Value::NIL)?;
+                self.specbind(sym::OVERRIDING_LOCAL_MAP, Value::NIL)?;
+            }
+            let selected_window = self.windows.selected_window;
+            self.record_unwind(super::modeline::restore_selected_window, selected_window);
+            self.frames.selected_frame = f;
+            self.windows.selected_window = self.frame(f).selected_window;
+            let old = self.frame(f).tab_bar_items;
+            let reuse = crate::fns::f_copy_sequence(self, &[old])?;
+            let (new_tab_bar, new_n_tab_bar) = self.tab_bar_items(reuse)?;
+            let old = self.frame(f).tab_bar_items;
+            if new_n_tab_bar != self.frame(f).n_tab_bar_items
+                || crate::fns::f_equal_including_properties(self, &[new_tab_bar, old])?.is_nil()
+            {
+                self.frame_mut(f).tab_bar_items = new_tab_bar;
+                self.frame_mut(f).n_tab_bar_items = new_n_tab_bar;
+                self.window_mut(w).flags.update_mode_line = true;
+            }
+            self.unbind_to(count)?;
+            self.set_buffer_internal(prev);
         }
         Ok(())
     }

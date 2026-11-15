@@ -23,6 +23,7 @@ pub mod reseat;
 pub mod reuse;
 pub mod scroll;
 pub mod stack;
+pub mod tab_bar;
 pub mod text_size;
 pub mod visible;
 
@@ -432,11 +433,17 @@ impl Lisp {
 
 fn f_tab_bar_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let f = lisp.decode_any_frame(args.first().copied().unwrap_or(Value::NIL))?;
+    let pixelwise = !args.get(1).copied().unwrap_or(Value::NIL).is_nil();
     let w = lisp.frame(f).tab_bar_window;
+    let mut height = 0;
     if lisp.is_window(w) && lisp.window(w).pixel_height > 0 {
-        unreachable!("tab-bar-height needs update_tab_bar and the display iterator");
+        lisp.update_tab_bar(f, true)?;
+        if lisp.frame(f).n_tab_bar_items != 0 {
+            lisp.build_desired_tab_bar_string(f)?;
+            height = lisp.tab_bar_height(f, pixelwise)?.0;
+        }
     }
-    Ok(Value::fixnum(0))
+    Ok(Value::fixnum(i64::from(height)))
 }
 
 fn f_tool_bar_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {

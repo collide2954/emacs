@@ -528,6 +528,52 @@ fn f_x_display_grayscale_p(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(sym::T)
 }
 
+pub fn pgtk_change_tab_bar_height(lisp: &mut Lisp, f: Value, height: i64) -> LispResult<()> {
+    let unit = lisp.frame(f).geometry.line_height;
+    let old_height = lisp.frame(f).geometry.tab_bar_height;
+    let mut lines = height / unit;
+    if lines == 0 && height != 0 {
+        lines = 1;
+    }
+    lisp.fset_redisplay(f);
+    lisp.frame_mut(f).geometry.tab_bar_height = height;
+    lisp.frame_mut(f).geometry.tab_bar_lines = lines;
+    lisp.store_frame_param(f, sym::TAB_BAR_LINES, Value::fixnum(lines))?;
+    let realized = with_output(lisp, f, |o| o.widget);
+    if realized && height == 0 {
+        lisp.clear_frame(f);
+        lisp.clear_current_matrices(f);
+    }
+    let w = lisp.frame(f).tab_bar_window;
+    if height < old_height
+        && lisp.is_window(w)
+        && let Some(m) =
+            lisp.window_matrix_mut(w, emacs_core::dispnew::matrix::WhichMatrix::Current)
+    {
+        emacs_core::dispnew::matrix::clear_glyph_matrix(m);
+    }
+    if !lisp.frame(f).flags.tab_bar_resized {
+        let fullscreen = lisp.get_frame_param(f, sym::FULLSCREEN);
+        if fullscreen.is_nil() || fullscreen == sym::FULLWIDTH {
+            let g = &lisp.frame(f).geometry;
+            let (width, height) = (g.text_width, g.text_height);
+            lisp.adjust_frame_size(f, width, height, 1, sym::TAB_BAR_LINES)?;
+        } else {
+            lisp.adjust_frame_size(f, -1, -1, 4, sym::TAB_BAR_LINES)?;
+        }
+        let redisplayed = lisp.frame(f).flags.tab_bar_redisplayed;
+        lisp.frame_mut(f).flags.tab_bar_resized = redisplayed;
+    } else {
+        lisp.adjust_frame_size(f, -1, -1, 3, sym::TAB_BAR_LINES)?;
+    }
+    lisp.adjust_frame_glyphs(f);
+    lisp.set_frame_garbaged(f);
+    if realized {
+        crate::pgtkdraw::pgtk_clear_under_internal_border(lisp, f);
+    }
+    Ok(())
+}
+
 fn x_change_tool_bar_height(lisp: &mut Lisp, f: Value, height: i64) -> LispResult<()> {
     lisp.frame_mut(f).geometry.tool_bar_lines = 0;
     lisp.frame_mut(f).geometry.tool_bar_height = 0;

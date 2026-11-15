@@ -22,6 +22,7 @@ pub type SetNewFontHook = fn(&mut Lisp, Value, Value, i64) -> LispResult<Value>;
 pub type DefaultFontParameterHook = fn(&mut Lisp, Value, Value) -> LispResult<()>;
 pub type WindowSizeHook = fn(&mut Lisp, Value, bool, i64, i64) -> LispResult<()>;
 pub type ScrollBarHook = fn(&mut Lisp, Value, i64, i64, i64) -> LispResult<()>;
+pub type ChangeBarHeightHook = fn(&mut Lisp, Value, i64) -> LispResult<()>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct MousePosition {
@@ -69,6 +70,7 @@ pub struct TerminalHooks {
     pub judge_scroll_bars: Option<fn(&mut Lisp, Value)>,
     pub mouse_position: Option<MousePositionHook>,
     pub update_frame_tool_bar: Option<FrameHook>,
+    pub change_tab_bar_height: Option<ChangeBarHeightHook>,
 }
 
 pub type ReadSocketHook = fn(&mut Lisp, Value, &mut crate::termhooks::KbdEvent) -> LispResult<i32>;

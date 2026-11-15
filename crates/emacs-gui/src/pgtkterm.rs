@@ -1084,6 +1084,7 @@ pub fn pgtk_term_init(
     hooks.fullscreen = Some(pgtk_fullscreen_hook);
     hooks.buffer_flipping_unblocked = Some(pgtk_buffer_flipping_unblocked_hook);
     hooks.update_frame_tool_bar = Some(crate::gtkutil::update_frame_tool_bar);
+    hooks.change_tab_bar_height = Some(crate::pgtkfns::pgtk_change_tab_bar_height);
     lisp.terminal_mut(terminal).rif = Some(&crate::pgtkdraw::PGTK_REDISPLAY_INTERFACE);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =

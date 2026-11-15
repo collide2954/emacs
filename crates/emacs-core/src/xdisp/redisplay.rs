@@ -154,16 +154,6 @@ impl Lisp {
         })
     }
 
-    fn redisplay_tab_bar(&mut self, f: Value) -> bool {
-        self.frame_mut(f).flags.tab_bar_redisplayed = true;
-        let w = self.frame(f).tab_bar_window;
-        if !self.is_window(w) || self.window(w).total_lines == 0 {
-            self.frame_mut(f).flags.tab_bar_resized = true;
-            return false;
-        }
-        unreachable!("tab bars need display_tab_bar_line");
-    }
-
     fn display_menu_bar(&mut self, w: Value) {
         let f = self.window(w).frame;
         if self.frame(f).output_method == OutputMethod::Pgtk {
@@ -965,7 +955,7 @@ impl Lisp {
                             if self.is_window(tab_bar_window)
                                 && (self.frame(f).geometry.tab_bar_lines > 0
                                     || !self.find_symbol_value(sym::AUTO_RESIZE_TAB_BARS).is_nil())
-                                && self.redisplay_tab_bar(f)
+                                && self.redisplay_tab_bar(f)?
                             {
                                 self.keyboard.ignore_mouse_drag_p = true;
                             }
