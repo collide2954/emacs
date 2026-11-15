@@ -885,7 +885,12 @@ impl Lisp {
         Value::NIL
     }
 
-    fn compute_char_face(&mut self, f: Value, ch: i32, prop: Value) -> LispResult<usize> {
+    pub(crate) fn compute_char_face(
+        &mut self,
+        f: Value,
+        ch: i32,
+        prop: Value,
+    ) -> LispResult<usize> {
         let ch = if self.cur().text.multibyte { ch } else { 0 };
         if prop.is_nil() {
             return self.face_for_char(f, DEFAULT_FACE_ID, ch as u32, -1, Value::NIL);

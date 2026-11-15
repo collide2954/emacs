@@ -30,8 +30,6 @@ pub struct PgtkDisplayInfo {
     pub last_user_time: u64,
     pub x_focus_frame: Value,
     pub x_focus_event_frame: Value,
-    pub grabbed: u32,
-    pub last_mouse_frame: Value,
     pub last_mouse_motion_frame: Value,
     pub last_mouse_motion_x: i64,
     pub last_mouse_motion_y: i64,
@@ -214,12 +212,14 @@ pub fn pgtk_free_frame_resources(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     if lisp.display_info(terminal).highlight_frame == f {
         lisp.display_info_mut(terminal).highlight_frame = Value::NIL;
     }
+    if lisp.display_info(terminal).last_mouse_frame == f {
+        lisp.display_info_mut(terminal).last_mouse_frame = Value::NIL;
+    }
     with_dpyinfo(lisp, f, |d| {
         if d.x_focus_event_frame == f {
             d.x_focus_event_frame = Value::NIL;
         }
         for slot in [
-            &mut d.last_mouse_frame,
             &mut d.last_mouse_motion_frame,
             &mut d.last_mouse_glyph_frame,
         ] {
@@ -282,7 +282,6 @@ pub fn mark_pgtkterm(roots: &mut Vec<Value>) {
                 dpyinfo.terminal,
                 dpyinfo.x_focus_frame,
                 dpyinfo.x_focus_event_frame,
-                dpyinfo.last_mouse_frame,
                 dpyinfo.last_mouse_motion_frame,
                 dpyinfo.last_mouse_glyph_frame,
             ]);
@@ -394,42 +393,56 @@ fn key_press_event(lisp: &mut Lisp, input: InputEvent) {
 }
 
 fn gui_mouse_grabbed(lisp: &Lisp, frame: Value) -> Option<Value> {
-    let (grabbed, last) = with_dpyinfo(lisp, frame, |d| (d.grabbed, d.last_mouse_frame));
-    (grabbed != 0 && lisp.is_frame(last) && lisp.frame_live_p(last)).then_some(last)
+    lisp.gui_mouse_grabbed(lisp.frame(frame).terminal)
 }
 
-fn button_event(lisp: &mut Lisp, input: InputEvent) {
+fn button_event(lisp: &mut Lisp, input: InputEvent) -> LispResult<()> {
     let Some(frame) = pgtk_any_window_to_frame(lisp, input.frame) else {
-        return;
+        return Ok(());
     };
     with_dpyinfo(lisp, frame, |d| d.last_mouse_glyph_frame = Value::NIL);
     let f = gui_mouse_grabbed(lisp, frame).unwrap_or(frame);
     with_dpyinfo(lisp, frame, |d| d.last_user_time = input.timestamp);
+    let down_p = input.modifiers & emacs_core::keyboard::DOWN_MODIFIER != 0;
+    let mut tab_bar_p = false;
+    let mut tab_bar_arg = Value::NIL;
     let tab_bar_window = lisp.frame(f).tab_bar_window;
     if lisp.is_window(tab_bar_window) && lisp.window(tab_bar_window).total_lines != 0 {
-        unreachable!("tab-bar clicks need handle_tab_bar_click");
+        let mut part = WindowPart::Nothing;
+        let window = lisp.window_from_coordinates(f, input.x, input.y, &mut part, true);
+        tab_bar_p = window == tab_bar_window;
+        if tab_bar_p {
+            tab_bar_arg = lisp.handle_tab_bar_click(f, input.x, input.y, down_p)?;
+        }
     }
-    let event = KbdEvent {
-        kind: EventKind::MouseClick,
-        code: input.code,
-        timestamp: input.timestamp,
-        modifiers: input.modifiers,
-        x: Value::fixnum(input.x),
-        y: Value::fixnum(input.y),
-        frame_or_window: f,
-        ..KbdEvent::default()
-    };
+    let base = lisp.stack.len();
+    lisp.stack.push(tab_bar_arg);
+    if !(tab_bar_p && tab_bar_arg.is_nil()) {
+        let event = KbdEvent {
+            kind: EventKind::MouseClick,
+            code: input.code,
+            timestamp: input.timestamp,
+            modifiers: input.modifiers,
+            x: Value::fixnum(input.x),
+            y: Value::fixnum(input.y),
+            frame_or_window: f,
+            arg: tab_bar_arg,
+            ..KbdEvent::default()
+        };
+        evq_enqueue(lisp, event);
+    }
+    lisp.stack.truncate(base);
     let button = 1u32 << (input.code + 1).min(31);
-    if input.modifiers & emacs_core::keyboard::DOWN_MODIFIER != 0 {
-        with_dpyinfo(lisp, frame, |d| {
-            d.grabbed |= button;
-            d.last_mouse_frame = f;
-        });
+    let terminal = lisp.frame(frame).terminal;
+    if down_p {
+        let info = lisp.display_info_mut(terminal);
+        info.grabbed |= button;
+        info.last_mouse_frame = f;
     } else {
-        with_dpyinfo(lisp, frame, |d| d.grabbed &= !button);
+        lisp.display_info_mut(terminal).grabbed &= !button;
     }
     lisp.frame_mut(f).flags.mouse_moved = false;
-    evq_enqueue(lisp, event);
+    Ok(())
 }
 
 fn scroll_event(lisp: &mut Lisp, input: InputEvent) {
@@ -582,7 +595,7 @@ fn pgtk_mouse_position(lisp: &mut Lisp, fp: Value, _insist: i32) -> Option<Mouse
                 if lisp.frame(selected).output_method == OutputMethod::Pgtk {
                     selected
                 } else {
-                    with_dpyinfo(lisp, fp, |d| d.last_mouse_frame)
+                    lisp.display_info(lisp.frame(fp).terminal).last_mouse_frame
                 }
             } else {
                 pointer
@@ -864,7 +877,7 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             | EventKind::MultibyteCharKeystroke
             | EventKind::NonAsciiKeystroke => key_press_event(lisp, input),
             EventKind::DeleteWindow => delete_event(lisp, input),
-            EventKind::MouseClick => button_event(lisp, input),
+            EventKind::MouseClick => button_event(lisp, input)?,
             EventKind::Wheel | EventKind::HorizWheel => scroll_event(lisp, input),
             EventKind::FocusIn => focus_event(lisp, input, true)?,
             EventKind::FocusOut => focus_event(lisp, input, false)?,
@@ -965,8 +978,6 @@ fn initialize_display_info(terminal: Value) -> (PgtkDisplayInfo, DisplayInfo) {
         last_user_time: 0,
         x_focus_frame: Value::NIL,
         x_focus_event_frame: Value::NIL,
-        grabbed: 0,
-        last_mouse_frame: Value::NIL,
         last_mouse_motion_frame: Value::NIL,
         last_mouse_motion_x: 0,
         last_mouse_motion_y: 0,

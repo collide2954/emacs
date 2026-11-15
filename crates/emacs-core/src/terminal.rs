@@ -96,6 +96,8 @@ pub struct DisplayInfo {
     pub smallest_char_width: i32,
     pub reference_count: i32,
     pub highlight_frame: Value,
+    pub grabbed: u32,
+    pub last_mouse_frame: Value,
     pub mouse_highlight: crate::dispextern::MouseHlInfo,
 }
 
@@ -113,8 +115,18 @@ impl DisplayInfo {
             smallest_char_width: 0,
             reference_count: 0,
             highlight_frame: Value::NIL,
+            grabbed: 0,
+            last_mouse_frame: Value::NIL,
             mouse_highlight: crate::dispextern::MouseHlInfo::default(),
         }
+    }
+}
+
+impl Lisp {
+    pub fn gui_mouse_grabbed(&self, terminal: Value) -> Option<Value> {
+        let info = self.display_info(terminal);
+        let last = info.last_mouse_frame;
+        (info.grabbed != 0 && self.is_frame(last) && self.frame_live_p(last)).then_some(last)
     }
 }
 
@@ -149,6 +161,7 @@ impl Terminal {
         if let Some(info) = &self.display_info {
             out.push(info.name_list_element);
             out.push(info.highlight_frame);
+            out.push(info.last_mouse_frame);
             info.mouse_highlight.trace(out);
         }
     }

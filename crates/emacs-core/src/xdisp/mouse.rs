@@ -1083,7 +1083,17 @@ impl Lisp {
             return Ok(());
         }
         if window == self.frame(f).tab_bar_window {
-            unreachable!("note_tab_bar_highlight needs the tab bar");
+            self.note_tab_bar_highlight(f, x, y)?;
+            let cursor = if self
+                .find_symbol_value(sym::TAB_BAR__DRAGGING_IN_PROGRESS)
+                .is_nil()
+            {
+                EmacsCursorKind::Nontext
+            } else {
+                EmacsCursorKind::Hand
+            };
+            self.define_frame_cursor1(f, Some(cursor), pointer);
+            return Ok(());
         }
         self.frame_mut(f).last_tab_bar_item = -1;
         if window == self.frame(f).tool_bar_window {

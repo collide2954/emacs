@@ -1,5 +1,8 @@
 use crate::bidi::BidiDir;
-use crate::dispextern::{GlyphRowRef, It, TAB_BAR_ITEM_CAPTION, TAB_BAR_ITEM_NSLOTS, TEXT_AREA};
+use crate::dispextern::{
+    DrawGlyphsFace, GlyphRowRef, It, TAB_BAR_ITEM_BINDING, TAB_BAR_ITEM_CAPTION,
+    TAB_BAR_ITEM_ENABLED_P, TAB_BAR_ITEM_HELP, TAB_BAR_ITEM_KEY, TAB_BAR_ITEM_NSLOTS, TEXT_AREA,
+};
 use crate::dispnew::matrix::{WhichMatrix, clear_glyph_matrix, clear_glyph_row};
 use crate::error::LispResult;
 use crate::lisp::Lisp;
@@ -339,5 +342,241 @@ impl Lisp {
         }
         self.frame_mut(f).flags.minimize_tab_bar_window_p = false;
         Ok(false)
+    }
+}
+
+pub(crate) struct TabBarHit {
+    hpos: usize,
+    vpos: usize,
+    glyph: crate::dispextern::Glyph,
+    prop_idx: usize,
+    close_p: bool,
+    same_p: bool,
+}
+
+impl Lisp {
+    fn tab_bar_item_info(&mut self, f: Value, charpos: i64) -> LispResult<Option<(usize, bool)>> {
+        let string = self.frame(f).current_tab_bar_string;
+        if !string.is_string() {
+            return Ok(None);
+        }
+        let charpos = Value::fixnum(charpos.min(self.string_chars(string) as i64).max(0));
+        let prop = crate::textprop::f_get_text_property(self, &[charpos, sym::MENU_ITEM, string])?;
+        let Some(prop_idx) = prop.as_fixnum() else {
+            return Ok(None);
+        };
+        let close = crate::textprop::f_get_text_property(self, &[charpos, sym::CLOSE_TAB, string])?;
+        Ok(Some((prop_idx as usize, !close.is_nil())))
+    }
+
+    fn get_tab_bar_item(&mut self, f: Value, x: i64, y: i64) -> LispResult<Option<TabBarHit>> {
+        let w = self.frame(f).tab_bar_window;
+        let hit = self.x_y_to_hpos_vpos(w, x, y);
+        let Some(glyph) = hit.glyph else {
+            return Ok(None);
+        };
+        let Some((prop_idx, close_p)) = self.tab_bar_item_info(f, glyph.charpos)? else {
+            return Ok(None);
+        };
+        Ok(Some(TabBarHit {
+            hpos: hit.hpos,
+            vpos: hit.vpos,
+            glyph,
+            prop_idx,
+            close_p,
+            same_p: prop_idx as i64 == self.frame(f).last_tab_bar_item,
+        }))
+    }
+
+    fn tab_bar_window_xy(&self, f: Value, x: i64, y: i64) -> (i64, i64) {
+        let w = self.frame(f).tab_bar_window;
+        (
+            x - self.frame_internal_border_width(f),
+            self.frame_to_window_pixel_y(w, y),
+        )
+    }
+
+    pub fn handle_tab_bar_click(
+        &mut self,
+        f: Value,
+        x: i64,
+        y: i64,
+        down_p: bool,
+    ) -> LispResult<Value> {
+        let (x, y) = self.tab_bar_window_xy(f, x, y);
+        let Some(hit) = self.get_tab_bar_item(f, x, y)? else {
+            return Ok(self.cons(sym::TAB_BAR, Value::NIL));
+        };
+        let items = self.frame(f).tab_bar_items;
+        let slot = |lisp: &Lisp, idx: usize| lisp.vector_items(items)[hit.prop_idx + idx];
+        if slot(self, TAB_BAR_ITEM_ENABLED_P).is_nil() {
+            return Ok(Value::NIL);
+        }
+        let mouse_highlight = !self.find_symbol_value(sym::MOUSE_HIGHLIGHT).is_nil();
+        let draw = match (down_p, hit.close_p) {
+            (true, true) => DrawGlyphsFace::ImageSunken,
+            (false, true) => DrawGlyphsFace::ImageRaised,
+            (_, false) => DrawGlyphsFace::MouseFace,
+        };
+        if mouse_highlight {
+            self.show_mouse_face(f, draw, true)?;
+        }
+        self.frame_mut(f).last_tab_bar_item = if down_p { hit.prop_idx as i64 } else { -1 };
+        let caption = slot(self, TAB_BAR_ITEM_CAPTION);
+        let caption = crate::fns::f_copy_sequence(self, &[caption])?;
+        let base = self.stack.len();
+        self.stack.push(caption);
+        let (key, binding) = (
+            slot(self, TAB_BAR_ITEM_KEY),
+            slot(self, TAB_BAR_ITEM_BINDING),
+        );
+        let close = if hit.close_p { sym::T } else { Value::NIL };
+        let item = self.list(&[key, binding, close]);
+        let props = self.list(&[sym::MENU_ITEM, item]);
+        let end = Value::fixnum(self.string_chars(caption) as i64);
+        let r =
+            crate::textprop::f_add_text_properties(self, &[Value::fixnum(0), end, props, caption]);
+        self.stack.truncate(base);
+        r?;
+        let object = self.cons(caption, Value::fixnum(0));
+        Ok(self.cons(sym::TAB_BAR, object))
+    }
+
+    pub(crate) fn note_tab_bar_highlight(&mut self, f: Value, x: i64, y: i64) -> LispResult<()> {
+        let window = self.frame(f).tab_bar_window;
+        if x <= 0 || y <= 0 {
+            self.clear_mouse_face(f)?;
+            return Ok(());
+        }
+        let Some(hit) = self.get_tab_bar_item(f, x, y)? else {
+            self.clear_mouse_face(f)?;
+            return Ok(());
+        };
+        let items = self.frame(f).tab_bar_items;
+        if !hit.same_p {
+            self.clear_mouse_face(f)?;
+            let terminal = self.frame(f).terminal;
+            let mouse_down_p = self.gui_mouse_grabbed(terminal) == Some(f);
+            let last = self.frame(f).last_tab_bar_item;
+            if mouse_down_p && last != hit.prop_idx as i64 && last != -1 {
+                return Ok(());
+            }
+            let mut draw = if mouse_down_p {
+                DrawGlyphsFace::ImageSunken
+            } else {
+                DrawGlyphsFace::ImageRaised
+            };
+            let enabled_p = self.vector_items(items)[hit.prop_idx + TAB_BAR_ITEM_ENABLED_P];
+            if !enabled_p.is_nil() && !self.find_symbol_value(sym::MOUSE_HIGHLIGHT).is_nil() {
+                let glyphs: Vec<crate::dispextern::Glyph> = self
+                    .window_matrix(window, WhichMatrix::Current)
+                    .expect("tab bar matrix")
+                    .rows[hit.vpos]
+                    .area_glyphs(TEXT_AREA)
+                    .to_vec();
+                let string = self.vector_items(items)[hit.prop_idx + TAB_BAR_ITEM_CAPTION];
+                let mut mouse_face_id = None;
+                let mut hpos0 = hit.hpos + 1;
+                let mut hpos_caption = 0;
+                if string.is_string() {
+                    let mut i = hit.hpos as isize;
+                    while i >= 0 {
+                        match self.tab_bar_item_info(f, glyphs[i as usize].charpos)? {
+                            Some((idx, _)) if idx == hit.prop_idx => hpos0 -= 1,
+                            _ => break,
+                        }
+                        i -= 1;
+                    }
+                    hpos_caption = hit.hpos - hpos0;
+                    let mouse_face = crate::textprop::f_get_text_property(
+                        self,
+                        &[Value::fixnum(hpos_caption as i64), sym::MOUSE_FACE, string],
+                    )?;
+                    if !mouse_face.is_nil() {
+                        let id = self.lookup_named_face(Some(window), f, mouse_face, false)?;
+                        mouse_face_id = Some(if id < 0 {
+                            self.compute_char_face(f, i32::from(b' '), mouse_face)?
+                        } else {
+                            id as usize
+                        });
+                        draw = DrawGlyphsFace::MouseFace;
+                    }
+                }
+                let hlinfo = *self.mouse_hl_info(f);
+                if draw == DrawGlyphsFace::MouseFace {
+                    let b = crate::textprop::f_previous_single_property_change(
+                        self,
+                        &[
+                            Value::fixnum(hpos_caption as i64 + 1),
+                            sym::MOUSE_FACE,
+                            string,
+                            Value::NIL,
+                        ],
+                    )?;
+                    let begpos = b.as_fixnum().unwrap_or(0) as usize;
+                    let e = crate::textprop::f_next_single_property_change(
+                        self,
+                        &[
+                            Value::fixnum(begpos as i64),
+                            sym::MOUSE_FACE,
+                            string,
+                            Value::NIL,
+                        ],
+                    )?;
+                    let endpos = e
+                        .as_fixnum()
+                        .map_or(self.string_chars(string), |n| n as usize);
+                    let width = |from: usize, to: usize| -> i32 {
+                        glyphs[from..to]
+                            .iter()
+                            .map(|g| i32::from(g.pixel_width))
+                            .sum()
+                    };
+                    let beg_x = width(0, hpos0 + begpos);
+                    let end_x = width(hpos0 + begpos, hpos0 + endpos);
+                    if window == hlinfo.mouse_face_window
+                        && hlinfo.mouse_face_beg_col <= hit.hpos as i32
+                        && (hit.hpos as i32) < hlinfo.mouse_face_end_col
+                        && hlinfo.mouse_face_beg_row == hit.vpos as i32
+                    {
+                        return Ok(());
+                    }
+                    let hl = self.mouse_hl_info_mut(f);
+                    hl.mouse_face_window = window;
+                    hl.mouse_face_face_id = mouse_face_id.unwrap_or(0);
+                    hl.mouse_face_beg_row = hit.vpos as i32;
+                    hl.mouse_face_end_row = hit.vpos as i32;
+                    hl.mouse_face_past_end = false;
+                    hl.mouse_face_beg_col = (hpos0 + begpos) as i32;
+                    hl.mouse_face_end_col = (hpos0 + endpos) as i32;
+                    hl.mouse_face_beg_x = beg_x;
+                    hl.mouse_face_end_x = end_x;
+                } else {
+                    let x: i32 = glyphs[..hit.hpos]
+                        .iter()
+                        .map(|g| i32::from(g.pixel_width))
+                        .sum();
+                    let total_pixel_width = i32::from(hit.glyph.pixel_width);
+                    let hl = self.mouse_hl_info_mut(f);
+                    hl.mouse_face_face_id = TAB_BAR_FACE_ID;
+                    hl.mouse_face_beg_col = hit.hpos as i32;
+                    hl.mouse_face_beg_row = hit.vpos as i32;
+                    hl.mouse_face_beg_x = x;
+                    hl.mouse_face_past_end = false;
+                    hl.mouse_face_end_col = hit.hpos as i32 + 1;
+                    hl.mouse_face_end_row = hit.vpos as i32;
+                    hl.mouse_face_end_x = x + total_pixel_width;
+                    hl.mouse_face_window = window;
+                }
+                self.show_mouse_face(f, draw, true)?;
+            }
+        }
+        let help = self.vector_items(items)[hit.prop_idx + TAB_BAR_ITEM_HELP];
+        let x = &mut self.xdisp;
+        x.help_echo_object = Value::NIL;
+        x.help_echo_window = Value::NIL;
+        x.help_echo_pos = -1;
+        x.help_echo_string = help;
+        Ok(())
     }
 }

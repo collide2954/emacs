@@ -6,10 +6,13 @@ use emacs_core::dispextern::{
 };
 use emacs_core::dispnew::matrix::WhichMatrix;
 use emacs_core::emacs::Startup;
+use emacs_core::keyboard::{DOWN_MODIFIER, UP_MODIFIER};
 use emacs_core::lisp::Lisp;
+use emacs_core::termhooks::{EventKind, InputEvent};
 use emacs_core::value::Value;
 use emacs_core::xfaces::TAB_BAR_FACE_ID;
 use emacs_gui::display::Display;
+use emacs_gui::protocol::Notice;
 use iced::futures::channel::mpsc as fmpsc;
 
 fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
@@ -179,5 +182,126 @@ fn a_tab_bar_shows_the_tab_captions_and_grows_to_fit_them() {
         let (second, _) = tab_bar_row(&lisp, f, 1);
         assert!(first.starts_with("Caption number one"), "{first:?}");
         assert!(second.contains("three"), "{second:?}");
+    });
+}
+
+fn tab_bar_frame() -> (Lisp, Value, mpsc::Sender<Notice>) {
+    let (tx, notices) = mpsc::channel();
+    let mut lisp = Lisp::boot(Startup::program(false));
+    emacs_gui::install(&mut lisp, Display::new(fmpsc::unbounded().0, notices));
+    lisp.init_display();
+    eval(
+        &mut lisp,
+        "(progn (use-global-map (make-sparse-keymap)) \
+           (define-key (current-global-map) [tab-bar] \
+             '(keymap (one menu-item \"One\" ignore :help \"Help one\") \
+                      (two menu-item \" Two\" ignore) \
+                      (off menu-item \" Off\" ignore :enable nil))))",
+    );
+    let f = gui_frame(&mut lisp);
+    let line_height = lisp.frame(f).geometry.line_height;
+    emacs_gui::pgtkfns::pgtk_change_tab_bar_height(&mut lisp, f, line_height).unwrap();
+    let id = lisp.frame(f).id as u64;
+    let (width, height) =
+        emacs_gui::with_display(|d| d.surface(id).map(|s| (s.width(), s.height())))
+            .flatten()
+            .expect("frame surface");
+    tx.send(Notice::Configure {
+        frame: id,
+        width,
+        height,
+        scale: 1.0,
+    })
+    .unwrap();
+    lisp.gobble_input().unwrap();
+    lisp.redisplay().unwrap();
+    (lisp, f, tx)
+}
+
+fn tab_bar_point(lisp: &Lisp, f: Value, c: char) -> (i64, i64) {
+    let w = lisp.frame(f).tab_bar_window;
+    let row = &lisp.window_matrix(w, WhichMatrix::Current).unwrap().rows[0];
+    let mut x = lisp.frame_internal_border_width(f);
+    for g in row.area_glyphs(TEXT_AREA) {
+        if matches!(g.u, GlyphU::Ch(ch) if char::from_u32(ch) == Some(c)) {
+            return (x + 1, i64::from(row.height) / 2);
+        }
+        x += i64::from(g.pixel_width);
+    }
+    panic!("{c} is not on the tab bar");
+}
+
+fn click(frame: u64, (x, y): (i64, i64), modifiers: i64) -> Notice {
+    Notice::Input(InputEvent {
+        kind: EventKind::MouseClick,
+        code: 0,
+        modifiers,
+        x,
+        y,
+        timestamp: 5,
+        frame,
+        ..InputEvent::default()
+    })
+}
+
+#[test]
+fn clicking_a_tab_sends_its_caption_with_the_item() {
+    on_big_stack(|| {
+        let (mut lisp, f, tx) = tab_bar_frame();
+        let id = lisp.frame(f).id as u64;
+        let two = tab_bar_point(&lisp, f, 'T');
+        tx.send(click(id, two, DOWN_MODIFIER)).unwrap();
+        tx.send(click(id, two, UP_MODIFIER)).unwrap();
+        let off = tab_bar_point(&lisp, f, 'f');
+        tx.send(click(id, off, DOWN_MODIFIER)).unwrap();
+        tx.send(click(id, off, UP_MODIFIER)).unwrap();
+        lisp.gobble_input().unwrap();
+        let mut events = Vec::new();
+        while lisp.detect_input_pending().unwrap() {
+            let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
+            events.push(event);
+        }
+        assert_eq!(events.len(), 2);
+        let symbol = lisp.intern("tab-events");
+        let list = lisp.list(&events);
+        lisp.set_plain_value(symbol, list);
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(mapcar (function (lambda (e) \
+                   (let ((pos (car (cdr e)))) \
+                     (list (car e) (eq (car pos) f) (nth 1 pos) \
+                           (car (nth 4 pos)) \
+                           (get-text-property 0 'menu-item (car (nth 4 pos))))))) \
+                 tab-events)"
+            ),
+            "((down-mouse-1 t tab-bar #(\" Two\" 0 4 (menu-item (two ignore nil))) (two ignore nil)) \
+              (mouse-1 t tab-bar #(\" Two\" 0 4 (menu-item (two ignore nil))) (two ignore nil)))"
+        );
+    });
+}
+
+#[test]
+fn moving_over_a_tab_highlights_it_and_shows_its_help() {
+    on_big_stack(|| {
+        let (mut lisp, f, tx) = tab_bar_frame();
+        let id = lisp.frame(f).id as u64;
+        let (x, y) = tab_bar_point(&lisp, f, 'O');
+        tx.send(Notice::Motion {
+            frame: id,
+            x,
+            y,
+            timestamp: 9,
+        })
+        .unwrap();
+        lisp.gobble_input().unwrap();
+        let terminal = lisp.frame(f).terminal;
+        let hl = &lisp.display_info(terminal).mouse_highlight;
+        assert_eq!(hl.mouse_face_window, lisp.frame(f).tab_bar_window);
+        assert_eq!(hl.mouse_face_beg_row, 0);
+        let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
+        let text = lisp.prin1_to_string(event);
+        assert!(text.starts_with("(help-echo "), "{text}");
+        assert!(text.contains("\"Help one\""), "{text}");
     });
 }
