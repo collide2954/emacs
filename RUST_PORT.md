@@ -394,8 +394,15 @@ frame still grows around its first tool bar under Emacs 31's default
 `(image ...)` specs pass `valid_image_p`), and `vert-only` items lose their labels in
 horizontal styles. There is no GTK icon theme, so `x-gtk-map-stock` is called but never finds
 an icon, and images are always the Emacs-loaded ones at their natural size. Right-to-left
-images, the focus return after a click on a detached tool bar, and `pgtk-frame-geometry` are
-not ported. An interactive
+images and the focus return after a click on a detached tool bar are not ported.
+
+Frame positions follow pgtk: `set-frame-position` and the `left`/`top` parameters go through
+`pgtk_set_offset` and `pgtk_calc_absolute_position` (negative positions count from the far
+edge of the display or parent frame), the shell reports each window's position when it opens
+and when it moves, and `configure_event` stores it, so `frame-position` answers from the last
+report as C's `gtk_window_get_position` would. `pgtk-frame-geometry` and `pgtk-frame-edges`
+keep pgtk's quirks: the title bar is reported as `(0 . 0)`, `outer-size` leaves out the tool
+bar, and `tool-bar-size` counts only top and bottom tool bars. An interactive
 `emacs -Q` runs all of `command-line`: it creates the first frame, deletes the initial
 terminal frame and its terminal, sets up faces and fonts (non-ASCII characters get faces
 through the realized fontsets) and then enters the command loop. Key and focus events from
