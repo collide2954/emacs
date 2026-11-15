@@ -9,6 +9,7 @@ use crate::dispnew::matrix::WhichMatrix;
 use crate::error::LispResult;
 use crate::font::{FONT_INVALID_CODE, FontMetrics};
 use crate::lisp::Lisp;
+use crate::symbols as sym;
 use crate::value::Value;
 use crate::xfaces::{DEFAULT_FACE_ID, MOUSE_FACE_ID};
 
@@ -1129,6 +1130,23 @@ impl Lisp {
                     arena[k].clip_tail = clip_tail;
                     s = arena[k].next;
                 }
+            }
+        }
+        if hl == DrawGlyphsFace::MouseFace {
+            let mouse_face = self.mouse_hl_info(f).mouse_face_face_id;
+            let mut s = head;
+            while let Some(k) = s {
+                let first = self.row_glyph(arena[k].row, arena[k].area, arena[k].first_glyph);
+                if first.kind == GlyphType::Image
+                    && let Some(id) = arena[k].img
+                    && let Some(spec) = self.image(f, id).map(|img| img.spec)
+                    && self.image_spec_value(spec, sym::K_TYPE).0 == sym::SVG
+                {
+                    let id = self.lookup_image(f, spec, mouse_face as i64)?;
+                    arena[k].img = Some(id);
+                    self.prepare_image_for_display(f, id)?;
+                }
+                s = arena[k].next;
             }
         }
         let draw = self

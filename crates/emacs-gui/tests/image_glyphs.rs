@@ -434,6 +434,27 @@ fn mouse_face_redraws_images_in_the_mouse_face() {
     });
 }
 
+#[test]
+fn mouse_face_recolors_svg_images() {
+    on_big_stack(|| {
+        let mut s = shown(
+            "(internal-make-lisp-face 'probe-face f) (internal-set-lisp-face-attribute 'probe-face :foreground \"blue\" f) (internal-set-lisp-face-attribute 'probe-face :background \"yellow\" f) (insert \"a\" (propertize \"b\" 'display (list 'image :type 'svg :data \"<svg xmlns='http://www.w3.org/2000/svg' width='4' height='2'><rect width='2' height='2' fill='currentColor'/></svg>\" :ascent 100) 'mouse-face 'probe-face) \"c\")",
+        );
+        let (x, base) = (s.glyph_left(0, 1), s.baseline(0));
+        assert_eq!(s.row(0).area_glyphs(TEXT_AREA)[1].kind, GlyphType::Image);
+        assert_eq!(s.pixel(x, base - 1), [0, 0, 0]);
+        assert_eq!(s.pixel(x + 3, base - 1), [255, 255, 255]);
+        let left = s.lisp.window_box_left(s.w, GlyphRowArea::Text);
+        let top = s.lisp.frame(s.f).geometry.internal_border_width;
+        let f = s.f;
+        s.lisp
+            .note_mouse_highlight(f, left + i64::from(s.cw()) + 1, top + 1)
+            .unwrap();
+        assert_eq!(s.pixel(x, base - 1), [0, 0, 255]);
+        assert_eq!(s.pixel(x + 3, base - 1), [255, 255, 0]);
+    });
+}
+
 fn two_frame_gif() -> Vec<u8> {
     let palette = [255, 0, 0, 0, 0, 255];
     let mut out = Vec::new();
