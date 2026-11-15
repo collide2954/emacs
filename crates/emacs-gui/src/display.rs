@@ -5,7 +5,7 @@ use std::time::Duration;
 use iced::futures::channel::mpsc::UnboundedSender;
 
 use crate::monitor::{GdkMonitor, MonitorSource, SystemMonitors};
-use crate::protocol::{Command, Notice};
+use crate::protocol::{Command, Notice, ToolBar};
 use crate::surface::Surface;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,7 @@ pub struct Display {
     popups: HashSet<u64>,
     positions: HashMap<u64, (i32, i32)>,
     sizes: HashMap<u64, (u32, u32)>,
+    tool_bars: HashMap<u64, ToolBar>,
     monitor_source: Box<dyn MonitorSource + Send>,
 }
 
@@ -34,6 +35,7 @@ impl Display {
             popups: HashSet::new(),
             positions: HashMap::new(),
             sizes: HashMap::new(),
+            tool_bars: HashMap::new(),
             monitor_source: Box::new(SystemMonitors),
         }
     }
@@ -121,7 +123,33 @@ impl Display {
                 width,
                 height,
             });
+            if let Some(bar) = self.tool_bars.get(&frame) {
+                self.send(Command::SetToolBar {
+                    frame,
+                    bar: bar.clone(),
+                });
+            }
         }
+    }
+
+    pub fn set_tool_bar(&mut self, frame: u64, bar: ToolBar) {
+        if self.shown.contains(&frame) {
+            self.send(Command::SetToolBar {
+                frame,
+                bar: bar.clone(),
+            });
+        }
+        self.tool_bars.insert(frame, bar);
+    }
+
+    pub fn remove_tool_bar(&mut self, frame: u64) {
+        if self.tool_bars.remove(&frame).is_some() && self.shown.contains(&frame) {
+            self.send(Command::RemoveToolBar { frame });
+        }
+    }
+
+    pub fn tool_bar(&self, frame: u64) -> Option<&ToolBar> {
+        self.tool_bars.get(&frame)
     }
 
     pub fn resize_window(&mut self, frame: u64, width: u32, height: u32) {
@@ -215,6 +243,7 @@ impl Display {
         self.popups.remove(&frame);
         self.positions.remove(&frame);
         self.sizes.remove(&frame);
+        self.tool_bars.remove(&frame);
         self.send(Command::CloseFrame { frame });
     }
 

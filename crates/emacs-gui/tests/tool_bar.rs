@@ -9,6 +9,7 @@ use emacs_core::emacs::Startup;
 use emacs_core::lisp::Lisp;
 use emacs_core::value::Value;
 use emacs_gui::display::Display;
+use emacs_gui::protocol::{ToolBar, ToolBarImage, ToolBarPosition, ToolItem};
 use iced::futures::channel::mpsc as fmpsc;
 
 fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
@@ -156,5 +157,179 @@ fn local_and_minor_mode_tool_bar_maps_come_before_the_global_map() {
             .map(|i| all.get(&mut lisp, i, TOOL_BAR_ITEM_KEY))
             .collect();
         assert_eq!(keys, ["global", "local", "minor"]);
+    });
+}
+
+const BAR: &str = "(progn \
+   (use-global-map (make-sparse-keymap)) \
+   (define-key (current-global-map) [tool-bar] \
+     '(keymap \
+       (red menu-item \"Red\" ignore :image (image :type pbm :data \"P3 1 1 255 255 0 0\")) \
+       (sep menu-item \"--\") \
+       (off menu-item \"Off\" ignore :enable nil :vert-only t \
+         :image (image :type pbm :data \"P3 1 1 255 0 255 255\")) \
+       (vec menu-item \"Vec\" ignore \
+         :image [(image :type pbm :data \"P3 1 1 255 0 255 0\") \
+                 (image :type pbm :data \"P3 1 1 255 0 0 255\") \
+                 (image :type pbm :data \"P3 1 1 255 255 255 0\") \
+                 (image :type pbm :data \"P3 1 1 255 0 255 255\")]) \
+       (bad menu-item \"Bad\" ignore :image (image :type nosuch)))))";
+
+fn gui_frame(lisp: &mut Lisp) -> Value {
+    assert_eq!(
+        eval(
+            lisp,
+            "(progn (set-char-table-range char-script-table '(0 . #x24F) 'latin) (set-char-table-extra-slot char-script-table 0 '(latin)) (fset 'window--pixel-to-total (function (lambda (&rest _) nil))) (fset 'record-window-buffer (function (lambda (w) nil))) (setq x-resource-name \"emacs\") (x-open-connection nil) (setq f (x-create-frame '((name . \"g\") (width . 30) (height . 8)))) (select-frame f) (framep f))"
+        ),
+        "pgtk"
+    );
+    let symbol = lisp.intern("f");
+    let f = lisp.find_symbol_value(symbol);
+    lisp.frame_mut(f).flags.visible = true;
+    f
+}
+
+fn shown_tool_bar(lisp: &Lisp, f: Value) -> Option<ToolBar> {
+    let id = lisp.frame(f).id as u64;
+    emacs_gui::with_display(|d| d.tool_bar(id).cloned()).expect("display installed")
+}
+
+fn pixel(r: u8, g: u8, b: u8) -> Option<ToolBarImage> {
+    Some(ToolBarImage {
+        width: 1,
+        height: 1,
+        rgba: vec![r, g, b, 255],
+    })
+}
+
+#[test]
+fn tool_bar_lines_show_the_tool_bar_items_on_an_external_tool_bar() {
+    on_big_stack(|| {
+        let mut lisp = booted();
+        eval(&mut lisp, BAR);
+        let f = gui_frame(&mut lisp);
+        assert!(lisp.frame(f).flags.external_tool_bar);
+        lisp.redisplay().unwrap();
+        assert_eq!(lisp.frame(f).n_tool_bar_items, 5);
+        let bar = shown_tool_bar(&lisp, f).expect("tool bar shown");
+        assert!(!bar.horiz);
+        assert_eq!(bar.position, Some(ToolBarPosition::Top));
+        assert_eq!(
+            bar.items,
+            [
+                ToolItem::Button {
+                    index: 0,
+                    image: pixel(255, 0, 0),
+                    label: None,
+                    enabled: true,
+                },
+                ToolItem::Separator,
+                ToolItem::Button {
+                    index: 2,
+                    image: pixel(0, 255, 255),
+                    label: None,
+                    enabled: false,
+                },
+            ]
+        );
+        eval(
+            &mut lisp,
+            "(progn (setq tool-bar-style 'both-horiz) (force-mode-line-update t))",
+        );
+        lisp.redisplay().unwrap();
+        let bar = shown_tool_bar(&lisp, f).expect("tool bar shown");
+        assert!(bar.horiz);
+        assert!(!bar.text_image);
+        assert_eq!(
+            bar.items[0],
+            ToolItem::Button {
+                index: 0,
+                image: pixel(255, 0, 0),
+                label: Some("Red".into()),
+                enabled: true,
+            }
+        );
+        assert_eq!(
+            bar.items[2],
+            ToolItem::Button {
+                index: 2,
+                image: pixel(0, 255, 255),
+                label: None,
+                enabled: false,
+            }
+        );
+        eval(
+            &mut lisp,
+            "(progn (setq tool-bar-style 'text) (force-mode-line-update t))",
+        );
+        lisp.redisplay().unwrap();
+        let bar = shown_tool_bar(&lisp, f).expect("tool bar shown");
+        assert_eq!(
+            bar.items[2],
+            ToolItem::Button {
+                index: 2,
+                image: None,
+                label: Some("Off".into()),
+                enabled: false,
+            }
+        );
+        eval(
+            &mut lisp,
+            "(modify-frame-parameters f '((tool-bar-lines . 0)))",
+        );
+        assert!(!lisp.frame(f).flags.external_tool_bar);
+        assert_eq!(shown_tool_bar(&lisp, f), None);
+    });
+}
+
+#[test]
+fn tool_bar_get_system_style_falls_back_to_image() {
+    on_big_stack(|| {
+        let mut lisp = booted();
+        assert_eq!(eval(&mut lisp, "(tool-bar-get-system-style)"), "image");
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(let ((tool-bar-style 'text-image-horiz)) (tool-bar-get-system-style))"
+            ),
+            "text-image-horiz"
+        );
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(let ((tool-bar-style 'bogus)) (tool-bar-get-system-style))"
+            ),
+            "image"
+        );
+    });
+}
+
+#[test]
+fn implied_resizes_are_inhibited_only_once_the_tool_bar_was_resized() {
+    on_big_stack(|| {
+        let mut lisp = booted();
+        let f = gui_frame(&mut lisp);
+        let id = lisp.frame(f).id as u64;
+        let surface_width =
+            || emacs_gui::with_display(|d| d.surface(id).map(|s| s.width())).flatten();
+        eval(
+            &mut lisp,
+            "(progn (frame-after-make-frame f t) (setq frame-inhibit-implied-resize t))",
+        );
+        assert!(!lisp.frame(f).flags.tool_bar_resized);
+        let before = surface_width();
+        eval(
+            &mut lisp,
+            "(modify-frame-parameters f '((internal-border-width . 10)))",
+        );
+        assert_ne!(surface_width(), before);
+        lisp.redisplay().unwrap();
+        assert!(lisp.frame(f).flags.tool_bar_resized);
+        let before = surface_width();
+        eval(
+            &mut lisp,
+            "(modify-frame-parameters f '((internal-border-width . 20)))",
+        );
+        assert_eq!(surface_width(), before);
     });
 }

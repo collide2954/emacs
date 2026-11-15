@@ -15,7 +15,7 @@ use iced::{ContentFit, Element, Event, Length, Point, Size, Subscription, Task, 
 use crate::display::Display;
 use crate::keysym::{KeyPress, key_press_event};
 use crate::mouse::{WheelAccumulator, button_event};
-use crate::protocol::{Command, Notice};
+use crate::protocol::{Command, Notice, ToolBar};
 
 const LISP_STACK_SIZE: usize = 1 << 30;
 
@@ -57,6 +57,7 @@ struct View {
     position: Option<(i32, i32)>,
     raw: u64,
     tooltip: Option<String>,
+    tool_bar: Option<ToolBar>,
 }
 
 impl View {
@@ -79,6 +80,7 @@ impl View {
             position: None,
             raw: 0,
             tooltip: None,
+            tool_bar: None,
         }
     }
 }
@@ -185,6 +187,10 @@ impl Shell {
 
     pub fn tooltip(&self, id: window::Id) -> Option<String> {
         self.views.get(&id).and_then(|v| v.tooltip.clone())
+    }
+
+    pub fn tool_bar(&self, id: window::Id) -> Option<&ToolBar> {
+        self.views.get(&id).and_then(|v| v.tool_bar.as_ref())
     }
 
     pub fn image_size(&self, id: window::Id) -> Option<(u32, u32)> {
@@ -486,6 +492,18 @@ impl Shell {
             Command::SetCursor { frame, cursor } => {
                 if let Some(view) = self.window_of(frame).and_then(|id| self.views.get_mut(&id)) {
                     view.interaction = cursor;
+                }
+                Task::none()
+            }
+            Command::SetToolBar { frame, bar } => {
+                if let Some(view) = self.window_of(frame).and_then(|id| self.views.get_mut(&id)) {
+                    view.tool_bar = Some(bar);
+                }
+                Task::none()
+            }
+            Command::RemoveToolBar { frame } => {
+                if let Some(view) = self.window_of(frame).and_then(|id| self.views.get_mut(&id)) {
+                    view.tool_bar = None;
                 }
                 Task::none()
             }

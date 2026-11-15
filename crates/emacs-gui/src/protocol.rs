@@ -1,5 +1,41 @@
 use emacs_core::termhooks::InputEvent;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolBarImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolItem {
+    Separator,
+    Button {
+        index: usize,
+        image: Option<ToolBarImage>,
+        label: Option<String>,
+        enabled: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolBarPosition {
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolBar {
+    pub items: Vec<ToolItem>,
+    pub horiz: bool,
+    pub text_image: bool,
+    pub hmargin: u32,
+    pub vmargin: u32,
+    pub position: Option<ToolBarPosition>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Command {
     OpenFrame {
@@ -57,6 +93,13 @@ pub enum Command {
     SetCursor {
         frame: u64,
         cursor: iced::mouse::Interaction,
+    },
+    SetToolBar {
+        frame: u64,
+        bar: ToolBar,
+    },
+    RemoveToolBar {
+        frame: u64,
     },
     Exit,
 }

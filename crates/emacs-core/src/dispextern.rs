@@ -766,6 +766,10 @@ pub const TOOL_BAR_ITEM_LABEL: usize = 9;
 pub const TOOL_BAR_ITEM_VERT_ONLY: usize = 10;
 pub const TOOL_BAR_ITEM_WRAP: usize = 11;
 pub const TOOL_BAR_ITEM_NSLOTS: usize = 12;
+pub const TOOL_BAR_IMAGE_ENABLED_SELECTED: usize = 0;
+pub const TOOL_BAR_IMAGE_ENABLED_DESELECTED: usize = 1;
+pub const TOOL_BAR_IMAGE_DISABLED_SELECTED: usize = 2;
+pub const TOOL_BAR_IMAGE_DISABLED_DESELECTED: usize = 3;
 
 pub const OVERLAY_STRING_CHUNK_SIZE: usize = 16;
 pub const TEXT_PROP_DISTANCE_LIMIT: i64 = 100;

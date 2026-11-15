@@ -528,6 +528,46 @@ fn f_x_display_grayscale_p(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(sym::T)
 }
 
+fn x_change_tool_bar_height(lisp: &mut Lisp, f: Value, height: i64) -> LispResult<()> {
+    lisp.frame_mut(f).geometry.tool_bar_lines = 0;
+    lisp.frame_mut(f).geometry.tool_bar_height = 0;
+    if height != 0 {
+        lisp.frame_mut(f).flags.external_tool_bar = true;
+        if lisp.frame(f).output_method == OutputMethod::Pgtk
+            && !with_output(lisp, f, |o| o.toolbar_widget)
+        {
+            let w = lisp.frame(f).selected_window;
+            lisp.window_mut(w).flags.update_mode_line = true;
+        }
+        crate::gtkutil::update_frame_tool_bar(lisp, f)?;
+    } else {
+        if lisp.frame(f).flags.external_tool_bar {
+            crate::gtkutil::free_frame_tool_bar(lisp, f)?;
+        }
+        lisp.frame_mut(f).flags.external_tool_bar = false;
+        lisp.frame_mut(f).flags.tool_bar_resized = true;
+    }
+    Ok(())
+}
+
+fn pgtk_set_tool_bar_lines(
+    lisp: &mut Lisp,
+    f: Value,
+    value: Value,
+    _oldval: Value,
+) -> LispResult<()> {
+    if lisp.frame_minibuf_only_p(f) {
+        lisp.frame_mut(f).flags.tool_bar_resized = true;
+        return Ok(());
+    }
+    let nlines = value
+        .as_fixnum()
+        .filter(|&n| (0..=i64::from(i32::MAX)).contains(&n))
+        .unwrap_or(0);
+    let line_height = lisp.frame(f).geometry.line_height;
+    x_change_tool_bar_height(lisp, f, nlines * line_height)
+}
+
 pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
     Some(Lisp::gui_set_autoraise),
     Some(Lisp::gui_set_autolower),
@@ -555,7 +595,7 @@ pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
     Some(Lisp::gui_set_horizontal_scroll_bars),
     Some(Lisp::gui_set_visibility),
     None,
-    None,
+    Some(pgtk_set_tool_bar_lines),
     None,
     None,
     Some(Lisp::gui_set_screen_gamma),

@@ -52,6 +52,7 @@ pub struct FrameFlags {
     pub external_tool_bar: bool,
     pub tab_bar_redisplayed: bool,
     pub tab_bar_resized: bool,
+    pub tool_bar_resized: bool,
     pub iconified: bool,
     pub garbaged: bool,
     pub wants_modeline: bool,
@@ -157,6 +158,7 @@ pub struct Frame {
     pub font_data: Value,
     pub tab_bar_items: Value,
     pub tool_bar_items: Value,
+    pub n_tool_bar_items: usize,
     pub terminal: Value,
     pub id: i64,
     pub output_method: OutputMethod,
@@ -223,6 +225,7 @@ impl Frame {
             font_data: Value::NIL,
             tab_bar_items: Value::NIL,
             tool_bar_items: Value::NIL,
+            n_tool_bar_items: 0,
             terminal: Value::NIL,
             id: 0,
             output_method: OutputMethod::Initial,
@@ -1299,6 +1302,7 @@ impl Lisp {
         let implied = self.plain_value(sym::FRAME_INHIBIT_IMPLIED_RESIZE);
         implied == sym::FORCE
             || (self.frame(f).flags.after_make_frame
+                && self.frame(f).flags.tool_bar_resized
                 && (implied == sym::T
                     || (implied.is_cons() && !self.memq(parameter, implied).is_nil())
                     || (horizontal && !fullscreen.is_nil() && fullscreen != sym::FULLHEIGHT)

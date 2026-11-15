@@ -969,8 +969,11 @@ impl Lisp {
                             {
                                 self.keyboard.ignore_mouse_drag_p = true;
                             }
-                            if self.frame(f).flags.external_tool_bar {
-                                unreachable!("external tool bars need update_frame_tool_bar");
+                            if self.frame(f).flags.external_tool_bar
+                                && let Some(update) =
+                                    self.frame_terminal_hooks(f).update_frame_tool_bar
+                            {
+                                update(self, f)?;
                             }
                         } else {
                             unreachable!("tty frames have no glyph matrices");

@@ -58,7 +58,7 @@ impl Lisp {
                 }
                 menu_bar_hooks_run = self.update_menu_bar(f, false, menu_bar_hooks_run, w)?;
                 self.update_tab_bar(f)?;
-                self.update_tool_bar(f)?;
+                self.update_tool_bar(f, false)?;
             }
             self.unbind_to(count)
         } else {
@@ -66,7 +66,7 @@ impl Lisp {
             let sf = self.window(sw).frame;
             self.update_menu_bar(sf, true, false, sw)?;
             self.update_tab_bar(sf)?;
-            self.update_tool_bar(sf)
+            self.update_tool_bar(sf, true)
         }
     }
 
@@ -153,9 +153,39 @@ impl Lisp {
         Ok(())
     }
 
-    fn update_tool_bar(&mut self, f: Value) -> LispResult<()> {
+    fn update_tool_bar(&mut self, f: Value, save_match_data: bool) -> LispResult<()> {
         if self.frame(f).flags.external_tool_bar && self.bar_needs_update(f) {
-            unreachable!("update_tool_bar needs tool_bar_items");
+            let w = self.frame(f).selected_window;
+            let prev = self.current_buffer;
+            let count = self.specpdl_index();
+            let contents = self.window(w).contents;
+            self.set_buffer_internal(contents);
+            if save_match_data {
+                self.record_unwind_save_match_data()?;
+            }
+            if self
+                .find_symbol_value(sym::OVERRIDING_LOCAL_MAP_MENU_FLAG)
+                .is_nil()
+            {
+                self.specbind(sym::OVERRIDING_TERMINAL_LOCAL_MAP, Value::NIL)?;
+                self.specbind(sym::OVERRIDING_LOCAL_MAP, Value::NIL)?;
+            }
+            let selected_window = self.windows.selected_window;
+            self.record_unwind(super::modeline::restore_selected_window, selected_window);
+            self.frames.selected_frame = f;
+            self.windows.selected_window = self.frame(f).selected_window;
+            let old = self.frame(f).tool_bar_items;
+            let reuse = crate::fns::f_copy_sequence(self, &[old])?;
+            let (new_tool_bar, new_n_tool_bar) = self.tool_bar_items(reuse)?;
+            if new_n_tool_bar != self.frame(f).n_tool_bar_items
+                || !self.equal(new_tool_bar, self.frame(f).tool_bar_items)?
+            {
+                self.frame_mut(f).tool_bar_items = new_tool_bar;
+                self.frame_mut(f).n_tool_bar_items = new_n_tool_bar;
+                self.window_mut(w).flags.update_mode_line = true;
+            }
+            self.unbind_to(count)?;
+            self.set_buffer_internal(prev);
         }
         Ok(())
     }

@@ -76,6 +76,9 @@ pub struct PgtkOutput {
     pub focus_state: i32,
     pub has_been_visible: bool,
     pub window: u64,
+    pub toolbar_widget: bool,
+    pub toolbar_position: Option<crate::protocol::ToolBarPosition>,
+    pub tbinfo: Option<crate::gtkutil::TbInfo>,
 }
 
 thread_local! {
@@ -275,6 +278,11 @@ pub fn mark_pgtkterm(roots: &mut Vec<Value>) {
                 dpyinfo.last_mouse_motion_frame,
                 dpyinfo.last_mouse_glyph_frame,
             ]);
+        }
+    });
+    OUTPUTS.with(|outputs| {
+        for tbinfo in outputs.borrow().values().filter_map(|o| o.tbinfo.as_ref()) {
+            tbinfo.trace(roots);
         }
     });
 }
@@ -1043,6 +1051,7 @@ pub fn pgtk_term_init(
     hooks.frame_up_to_date = Some(pgtk_frame_up_to_date);
     hooks.fullscreen = Some(pgtk_fullscreen_hook);
     hooks.buffer_flipping_unblocked = Some(pgtk_buffer_flipping_unblocked_hook);
+    hooks.update_frame_tool_bar = Some(crate::gtkutil::update_frame_tool_bar);
     lisp.terminal_mut(terminal).rif = Some(&crate::pgtkdraw::PGTK_REDISPLAY_INTERFACE);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =

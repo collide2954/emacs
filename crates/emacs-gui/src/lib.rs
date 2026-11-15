@@ -7,6 +7,7 @@ pub mod display;
 pub mod font;
 pub mod ftcrfont;
 pub mod gdkrgba;
+pub mod gtkutil;
 pub mod hbfont;
 pub mod keysym;
 pub mod monitor;
@@ -19,6 +20,7 @@ pub mod pgtkterm;
 pub mod protocol;
 pub mod shell;
 pub mod surface;
+pub mod xsettings;
 
 pub use shell::run;
 
@@ -39,6 +41,7 @@ pub fn install(lisp: &mut Lisp, display: Display) {
     pgtkselect::syms_of_pgtkselect(lisp);
     pgtkim::syms_of_pgtkim(lisp);
     ftcrfont::syms_of_ftcrfont(lisp);
+    xsettings::syms_of_xsettings(lisp);
     lisp.window_system = Some(WindowSystem {
         mark,
         check_x_display_info: pgtkfns::check_pgtk_display_info,
