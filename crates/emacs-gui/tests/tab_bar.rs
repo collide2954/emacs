@@ -305,3 +305,32 @@ fn moving_over_a_tab_highlights_it_and_shows_its_help() {
         assert!(text.contains("\"Help one\""), "{text}");
     });
 }
+
+#[test]
+fn tab_bar_lines_give_a_frame_a_tab_bar() {
+    on_big_stack(|| {
+        let mut lisp = booted();
+        let f = gui_frame(&mut lisp);
+        let line_height = lisp.frame(f).geometry.line_height;
+        assert_eq!(lisp.frame(f).geometry.tab_bar_lines, 0);
+        eval(
+            &mut lisp,
+            "(modify-frame-parameters f '((tab-bar-lines . 1)))",
+        );
+        assert_eq!(lisp.frame(f).geometry.tab_bar_lines, 1);
+        assert_eq!(lisp.frame(f).geometry.tab_bar_height, line_height);
+        assert_eq!(eval(&mut lisp, "(frame-parameter f 'tab-bar-lines)"), "1");
+        eval(
+            &mut lisp,
+            "(modify-frame-parameters f '((tab-bar-lines . 0)))",
+        );
+        assert_eq!(lisp.frame(f).geometry.tab_bar_lines, 0);
+        assert_eq!(lisp.frame(f).geometry.tab_bar_height, 0);
+        eval(
+            &mut lisp,
+            "(modify-frame-parameters f '((tab-bar-lines . -3)))",
+        );
+        assert_eq!(lisp.frame(f).geometry.tab_bar_lines, 0);
+        assert_eq!(eval(&mut lisp, "(frame-parameter f 'tab-bar-lines)"), "0");
+    });
+}

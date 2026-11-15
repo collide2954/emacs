@@ -528,6 +528,23 @@ fn f_x_display_grayscale_p(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(sym::T)
 }
 
+fn pgtk_set_tab_bar_lines(
+    lisp: &mut Lisp,
+    f: Value,
+    value: Value,
+    _oldval: Value,
+) -> LispResult<()> {
+    if lisp.frame_minibuf_only_p(f) {
+        return Ok(());
+    }
+    let nlines = value
+        .as_fixnum()
+        .filter(|&n| (0..=i64::from(i32::MAX)).contains(&n))
+        .unwrap_or(0);
+    let line_height = lisp.frame(f).geometry.line_height;
+    pgtk_change_tab_bar_height(lisp, f, nlines * line_height)
+}
+
 pub fn pgtk_change_tab_bar_height(lisp: &mut Lisp, f: Value, height: i64) -> LispResult<()> {
     let unit = lisp.frame(f).geometry.line_height;
     let old_height = lisp.frame(f).geometry.tab_bar_height;
@@ -657,7 +674,7 @@ pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
     Some(Lisp::gui_set_vertical_scroll_bars),
     Some(Lisp::gui_set_horizontal_scroll_bars),
     Some(Lisp::gui_set_visibility),
-    None,
+    Some(pgtk_set_tab_bar_lines),
     Some(pgtk_set_tool_bar_lines),
     None,
     None,
