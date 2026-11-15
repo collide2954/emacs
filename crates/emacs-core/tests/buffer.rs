@@ -452,3 +452,101 @@ fn mode_line_update() {
         ("(force-mode-line-update t)", "t"),
     ]);
 }
+
+struct DiffChars {
+    a: Vec<char>,
+    b: Vec<char>,
+    deleted: Vec<bool>,
+    inserted: Vec<bool>,
+}
+
+impl emacs_core::diffseq::Context for DiffChars {
+    type Stop = ();
+
+    fn equal(&mut self, x: usize, y: usize) -> Result<bool, ()> {
+        Ok(self.a[x] == self.b[y])
+    }
+
+    fn note_delete(&mut self, x: usize) {
+        self.deleted[x] = true;
+    }
+
+    fn note_insert(&mut self, y: usize) {
+        self.inserted[y] = true;
+    }
+
+    fn early_abort(&mut self) -> bool {
+        false
+    }
+}
+
+#[test]
+fn compareseq_finds_a_shortest_edit_script() {
+    let (a, b): (Vec<char>, Vec<char>) = ("abcabba".chars().collect(), "cbabac".chars().collect());
+    let mut chars = DiffChars {
+        deleted: vec![false; a.len()],
+        inserted: vec![false; b.len()],
+        a,
+        b,
+    };
+    let (size_a, size_b) = (chars.a.len(), chars.b.len());
+    let early = emacs_core::diffseq::compareseq(&mut chars, size_a, size_b, 1_000_000, true);
+    assert_eq!(early, Ok(false));
+    let edits = chars.deleted.iter().filter(|&&d| d).count()
+        + chars.inserted.iter().filter(|&&i| i).count();
+    assert_eq!(edits, 5);
+    let kept_a: String = chars
+        .a
+        .iter()
+        .zip(&chars.deleted)
+        .filter(|(_, d)| !**d)
+        .map(|(c, _)| *c)
+        .collect();
+    let kept_b: String = chars
+        .b
+        .iter()
+        .zip(&chars.inserted)
+        .filter(|(_, i)| !**i)
+        .map(|(c, _)| *c)
+        .collect();
+    assert_eq!(kept_a, kept_b);
+    assert_eq!(kept_a.len(), 4);
+}
+#[test]
+fn replace_region_contents_keeps_what_did_not_change() {
+    check(&[
+        (
+            "(progn (set-buffer (get-buffer-create \"rrc\")) (insert \"hello world\") (setq m (copy-marker 9)) (goto-char 9) (put-text-property 1 6 'face 'bold) (replace-region-contents 1 12 \"hello brave world\"))",
+            "t",
+        ),
+        (
+            "(buffer-string)",
+            "#(\"hello brave world\" 0 5 (face bold))",
+        ),
+        ("(marker-position m)", "15"),
+        ("(point)", "15"),
+        (
+            "(progn (set-buffer (get-buffer-create \"src\")) (insert \"xxhello there worldyy\") (set-buffer \"rrc\") (replace-region-contents (point-min) (point-max) (vector (get-buffer \"src\") 3 20)))",
+            "t",
+        ),
+        (
+            "(buffer-string)",
+            "#(\"hello there world\" 0 5 (face bold))",
+        ),
+        ("(replace-region-contents 1 6 \"HELLO\" 0)", "t"),
+        ("(buffer-string)", "\"HELLO there world\""),
+        (
+            "(replace-region-contents 1 6 (function (lambda () \"hello\")))",
+            "t",
+        ),
+        ("(buffer-string)", "\"hello there world\""),
+        (
+            "(replace-region-contents 1 2 (current-buffer))",
+            "error: (error \"Cannot replace a buffer with itself\")",
+        ),
+        (
+            "(replace-region-contents 1 2 42)",
+            "error: (wrong-type-argument (or string buffer vector) 42)",
+        ),
+    ]);
+}

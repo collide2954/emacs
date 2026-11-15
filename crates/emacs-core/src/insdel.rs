@@ -508,6 +508,143 @@ impl Lisp {
         Ok(deleted)
     }
 
+    fn buffer_text_as_string(&mut self, buffer: Value, from: usize, to: usize) -> Value {
+        let t = &self.buffer(buffer).text;
+        let (from, to) = (from.max(1), to.min(t.chars + 1).max(from.max(1)));
+        let from_byte = t.char_to_byte(from);
+        let to_byte = t.char_to_byte(to);
+        let data = t.slice(from_byte - 1, to_byte - 1);
+        let mut s = if t.multibyte {
+            LispString::multibyte(data, to - from)
+        } else {
+            LispString::unibyte(data)
+        };
+        s.props = t
+            .props
+            .iter()
+            .filter(|r| r.end > from && r.start < to)
+            .map(|r| PropRun {
+                start: r.start.max(from) - from,
+                end: r.end.min(to) - from,
+                plist: r.plist,
+            })
+            .collect();
+        self.heap.string(s)
+    }
+
+    fn replacement_string(&mut self, new: Value) -> LispResult<Value> {
+        if new.is_string() {
+            return Ok(new);
+        }
+        let (insbuf, insbeg, insend) = if self.is_buffer(new) {
+            let b = self.buffer(new);
+            (new, b.begv, b.zv)
+        } else {
+            if !self.is_vector(new) {
+                return Err(self.wrong_type(sym::VECTORP, new));
+            }
+            let insend = crate::data::f_aref(self, &[new, Value::fixnum(2)])?;
+            let items = self.vector_items(new);
+            let (buffer, beg) = (items[0], items[1]);
+            self.check_buffer(buffer)?;
+            let beg = self.check_fixnum(beg)?;
+            let end = self.check_fixnum(insend)?;
+            (buffer, beg.max(0) as usize, end.max(0) as usize)
+        };
+        Ok(self.buffer_text_as_string(insbuf, insbeg, insend))
+    }
+
+    pub fn replace_range(
+        &mut self,
+        from: usize,
+        to: usize,
+        new: Value,
+        run_mod_hooks: bool,
+        inherit: bool,
+        adjust_match_data: bool,
+    ) -> LispResult<()> {
+        let base = self.stack.len();
+        self.stack.push(new);
+        let r = self.replace_range_1(from, to, new, run_mod_hooks, inherit, adjust_match_data);
+        self.stack.truncate(base);
+        r
+    }
+
+    fn replace_range_1(
+        &mut self,
+        from: usize,
+        to: usize,
+        new: Value,
+        run_mod_hooks: bool,
+        inherit: bool,
+        adjust_match_data: bool,
+    ) -> LispResult<()> {
+        let new = self.replacement_string(new)?;
+        self.stack.push(new);
+        if run_mod_hooks {
+            self.prepare_to_modify_buffer(from, to)?;
+        }
+        let (begv, zv) = (self.cur().begv, self.cur().zv);
+        let from = from.max(begv);
+        let to = to.min(zv).max(from);
+        let nchars_del = to - from;
+        let (bytes, _) = self.encode_for_buffer(new);
+        let inschars = if self.cur().text.multibyte {
+            self.string_chars(new)
+        } else {
+            bytes.len()
+        };
+        if nchars_del == 0 && inschars == 0 {
+            return Ok(());
+        }
+        let props = self.heap.string_ref(new).props.clone();
+        let buffer = self.current_buffer;
+        let deletion = if self.undo_list() == sym::T {
+            None
+        } else {
+            let deletion = self.buffer_substring_value(from, to, true);
+            self.stack.push(deletion);
+            Some(deletion)
+        };
+        self.move_gap_for_delete(from, to);
+        {
+            let b = self.buffer_mut(buffer);
+            let from_byte = b.text.char_to_byte(from);
+            let to_byte = b.text.char_to_byte(to);
+            b.text.delete_bytes(from_byte, to_byte, nchars_del);
+            b.zv -= nchars_del;
+            b.zv_byte -= to_byte - from_byte;
+            b.text.move_gap_both(from, from_byte);
+            b.text.insert_bytes(from_byte, &bytes, inschars);
+            b.zv += inschars;
+            b.zv_byte += bytes.len();
+        }
+        if let Some(deletion) = deletion {
+            self.record_insert(from + nchars_del, inschars);
+            self.record_delete(from, deletion, false);
+        }
+        self.adjust_markers_for_replace(buffer, from, nchars_del, inschars);
+        self.props_adjust_for_delete(buffer, from, to);
+        self.props_adjust_for_insert(buffer, from, inschars, &props, inherit);
+        {
+            let b = self.buffer_mut(buffer);
+            if from < b.pt || b.pt == to {
+                b.pt = b.pt + from + inschars - b.pt.min(to);
+            }
+            b.pt_byte = b.text.char_to_byte(b.pt);
+            b.begv_byte = b.text.char_to_byte(b.begv);
+        }
+        self.modify_text();
+        if adjust_match_data {
+            self.update_search_regs(from, to, from + inschars);
+        }
+        if run_mod_hooks {
+            self.signal_after_change(from, nchars_del, inschars)?;
+            self.update_compositions(from, from + inschars, crate::composite::CHECK_BORDER)?;
+        }
+        Ok(())
+    }
+
     pub fn replace_range_chars(
         &mut self,
         from: usize,
@@ -533,7 +670,7 @@ impl Lisp {
     }
 }
 
-fn f_undo_boundary(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_undo_boundary(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     let list = lisp.undo_list();
     if list == sym::T {
         return Ok(Value::NIL);

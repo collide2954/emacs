@@ -199,6 +199,33 @@ impl Lisp {
         self.refresh_marker_bytes(buffer);
     }
 
+    pub fn adjust_markers_for_replace(
+        &mut self,
+        buffer: Value,
+        from: usize,
+        old_chars: usize,
+        new_chars: usize,
+    ) {
+        if old_chars == 0 {
+            self.adjust_markers_for_insert(buffer, from, new_chars, false);
+            self.adjust_overlays_for_insert(buffer, from, new_chars, false);
+            return;
+        }
+        let prev_to = from + old_chars;
+        let markers = self.buffer(buffer).text.markers.clone();
+        for m in markers {
+            let charpos = self.marker(m).charpos;
+            if charpos >= prev_to {
+                self.marker_mut(m).charpos = charpos + new_chars - old_chars;
+            } else if charpos > from {
+                self.marker_mut(m).charpos = from;
+            }
+        }
+        self.refresh_marker_bytes(buffer);
+        self.adjust_overlays_for_insert(buffer, from + old_chars, new_chars, true);
+        self.adjust_overlays_for_delete(buffer, from, from + old_chars);
+    }
+
     fn refresh_marker_bytes(&mut self, buffer: Value) {
         let markers = self.buffer(buffer).text.markers.clone();
         for m in markers {

@@ -16,6 +16,7 @@ pub mod chartab;
 pub mod coding;
 pub mod composite;
 pub mod data;
+pub mod diffseq;
 pub mod dired;
 pub mod dispextern;
 pub mod dispnew;

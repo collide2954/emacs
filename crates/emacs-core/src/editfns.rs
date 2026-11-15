@@ -89,6 +89,9 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("compare-buffer-substrings", 6, 6, f_compare_buffer_substrings),
     Subr::fixed("subst-char-in-region", 4, 5, f_subst_char_in_region),
     Subr::fixed("delete-region", 2, 2, f_delete_region).interactive("r"),
+    Subr::fixed("replace-region-contents", 3, 6, f_replace_region_contents).interactive(
+        "(list (if (use-region-p) (region-beginning) (point-min)) (if (use-region-p) (region-end) (point-max)) (get-buffer (read-buffer-to-switch \"Source buffer: \")))",
+    ),
     Subr::fixed("delete-and-extract-region", 2, 2, f_delete_and_extract_region),
     Subr::fixed("widen", 0, 0, f_widen).interactive(""),
     Subr::fixed("narrow-to-region", 2, 2, f_narrow_to_region).interactive("r"),
@@ -1214,6 +1217,248 @@ impl Lisp {
 fn unwind_labeled_narrow_to_region(lisp: &mut Lisp, label: Value) -> LispResult<()> {
     f_labeled_widen(lisp, &[label])?;
     Ok(())
+}
+
+enum RbcStop {
+    Abort,
+    Quit(crate::error::Flow),
+}
+
+struct RbcContext<'a> {
+    lisp: &'a mut Lisp,
+    chars_a: Vec<u32>,
+    chars_b: Vec<u32>,
+    deletions: Vec<bool>,
+    insertions: Vec<bool>,
+    time_limit: Option<crate::timefns::Timespec>,
+    quitcounter: u16,
+}
+
+impl crate::diffseq::Context for RbcContext<'_> {
+    type Stop = RbcStop;
+
+    fn equal(&mut self, x: usize, y: usize) -> Result<bool, RbcStop> {
+        self.quitcounter = self.quitcounter.wrapping_add(1);
+        if self.quitcounter == 0 {
+            self.lisp.maybe_quit().map_err(RbcStop::Quit)?;
+            if self.early_abort() {
+                return Err(RbcStop::Abort);
+            }
+        }
+        Ok(self.chars_a[x] == self.chars_b[y])
+    }
+
+    fn note_delete(&mut self, x: usize) {
+        self.deletions[x] = true;
+    }
+
+    fn note_insert(&mut self, y: usize) {
+        self.insertions[y] = true;
+    }
+
+    fn early_abort(&mut self) -> bool {
+        self.time_limit
+            .is_some_and(|limit| limit < crate::timefns::current_timespec())
+    }
+}
+
+impl Lisp {
+    fn chars_as_multibyte(&self, buffer: Value, from: usize, n: usize) -> Vec<u32> {
+        let t = &self.buffer(buffer).text;
+        let mut byte = t.char_to_byte(from);
+        let mut out = Vec::with_capacity(n);
+        for _ in 0..n {
+            let c = t.char_at_byte(byte);
+            out.push(if t.multibyte || c < 0x80 {
+                c
+            } else {
+                c + 0x3F_FF00
+            });
+            byte += t.char_len_at_byte(byte);
+        }
+        out
+    }
+}
+
+fn f_replace_region_contents(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let base = lisp.stack.len();
+    lisp.stack.extend_from_slice(args);
+    let r = replace_region_contents(lisp, args);
+    lisp.stack.truncate(base);
+    r
+}
+
+fn replace_region_contents(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let arg = |i: usize| args.get(i).copied().unwrap_or(Value::NIL);
+    let (max_secs, max_costs, inherit) = (arg(3), arg(4), arg(5));
+    let (beg, end) = lisp.validate_region(args[0], args[1])?;
+    let min_a = beg;
+    let size_a = end - beg;
+    let a_empty = size_a == 0;
+    let inh = !inherit.is_nil();
+    let mut source = args[2];
+    if lisp.functionp(source) {
+        let count = lisp.specpdl_index();
+        lisp.record_unwind_protect_excursion();
+        lisp.record_unwind_restriction();
+        f_narrow_to_region(lisp, &[args[0], args[1]])?;
+        let r = lisp.funcall(source, &[]);
+        lisp.unbind_to(count)?;
+        source = r?;
+        lisp.stack.push(source);
+    }
+    let (b, min_b, size_b) = if source.is_string() {
+        (None, 1, lisp.string_chars(source))
+    } else if lisp.is_buffer(source) {
+        let buf = lisp.buffer(source);
+        (Some(source), buf.begv, buf.zv - buf.begv)
+    } else {
+        if !lisp.is_vector(source) {
+            let types = lisp.list(&[sym::OR, sym::STRING, sym::BUFFER, sym::VECTOR]);
+            return Err(lisp.wrong_type(types, source));
+        }
+        let send = crate::data::f_aref(lisp, &[source, Value::fixnum(2)])?;
+        let sbeg = lisp.vector_items(source)[1];
+        let buffer = lisp.check_buffer(lisp.vector_items(source)[0])?;
+        let count = lisp.specpdl_index();
+        lisp.record_unwind_current_buffer();
+        lisp.set_buffer_internal(buffer);
+        let r = lisp.validate_region(sbeg, send);
+        lisp.unbind_to(count)?;
+        let (sbeg, send) = r?;
+        (Some(buffer), sbeg, send - sbeg)
+    };
+    let b_empty = size_b == 0;
+    if let Some(b) = b
+        && !lisp.buffer_live_p(b)
+    {
+        return Err(lisp.error("Selecting deleted buffer"));
+    }
+    if a_empty && b_empty {
+        return Ok(sym::T);
+    }
+    if a_empty || b_empty || max_secs == Value::fixnum(0) || max_costs == Value::fixnum(0) {
+        lisp.replace_range(min_a, min_a + size_a, source, true, false, inh)?;
+        return Ok(sym::T);
+    }
+    let a = lisp.current_buffer;
+    if Some(a) == b {
+        return Err(lisp.error("Cannot replace a buffer with itself"));
+    }
+    let too_expensive = if max_costs.is_nil() {
+        1_000_000
+    } else if let Some(n) = max_costs.as_fixnum() {
+        n.clamp(0, isize::MAX as i64) as isize
+    } else {
+        lisp.check_integer(max_costs)?;
+        if crate::data::f_natnump(lisp, &[max_costs])?.is_nil() {
+            0
+        } else {
+            isize::MAX
+        }
+    };
+    let time_limit = if max_secs.is_nil() {
+        None
+    } else {
+        let secs = lisp.lisp_time_argument(max_secs)?;
+        Some(crate::timefns::timespec_add(
+            crate::timefns::current_timespec(),
+            secs,
+        ))
+    };
+    let count = lisp.specpdl_index();
+    let b = match b {
+        Some(b) => b,
+        None => {
+            let multibyte = lisp.string_multibyte(source);
+            let workbuf = lisp.code_conversion_save(multibyte)?;
+            lisp.set_buffer_internal(workbuf);
+            crate::editfns::f_insert(lisp, &[source])?;
+            lisp.set_buffer_internal(a);
+            workbuf
+        }
+    };
+    let source_buffer = b;
+    lisp.stack.push(source_buffer);
+    let mut ctx = RbcContext {
+        chars_a: lisp.chars_as_multibyte(a, min_a, size_a),
+        chars_b: lisp.chars_as_multibyte(b, min_b, size_b),
+        deletions: vec![false; size_a],
+        insertions: vec![false; size_b],
+        time_limit,
+        quitcounter: 0,
+        lisp,
+    };
+    let early_abort =
+        match crate::diffseq::compareseq(&mut ctx, size_a, size_b, too_expensive, true) {
+            Ok(early) => early,
+            Err(RbcStop::Abort) => true,
+            Err(RbcStop::Quit(flow)) => return Err(flow),
+        };
+    let RbcContext {
+        deletions,
+        insertions,
+        mut quitcounter,
+        lisp,
+        ..
+    } = ctx;
+    if early_abort {
+        let (begv, zv) = (lisp.buffer(b).begv, lisp.buffer(b).zv);
+        let src = lisp.vector(vec![
+            source_buffer,
+            Value::fixnum(begv as i64),
+            Value::fixnum(zv as i64),
+        ]);
+        lisp.replace_range(min_a, min_a + size_a, src, true, false, inh)?;
+        lisp.unbind_to(count)?;
+        return Ok(Value::NIL);
+    }
+    crate::insdel::f_undo_boundary(lisp, &[])?;
+    let mut modification_hooks_inhibited = false;
+    if !lisp.var_true(sym::INHIBIT_MODIFICATION_HOOKS) {
+        lisp.prepare_to_modify_buffer(min_a, min_a + size_a)?;
+        lisp.specbind(sym::INHIBIT_MODIFICATION_HOOKS, sym::T)?;
+        modification_hooks_inhibited = true;
+    }
+    let mut i = size_a as isize;
+    let mut j = size_b as isize;
+    let src = lisp.vector(vec![source_buffer, Value::NIL, Value::NIL]);
+    lisp.stack.push(src);
+    while i >= 0 || j >= 0 {
+        quitcounter = quitcounter.wrapping_add(1);
+        crate::fns::rarely_quit(lisp, i64::from(quitcounter))?;
+        if (i > 0 && deletions[i as usize - 1]) || (j > 0 && insertions[j as usize - 1]) {
+            let end_a = min_a + i as usize;
+            let end_b = min_b + j as usize;
+            while i > 0 && deletions[i as usize - 1] {
+                i -= 1;
+            }
+            while j > 0 && insertions[j as usize - 1] {
+                j -= 1;
+            }
+            let beg_a = min_a + i as usize;
+            let beg_b = min_b + j as usize;
+            lisp.vector_set(src, 1, Value::fixnum(beg_b as i64));
+            lisp.vector_set(src, 2, Value::fixnum(end_b as i64));
+            lisp.replace_range(beg_a, end_a, src, true, false, inh)?;
+        }
+        i -= 1;
+        j -= 1;
+    }
+    lisp.unbind_to(count)?;
+    if modification_hooks_inhibited {
+        lisp.signal_after_change(min_a, size_a, size_b)?;
+        lisp.update_compositions(min_a, min_a + size_b, crate::composite::CHECK_INSIDE)?;
+        let buffer = lisp.current_buffer;
+        let truename = lisp
+            .buffer_local_get(buffer, sym::BUFFER_FILE_TRUENAME)
+            .unwrap_or(Value::NIL);
+        let unchanged = lisp.cur().text.save_modiff == lisp.cur().text.modiff;
+        if unchanged && truename.is_string() {
+            crate::filelock::f_unlock_file(lisp, &[truename])?;
+        }
+    }
+    Ok(sym::T)
 }
 
 fn f_save_restriction(lisp: &mut Lisp, body: Value) -> LispResult {

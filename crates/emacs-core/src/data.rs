@@ -1130,7 +1130,7 @@ fn f_integer_or_marker_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     ))
 }
 
-fn f_natnump(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_natnump(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let v = args[0];
     Ok(bool_value(match v.as_fixnum() {
         Some(n) => n >= 0,
