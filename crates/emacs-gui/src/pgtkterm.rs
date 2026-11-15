@@ -78,6 +78,7 @@ pub struct PgtkOutput {
     pub window: u64,
     pub toolbar_widget: bool,
     pub toolbar_position: Option<crate::protocol::ToolBarPosition>,
+    pub toolbar_req: (i64, i64),
     pub tbinfo: Option<crate::gtkutil::TbInfo>,
 }
 
@@ -122,8 +123,15 @@ pub fn pgtk_set_window_size(
         output.preferred_height = pixelheight;
     });
     let key = frame_key(lisp, f) as u64;
+    let g = &lisp.frame(f).geometry;
+    let outer_width = pixelwidth + g.toolbar_left_width + g.toolbar_right_width;
+    let outer_height = pixelheight + g.toolbar_top_height + g.toolbar_bottom_height;
     crate::with_display(|display| {
-        display.resize_frame(key, pixelwidth.max(1) as u32, pixelheight.max(1) as u32)
+        display.resize_frame(
+            key,
+            (pixelwidth.max(1) as u32, pixelheight.max(1) as u32),
+            (outer_width.max(1) as u32, outer_height.max(1) as u32),
+        )
     });
     Ok(())
 }
@@ -877,7 +885,15 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
                 crate::gtkutil::xg_tool_bar_help_callback(lisp, f, index)?;
             }
         }
-        Notice::ToolBarSize { .. } => {}
+        Notice::ToolBarSize {
+            frame,
+            width,
+            height,
+        } => {
+            if let Some(f) = pgtk_any_window_to_frame(lisp, frame) {
+                crate::gtkutil::tb_size_cb(lisp, f, width, height)?;
+            }
+        }
         Notice::Map { frame } => map_event(lisp, frame)?,
         Notice::Leave { frame } => leave_notify_event(lisp, frame)?,
         Notice::Realize { frame, window } => {

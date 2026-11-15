@@ -11,7 +11,7 @@ use emacs_core::lisp::Lisp;
 use emacs_core::termhooks::{EventKind, InputEvent};
 use emacs_core::value::Value;
 use emacs_gui::display::Display;
-use emacs_gui::protocol::{Notice, ToolBar, ToolBarImage, ToolBarPosition, ToolItem};
+use emacs_gui::protocol::{Command, Notice, ToolBar, ToolBarImage, ToolBarPosition, ToolItem};
 use iced::futures::channel::mpsc as fmpsc;
 
 fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
@@ -378,6 +378,119 @@ fn tool_bar_notices_become_tool_bar_and_help_events() {
                 format!("(help-echo {frame} \"Red\" nil nil 0)"),
                 format!("(help-echo {frame} nil nil nil 0)"),
             ]
+        );
+    });
+}
+
+fn shown_frame_with_commands() -> (
+    Lisp,
+    Value,
+    mpsc::Sender<Notice>,
+    fmpsc::UnboundedReceiver<Command>,
+) {
+    let (tx, notices) = mpsc::channel();
+    let (commands_tx, commands) = fmpsc::unbounded();
+    let mut lisp = Lisp::boot(Startup::program(false));
+    emacs_gui::install(&mut lisp, Display::new(commands_tx, notices));
+    lisp.init_display();
+    eval(&mut lisp, BAR);
+    let f = gui_frame(&mut lisp);
+    eval(&mut lisp, "(make-frame-visible f)");
+    lisp.redisplay().unwrap();
+    (lisp, f, tx, commands)
+}
+
+fn last_window_size(
+    commands: &mut fmpsc::UnboundedReceiver<Command>,
+    id: u64,
+) -> Option<(u32, u32)> {
+    let mut last = None;
+    while let Ok(command) = commands.try_recv() {
+        if let Command::ResizeFrame {
+            frame,
+            width,
+            height,
+        } = command
+            && frame == id
+        {
+            last = Some((width, height));
+        }
+    }
+    last
+}
+
+#[test]
+fn the_reported_tool_bar_size_grows_the_outer_window() {
+    on_big_stack(|| {
+        let (mut lisp, f, tx, mut commands) = shown_frame_with_commands();
+        let id = lisp.frame(f).id as u64;
+        let g = lisp.frame(f).geometry.clone();
+        let (width, height) = (g.pixel_width as u32, g.pixel_height as u32);
+        last_window_size(&mut commands, id);
+        tx.send(Notice::ToolBarSize {
+            frame: id,
+            width,
+            height: 30,
+        })
+        .unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(lisp.frame(f).geometry.toolbar_top_height, 30);
+        assert_eq!(
+            last_window_size(&mut commands, id),
+            Some((width, height + 30))
+        );
+        let surface =
+            emacs_gui::with_display(|d| d.surface(id).map(|s| (s.width(), s.height()))).flatten();
+        assert_eq!(surface, Some((width, height)));
+        assert_eq!(eval(&mut lisp, "(tool-bar-pixel-width f)"), "0");
+        tx.send(Notice::ToolBarSize {
+            frame: id,
+            width,
+            height: 30,
+        })
+        .unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(last_window_size(&mut commands, id), None);
+    });
+}
+
+#[test]
+fn tool_bar_position_moves_the_tool_bar_to_a_side() {
+    on_big_stack(|| {
+        let (mut lisp, f, tx, mut commands) = shown_frame_with_commands();
+        let id = lisp.frame(f).id as u64;
+        let g = lisp.frame(f).geometry.clone();
+        let (width, height) = (g.pixel_width as u32, g.pixel_height as u32);
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(condition-case err (modify-frame-parameters f '((tool-bar-position . middle))) (error err))"
+            ),
+            "(error \"One of left, right, top or bottom should be specified\" middle)"
+        );
+        eval(
+            &mut lisp,
+            "(modify-frame-parameters f '((tool-bar-position . left)))",
+        );
+        assert_eq!(
+            eval(&mut lisp, "(frame-parameter f 'tool-bar-position)"),
+            "left"
+        );
+        let bar = shown_tool_bar(&lisp, f).expect("tool bar shown");
+        assert_eq!(bar.position, Some(ToolBarPosition::Left));
+        last_window_size(&mut commands, id);
+        tx.send(Notice::ToolBarSize {
+            frame: id,
+            width: 20,
+            height,
+        })
+        .unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(lisp.frame(f).geometry.toolbar_left_width, 20);
+        assert_eq!(eval(&mut lisp, "(tool-bar-pixel-width f)"), "20");
+        assert_eq!(
+            last_window_size(&mut commands, id),
+            Some((width + 20, height))
         );
     });
 }

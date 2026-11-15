@@ -114,6 +114,67 @@ fn xg_pack_tool_bar(lisp: &Lisp, f: Value, pos: Value) {
     with_output(lisp, f, |o| o.toolbar_position = Some(position));
 }
 
+fn xg_update_tool_bar_sizes(lisp: &mut Lisp, f: Value) -> bool {
+    let ((width, height), position) = with_output(lisp, f, |o| (o.toolbar_req, o.toolbar_position));
+    let (mut nl, mut nr, mut nt, mut nb) = (0, 0, 0, 0);
+    match position {
+        Some(ToolBarPosition::Left) => nl = width,
+        Some(ToolBarPosition::Right) => nr = width,
+        Some(ToolBarPosition::Top) => nt = height,
+        Some(ToolBarPosition::Bottom) => nb = height,
+        None => {}
+    }
+    let g = &mut lisp.frame_mut(f).geometry;
+    if (nl, nr, nt, nb)
+        != (
+            g.toolbar_left_width,
+            g.toolbar_right_width,
+            g.toolbar_top_height,
+            g.toolbar_bottom_height,
+        )
+    {
+        g.toolbar_left_width = nl;
+        g.toolbar_right_width = nr;
+        g.toolbar_top_height = nt;
+        g.toolbar_bottom_height = nb;
+        true
+    } else {
+        false
+    }
+}
+
+pub fn tb_size_cb(lisp: &mut Lisp, f: Value, width: u32, height: u32) -> LispResult<()> {
+    with_output(lisp, f, |o| {
+        o.toolbar_req = (i64::from(width), i64::from(height));
+    });
+    if xg_update_tool_bar_sizes(lisp, f) {
+        lisp.adjust_frame_size(f, -1, -1, 2, sym::TOOL_BAR_LINES)?;
+    }
+    Ok(())
+}
+
+pub fn xg_change_toolbar_position(lisp: &mut Lisp, f: Value, pos: Value) -> LispResult<()> {
+    if !with_output(lisp, f, |o| o.toolbar_widget) {
+        return Ok(());
+    }
+    xg_pack_tool_bar(lisp, f, pos);
+    with_output(lisp, f, |o| o.toolbar_req = (0, 0));
+    let (key, position) = (
+        frame_key(lisp, f) as u64,
+        with_output(lisp, f, |o| o.toolbar_position),
+    );
+    crate::with_display(|d| {
+        if let Some(mut bar) = d.tool_bar(key).cloned() {
+            bar.position = position;
+            d.set_tool_bar(key, bar);
+        }
+    });
+    if xg_update_tool_bar_sizes(lisp, f) {
+        lisp.adjust_frame_size(f, -1, -1, 2, sym::TOOL_BAR_LINES)?;
+    }
+    Ok(())
+}
+
 fn xg_create_tool_bar(lisp: &Lisp, f: Value) {
     with_output(lisp, f, |o| {
         if o.tbinfo.is_none() {
@@ -281,6 +342,9 @@ pub fn update_frame_tool_bar(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     };
     let key = frame_key(lisp, f) as u64;
     crate::with_display(|d| d.set_tool_bar(key, bar));
+    if n != 0 && xg_update_tool_bar_sizes(lisp, f) {
+        lisp.adjust_frame_size(f, -1, -1, 2, sym::TOOL_BAR_LINES)?;
+    }
     lisp.frame_mut(f).flags.tool_bar_resized = true;
     Ok(())
 }
@@ -290,8 +354,14 @@ pub fn free_frame_tool_bar(lisp: &mut Lisp, f: Value) -> LispResult<()> {
         with_output(lisp, f, |o| {
             o.toolbar_widget = false;
             o.toolbar_position = None;
+            o.toolbar_req = (0, 0);
             o.tbinfo = None;
         });
+        let g = &mut lisp.frame_mut(f).geometry;
+        g.toolbar_top_height = 0;
+        g.toolbar_bottom_height = 0;
+        g.toolbar_left_width = 0;
+        g.toolbar_right_width = 0;
         let key = frame_key(lisp, f) as u64;
         crate::with_display(|d| d.remove_tool_bar(key));
         lisp.adjust_frame_size(f, -1, -1, 2, sym::TOOL_BAR_LINES)?;

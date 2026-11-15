@@ -183,18 +183,18 @@ impl Display {
         });
     }
 
-    pub fn resize_frame(&mut self, frame: u64, width: u32, height: u32) {
+    pub fn resize_frame(&mut self, frame: u64, native: (u32, u32), outer: (u32, u32)) {
         let Some(surface) = self.surfaces.get_mut(&frame) else {
             return;
         };
-        if (surface.width(), surface.height()) != (width, height) {
-            surface.resize(width, height);
+        if (surface.width(), surface.height()) != native {
+            surface.resize(native.0, native.1);
         }
         if self.shown.contains(&frame) {
             self.send(Command::ResizeFrame {
                 frame,
-                width,
-                height,
+                width: outer.0,
+                height: outer.1,
             });
         }
     }

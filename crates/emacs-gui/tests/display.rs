@@ -109,7 +109,7 @@ fn popups_open_where_they_were_moved() {
     let (mut display, mut commands, _notices) = setup();
     display.create_popup(4, 20, 10, 0xFFFFE0);
     display.move_frame(4, 100, 200);
-    display.resize_frame(4, 30, 12);
+    display.resize_frame(4, (30, 12), (30, 12));
     assert!(commands.try_recv().is_err());
     let surface = display.surface(4).expect("surface");
     assert_eq!((surface.width(), surface.height()), (30, 12));

@@ -436,23 +436,29 @@ impl Lisp {
         } else if predicate == sym::VERTICAL_SCROLL_BAR || predicate == sym::OVERWRITE_MODE {
             let choice = self.get(predicate, sym::CHOICE);
             if self.memq(val, choice).is_nil() {
-                let names = self.list_to_vec(choice)?;
-                let mut text = String::from("One of ");
-                for (i, name) in names.iter().enumerate() {
-                    text.push_str(&self.symbol_name_string(*name));
-                    text.push_str(if i + 1 == names.len() {
-                        " should be specified"
-                    } else if i + 2 == names.len() {
-                        " or "
-                    } else {
-                        ", "
-                    });
-                }
-                let message = self.string(&text);
-                return Err(self.signal_list(sym::ERROR, &[message, val]));
+                return Err(self.wrong_choice(choice, val));
             }
         }
         Ok(())
+    }
+
+    pub fn wrong_choice(&mut self, choice: Value, wrong: Value) -> Flow {
+        let mut text = String::from("One of ");
+        let mut obj = choice;
+        while obj.is_cons() {
+            text.push_str(&self.symbol_name_string(self.xcar(obj)));
+            let rest = self.xcdr(obj);
+            text.push_str(if !rest.is_cons() {
+                " should be specified"
+            } else if !self.xcdr(rest).is_cons() {
+                " or "
+            } else {
+                ", "
+            });
+            obj = rest;
+        }
+        let message = self.string(&text);
+        self.signal_list(sym::ERROR, &[message, wrong])
     }
 
     pub(crate) fn let_shadows_buffer_binding_p(&self, symbol: Value) -> bool {

@@ -568,6 +568,23 @@ fn pgtk_set_tool_bar_lines(
     x_change_tool_bar_height(lisp, f, nlines * line_height)
 }
 
+fn pgtk_set_tool_bar_position(
+    lisp: &mut Lisp,
+    f: Value,
+    new_value: Value,
+    old_value: Value,
+) -> LispResult<()> {
+    let choice = lisp.list(&[sym::LEFT, sym::RIGHT, sym::TOP, sym::BOTTOM]);
+    if lisp.memq(new_value, choice).is_nil() {
+        return Err(lisp.wrong_choice(choice, new_value));
+    }
+    if new_value != old_value {
+        crate::gtkutil::xg_change_toolbar_position(lisp, f, new_value)?;
+        lisp.frame_mut(f).tool_bar_position = new_value;
+    }
+    Ok(())
+}
+
 pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
     Some(Lisp::gui_set_autoraise),
     Some(Lisp::gui_set_autolower),
@@ -607,7 +624,7 @@ pub static PGTK_FRAME_PARM_HANDLERS: &[Option<FrameParmHandler>] = &[
     Some(Lisp::gui_set_font_backend),
     Some(Lisp::gui_set_alpha),
     None,
-    None,
+    Some(pgtk_set_tool_bar_position),
     None,
     None,
     None,

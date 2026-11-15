@@ -115,6 +115,10 @@ pub struct FrameGeometry {
     pub tab_bar_height: i64,
     pub tool_bar_lines: i64,
     pub tool_bar_height: i64,
+    pub toolbar_top_height: i64,
+    pub toolbar_bottom_height: i64,
+    pub toolbar_left_width: i64,
+    pub toolbar_right_width: i64,
     pub column_width: i64,
     pub line_height: i64,
     pub config_scroll_bar_width: i64,
@@ -2898,7 +2902,11 @@ fn f_frame_native_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 }
 
 fn f_tool_bar_pixel_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
-    lisp.decode_any_frame(arg(args, 0))?;
+    let f = lisp.decode_any_frame(arg(args, 0))?;
+    if lisp.frame_window_p(f) {
+        let g = &lisp.frame(f).geometry;
+        return Ok(Value::fixnum(g.toolbar_left_width + g.toolbar_right_width));
+    }
     Ok(Value::fixnum(0))
 }
 
