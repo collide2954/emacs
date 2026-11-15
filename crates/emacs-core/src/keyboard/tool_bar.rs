@@ -23,6 +23,33 @@ impl Lisp {
 
     fn tool_bar_items_1(&mut self, reuse: Value) -> LispResult<(Value, usize)> {
         self.init_tool_bar_items(reuse);
+        let maps = self.bar_keymaps()?;
+        let base = self.stack.len();
+        self.stack.extend_from_slice(&maps);
+        let r = (|| {
+            for &map in maps.iter().rev() {
+                if map.is_nil() {
+                    continue;
+                }
+                let binding = self.access_keymap(map, sym::TOOL_BAR, true, false)?;
+                let keymap = self.get_keymap(binding, false, true)?;
+                if keymap.is_cons() {
+                    self.map_keymap(
+                        keymap,
+                        &mut |l, key, def| l.process_tool_bar_item(key, def),
+                        true,
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+        self.stack.truncate(base);
+        r?;
+        let n = self.keyboard.menu.ntool_bar_items / TOOL_BAR_ITEM_NSLOTS;
+        Ok((self.keyboard.menu.tool_bar_items_vector, n))
+    }
+
+    pub(crate) fn bar_keymaps(&mut self) -> LispResult<Vec<Value>> {
         let mut maps = Vec::new();
         let overriding_terminal = self.kvar(Kvar::OverridingTerminalLocalMap);
         let flag = self.find_symbol_value(sym::OVERRIDING_LOCAL_MAP_MENU_FLAG);
@@ -53,29 +80,7 @@ impl Lisp {
             maps.push(local);
         }
         maps.push(self.current_global_map);
-        let base = self.stack.len();
-        self.stack.extend_from_slice(&maps);
-        let r = (|| {
-            for &map in maps.iter().rev() {
-                if map.is_nil() {
-                    continue;
-                }
-                let binding = self.access_keymap(map, sym::TOOL_BAR, true, false)?;
-                let keymap = self.get_keymap(binding, false, true)?;
-                if keymap.is_cons() {
-                    self.map_keymap(
-                        keymap,
-                        &mut |l, key, def| l.process_tool_bar_item(key, def),
-                        true,
-                    )?;
-                }
-            }
-            Ok(())
-        })();
-        self.stack.truncate(base);
-        r?;
-        let n = self.keyboard.menu.ntool_bar_items / TOOL_BAR_ITEM_NSLOTS;
-        Ok((self.keyboard.menu.tool_bar_items_vector, n))
+        Ok(maps)
     }
 
     fn tool_bar_slot(&self, i: usize) -> Value {
