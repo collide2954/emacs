@@ -58,6 +58,8 @@ static SUBRS: &[Subr] = &[
         1,
         f_pgtk_display_monitor_attributes_list,
     ),
+    Subr::fixed("pgtk-frame-geometry", 0, 1, f_pgtk_frame_geometry),
+    Subr::fixed("pgtk-frame-edges", 0, 2, f_pgtk_frame_edges),
     Subr::fixed("x-show-tip", 1, 6, tip::f_x_show_tip),
     Subr::fixed("x-hide-tip", 0, 0, tip::f_x_hide_tip),
 ];
@@ -182,7 +184,7 @@ fn f_x_display_mm_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(i64::from(width_mm_at_0 + width_mm_at_other)))
 }
 
-fn f_x_display_pixel_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_x_display_pixel_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let monitors = display_monitors(lisp, arg(args, 0))?;
     let mut width = 0;
     for m in &monitors {
@@ -193,7 +195,7 @@ fn f_x_display_pixel_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     Ok(Value::fixnum(i64::from(width)))
 }
 
-fn f_x_display_pixel_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_x_display_pixel_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let monitors = display_monitors(lisp, arg(args, 0))?;
     let mut height = 0;
     for m in &monitors {
@@ -526,6 +528,117 @@ fn f_xw_display_color_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
 
 fn f_x_display_grayscale_p(_lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     Ok(sym::T)
+}
+
+pub(crate) fn frame_geometry(lisp: &mut Lisp, frame: Value, attribute: Value) -> LispResult {
+    let f = lisp.decode_live_frame(frame)?;
+    let fullscreen_symbol = emacs_core::frame::f_frame_parameter(lisp, &[f, sym::FULLSCREEN])?;
+    let fullscreen = fullscreen_symbol == sym::FULLBOTH || fullscreen_symbol == sym::FULLSCREEN;
+    let g = lisp.frame(f).geometry.clone();
+    let border = if fullscreen { 0 } else { g.border_width };
+    let title_height = 0;
+    let (native_width, native_height) = (g.pixel_width, g.pixel_height);
+    let outer_width = native_width + 2 * border;
+    let outer_height = native_height + 2 * border + title_height;
+    if !with_output(lisp, f, |o| o.widget) {
+        return Ok(Value::NIL);
+    }
+    let (left_pos, top_pos) = (g.left_pos, g.top_pos);
+    let native_left = left_pos + border;
+    let native_top = top_pos + border + title_height;
+    let native_right = left_pos + outer_width - border;
+    let native_bottom = top_pos + outer_height - border;
+    let internal_border_width = lisp.frame_internal_border_width(f);
+    let tool_bar_height = g.toolbar_top_height + g.toolbar_bottom_height;
+    let tool_bar_width = if tool_bar_height != 0 {
+        outer_width - 2 * internal_border_width
+    } else {
+        0
+    };
+    let tab_bar_height = g.tab_bar_height;
+    let tab_bar_width = if tab_bar_height != 0 {
+        native_width - 2 * internal_border_width
+    } else {
+        0
+    };
+    let position = lisp.frame(f).tool_bar_position;
+    let internal_tool_bar_top = if position == sym::TOP {
+        g.tool_bar_height
+    } else {
+        0
+    };
+    let internal_tool_bar_bottom = if position == sym::BOTTOM {
+        g.tool_bar_height
+    } else {
+        0
+    };
+    let n = Value::fixnum;
+    if attribute == sym::OUTER_EDGES {
+        return Ok(lisp.list(&[
+            n(left_pos),
+            n(top_pos),
+            n(left_pos + outer_width),
+            n(top_pos + outer_height),
+        ]));
+    }
+    if attribute == sym::NATIVE_EDGES {
+        return Ok(lisp.list(&[
+            n(native_left),
+            n(native_top),
+            n(native_right),
+            n(native_bottom),
+        ]));
+    }
+    if attribute == sym::INNER_EDGES {
+        return Ok(lisp.list(&[
+            n(native_left + internal_border_width),
+            n(native_top + tab_bar_height + internal_tool_bar_top + internal_border_width),
+            n(native_right - internal_border_width),
+            n(native_bottom - internal_border_width - internal_tool_bar_bottom),
+        ]));
+    }
+    let external_border = if fullscreen { 0 } else { border };
+    let tool_bar_external = lisp.bool(lisp.frame(f).flags.external_tool_bar);
+    let pairs = [
+        (sym::OUTER_POSITION, n(left_pos), n(top_pos)),
+        (sym::OUTER_SIZE, n(outer_width), n(outer_height)),
+        (
+            sym::EXTERNAL_BORDER_SIZE,
+            n(external_border),
+            n(external_border),
+        ),
+        (sym::TITLE_BAR_SIZE, n(0), n(title_height)),
+    ];
+    let mut entries = Vec::new();
+    for (key, a, b) in pairs {
+        let value = lisp.cons(a, b);
+        entries.push(lisp.cons(key, value));
+    }
+    entries.push(lisp.cons(sym::MENU_BAR_EXTERNAL, Value::NIL));
+    let menu_bar_size = lisp.cons(n(0), n(0));
+    entries.push(lisp.cons(sym::MENU_BAR_SIZE, menu_bar_size));
+    let tab_bar_size = lisp.cons(n(tab_bar_width), n(tab_bar_height));
+    entries.push(lisp.cons(sym::TAB_BAR_SIZE, tab_bar_size));
+    entries.push(lisp.cons(sym::TOOL_BAR_EXTERNAL, tool_bar_external));
+    entries.push(lisp.cons(sym::TOOL_BAR_POSITION, position));
+    let tool_bar_size = lisp.cons(n(tool_bar_width), n(tool_bar_height));
+    entries.push(lisp.cons(sym::TOOL_BAR_SIZE, tool_bar_size));
+    entries.push(lisp.cons(sym::INTERNAL_BORDER_WIDTH, n(internal_border_width)));
+    Ok(lisp.list(&entries))
+}
+
+fn f_pgtk_frame_geometry(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    frame_geometry(lisp, arg(args, 0), Value::NIL)
+}
+
+fn f_pgtk_frame_edges(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let kind = arg(args, 1);
+    let attribute = if kind == sym::OUTER_EDGES || kind == sym::INNER_EDGES {
+        kind
+    } else {
+        sym::NATIVE_EDGES
+    };
+    frame_geometry(lisp, arg(args, 0), attribute)
 }
 
 fn pgtk_set_tab_bar_lines(

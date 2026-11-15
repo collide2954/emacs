@@ -138,4 +138,9 @@ pub enum Notice {
         width: u32,
         height: u32,
     },
+    Moved {
+        frame: u64,
+        x: i64,
+        y: i64,
+    },
 }

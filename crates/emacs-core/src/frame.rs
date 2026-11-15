@@ -454,6 +454,8 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("frame-native-width", 0, 1, f_frame_native_width),
     Subr::fixed("frame-native-height", 0, 1, f_frame_native_height),
     Subr::fixed("tool-bar-pixel-width", 0, 1, f_tool_bar_pixel_width),
+    Subr::fixed("frame-position", 0, 1, f_frame_position),
+    Subr::fixed("set-frame-position", 3, 3, f_set_frame_position),
     Subr::fixed("frame-text-cols", 0, 1, f_frame_text_cols),
     Subr::fixed("frame-text-lines", 0, 1, f_frame_text_lines),
     Subr::fixed("frame-total-cols", 0, 1, f_frame_total_cols),
@@ -2901,6 +2903,29 @@ fn f_frame_native_height(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     } else {
         fr.geometry.total_lines
     }))
+}
+
+fn f_frame_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(arg(args, 0))?;
+    let g = &lisp.frame(f).geometry;
+    let (x, y) = (g.left_pos, g.top_pos);
+    Ok(lisp.cons(Value::fixnum(x), Value::fixnum(y)))
+}
+
+fn f_set_frame_position(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let f = lisp.decode_live_frame(args[0])?;
+    let range = (i64::from(i32::MIN), i64::from(i32::MAX));
+    let xval = lisp.check_integer_range(args[1], range.0, range.1)?;
+    let yval = lisp.check_integer_range(args[2], range.0, range.1)?;
+    if lisp.frame_window_p(f) {
+        if let Some(hook) = lisp.frame_terminal_hooks(f).set_frame_offset {
+            hook(lisp, f, xval, yval, 1)?;
+        }
+    } else if lisp.is_tty_child_frame(f) {
+        lisp.frame_mut(f).geometry.left_pos = xval;
+        lisp.frame_mut(f).geometry.top_pos = yval;
+    }
+    Ok(sym::T)
 }
 
 fn f_tool_bar_pixel_width(lisp: &mut Lisp, args: &[Value]) -> LispResult {

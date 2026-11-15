@@ -392,6 +392,102 @@ fn key_press_event(lisp: &mut Lisp, input: InputEvent) {
     );
 }
 
+fn pgtk_calc_absolute_position(lisp: &mut Lisp, f: Value) -> LispResult<()> {
+    use emacs_core::frame::{X_NEGATIVE, Y_NEGATIVE};
+    let flags = lisp.frame(f).size_hint_flags;
+    let p = lisp.frame_parent_frame(f);
+    if flags & (X_NEGATIVE | Y_NEGATIVE) == 0 {
+        return Ok(());
+    }
+    let outer_edges = |lisp: &mut Lisp| -> LispResult<Option<Vec<i64>>> {
+        if with_output(lisp, f, |o| o.has_been_visible) && p.is_nil() {
+            let edges = crate::pgtkfns::frame_geometry(lisp, f, sym::OUTER_EDGES)?;
+            if !edges.is_nil() {
+                let edges = lisp.list_to_vec(edges)?;
+                return Ok(Some(
+                    edges.iter().map(|v| v.as_fixnum().unwrap_or(0)).collect(),
+                ));
+            }
+        }
+        Ok(None)
+    };
+    let border_width = lisp.frame(f).geometry.border_width;
+    if flags & X_NEGATIVE != 0 {
+        let mut width = lisp.frame(f).geometry.pixel_width;
+        if let Some(edges) = outer_edges(lisp)? {
+            width = edges[2] - edges[0];
+        }
+        let left = lisp.frame(f).geometry.left_pos;
+        lisp.frame_mut(f).geometry.left_pos = if p.is_nil() {
+            let display = crate::pgtkfns::f_x_display_pixel_width(lisp, &[f])?;
+            display.as_fixnum().unwrap_or(0) - width + left
+        } else {
+            lisp.frame(p).geometry.pixel_width - width - 2 * border_width + left
+        };
+    }
+    if flags & Y_NEGATIVE != 0 {
+        let mut height = lisp.frame(f).geometry.pixel_height;
+        if let Some(edges) = outer_edges(lisp)? {
+            height = edges[3] - edges[1];
+        }
+        let top = lisp.frame(f).geometry.top_pos;
+        lisp.frame_mut(f).geometry.top_pos = if p.is_nil() {
+            let display = crate::pgtkfns::f_x_display_pixel_height(lisp, &[f])?;
+            display.as_fixnum().unwrap_or(0) - height + top
+        } else {
+            lisp.frame(p).geometry.pixel_height - height - 2 * border_width + top
+        };
+    }
+    lisp.frame_mut(f).size_hint_flags &= !(X_NEGATIVE | Y_NEGATIVE);
+    Ok(())
+}
+
+fn pgtk_set_offset(
+    lisp: &mut Lisp,
+    f: Value,
+    xoff: i64,
+    yoff: i64,
+    change_gravity: i64,
+) -> LispResult<()> {
+    use emacs_core::frame::{NORTH_WEST_GRAVITY, X_NEGATIVE, Y_NEGATIVE};
+    if change_gravity > 0 {
+        let fr = lisp.frame_mut(f);
+        fr.geometry.top_pos = yoff;
+        fr.geometry.left_pos = xoff;
+        fr.size_hint_flags &= !(X_NEGATIVE | Y_NEGATIVE);
+        if xoff < 0 {
+            fr.size_hint_flags |= X_NEGATIVE;
+        }
+        if yoff < 0 {
+            fr.size_hint_flags |= Y_NEGATIVE;
+        }
+        fr.win_gravity = NORTH_WEST_GRAVITY;
+    }
+    pgtk_calc_absolute_position(lisp, f)?;
+    if change_gravity != 0 {
+        let key = frame_key(lisp, f) as u64;
+        let (x, y) = (
+            lisp.frame(f).geometry.left_pos as i32,
+            lisp.frame(f).geometry.top_pos as i32,
+        );
+        crate::with_display(|d| d.move_frame(key, x, y));
+    }
+    Ok(())
+}
+
+fn configure_event(lisp: &mut Lisp, id: u64, x: i64, y: i64) -> LispResult<()> {
+    let Some(f) = pgtk_any_window_to_frame(lisp, id) else {
+        return Ok(());
+    };
+    if PGTK.with(|p| p.borrow().any_help_event_p) {
+        lisp.xdisp.help_echo_string = Value::NIL;
+        lisp.gen_help_event(Value::NIL, f, Value::NIL, Value::NIL, 0)?;
+    }
+    lisp.frame_mut(f).geometry.left_pos = x;
+    lisp.frame_mut(f).geometry.top_pos = y;
+    Ok(())
+}
+
 fn gui_mouse_grabbed(lisp: &Lisp, frame: Value) -> Option<Value> {
     lisp.gui_mouse_grabbed(lisp.frame(frame).terminal)
 }
@@ -893,6 +989,7 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             }
             _ => {}
         },
+        Notice::Moved { frame, x, y } => configure_event(lisp, frame, x, y)?,
         Notice::ToolBarHelp { frame, index } => {
             if let Some(f) = pgtk_any_window_to_frame(lisp, frame) {
                 crate::gtkutil::xg_tool_bar_help_callback(lisp, f, index)?;
@@ -1096,6 +1193,7 @@ pub fn pgtk_term_init(
     hooks.buffer_flipping_unblocked = Some(pgtk_buffer_flipping_unblocked_hook);
     hooks.update_frame_tool_bar = Some(crate::gtkutil::update_frame_tool_bar);
     hooks.change_tab_bar_height = Some(crate::pgtkfns::pgtk_change_tab_bar_height);
+    hooks.set_frame_offset = Some(pgtk_set_offset);
     lisp.terminal_mut(terminal).rif = Some(&crate::pgtkdraw::PGTK_REDISPLAY_INTERFACE);
     let (mut dpyinfo, mut common) = initialize_display_info(terminal);
     let names: Vec<(Value, Vec<u8>)> =

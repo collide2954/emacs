@@ -597,3 +597,30 @@ fn the_tool_bar_never_stretches_along_the_frame() {
         assert_ne!(along, Length::Fill, "{position:?}");
     }
 }
+
+#[test]
+fn window_moves_become_moved_notices() {
+    let mut shell = Shell::boot();
+    let (tx, rx) = mpsc::channel();
+    let _ = shell.update(Message::Connected(tx));
+    let _ = shell.update(Message::Lisp(Command::OpenFrame {
+        frame: 5,
+        title: "t".into(),
+        width: 100,
+        height: 50,
+    }));
+    let id = shell.window_of(5).expect("window for frame");
+    let _ = rx.try_iter().count();
+    let _ = shell.update(Message::Window(
+        id,
+        window::Event::Moved(Point::new(40.0, 50.0)),
+    ));
+    assert_eq!(
+        rx.try_recv(),
+        Ok(Notice::Moved {
+            frame: 5,
+            x: 40,
+            y: 50
+        })
+    );
+}

@@ -175,3 +175,75 @@ fn monitor_attributes_list_the_frames_on_each_monitor() {
         );
     });
 }
+
+#[test]
+fn frames_take_positions_and_report_their_geometry() {
+    on_big_stack(|| {
+        let (tx, notices) = mpsc::channel();
+        let (mut lisp, f) = with_frame(notices);
+        let id = lisp.frame(f).id as u64;
+        assert_eq!(eval(&mut lisp, "(set-frame-position f 120 80)"), "t");
+        assert_eq!(eval(&mut lisp, "(frame-position f)"), "(120 . 80)");
+        tx.send(Notice::Moved {
+            frame: id,
+            x: 300,
+            y: 200,
+        })
+        .unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(eval(&mut lisp, "(frame-position f)"), "(300 . 200)");
+        let g = lisp.frame(f).geometry.clone();
+        let (w, h, b, ib) = (
+            g.pixel_width,
+            g.pixel_height,
+            g.border_width,
+            g.internal_border_width,
+        );
+        assert_eq!(
+            eval(&mut lisp, "(pgtk-frame-edges f 'outer-edges)"),
+            format!("(300 200 {} {})", 300 + w + 2 * b, 200 + h + 2 * b)
+        );
+        assert_eq!(
+            eval(&mut lisp, "(pgtk-frame-edges f)"),
+            format!("({} {} {} {})", 300 + b, 200 + b, 300 + w + b, 200 + h + b)
+        );
+        assert_eq!(
+            eval(&mut lisp, "(pgtk-frame-edges f 'inner-edges)"),
+            format!(
+                "({} {} {} {})",
+                300 + b + ib,
+                200 + b + ib,
+                300 + w + b - ib,
+                200 + h + b - ib
+            )
+        );
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(cdr (assq 'outer-size (pgtk-frame-geometry f)))"
+            ),
+            format!("({} . {})", w + 2 * b, h + 2 * b)
+        );
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(cdr (assq 'title-bar-size (pgtk-frame-geometry f)))"
+            ),
+            "(0 . 0)"
+        );
+        assert_eq!(
+            eval(
+                &mut lisp,
+                "(cdr (assq 'tool-bar-position (pgtk-frame-geometry f)))"
+            ),
+            "top"
+        );
+        let width: i64 = eval(&mut lisp, "(x-display-pixel-width)").parse().unwrap();
+        let height: i64 = eval(&mut lisp, "(x-display-pixel-height)").parse().unwrap();
+        eval(&mut lisp, "(set-frame-position f -10 -20)");
+        assert_eq!(
+            eval(&mut lisp, "(frame-position f)"),
+            format!("({} . {})", width - w - 10, height - h - 20)
+        );
+    });
+}

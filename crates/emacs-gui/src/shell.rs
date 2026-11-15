@@ -683,13 +683,25 @@ impl Shell {
             return;
         }
         match event {
-            window::Event::Opened { size, .. } => {
+            window::Event::Opened { size, position } => {
                 if let Some(view) = self.views.get_mut(&id) {
                     view.size = size;
                 }
                 self.configure(id);
+                if let Some(position) = position {
+                    self.notify(Notice::Moved {
+                        frame,
+                        x: position.x.round() as i64,
+                        y: position.y.round() as i64,
+                    });
+                }
                 self.notify(Notice::Map { frame });
             }
+            window::Event::Moved(position) => self.notify(Notice::Moved {
+                frame,
+                x: position.x.round() as i64,
+                y: position.y.round() as i64,
+            }),
             window::Event::Resized(size) => {
                 if let Some(view) = self.views.get_mut(&id) {
                     view.size = size;

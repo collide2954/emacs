@@ -123,6 +123,9 @@ impl Display {
                 width,
                 height,
             });
+            if let Some(&(x, y)) = self.positions.get(&frame) {
+                self.send(Command::MoveFrame { frame, x, y });
+            }
             if let Some(bar) = self.tool_bars.get(&frame) {
                 self.send(Command::SetToolBar {
                     frame,
