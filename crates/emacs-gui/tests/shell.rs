@@ -572,3 +572,28 @@ fn the_frame_area_excludes_the_tool_bar() {
         })
     ));
 }
+
+#[test]
+fn the_tool_bar_never_stretches_along_the_frame() {
+    use iced::Length;
+    use iced::widget::image::Handle;
+    for position in [ToolBarPosition::Top, ToolBarPosition::Left] {
+        let (mut shell, _rx, id) = shell_with_tool_bar(position);
+        let _ = shell.update(Message::Allocated {
+            id,
+            seq: 1,
+            handle: Handle::from_rgba(100, 50, vec![0; 100 * 50 * 4]),
+            width: 100,
+            height: 50,
+            allocation: None,
+        });
+        let view = shell.view(id);
+        let size = view.as_widget().size();
+        let along = if position == ToolBarPosition::Top {
+            size.height
+        } else {
+            size.width
+        };
+        assert_ne!(along, Length::Fill, "{position:?}");
+    }
+}

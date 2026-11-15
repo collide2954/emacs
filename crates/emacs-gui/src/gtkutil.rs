@@ -150,6 +150,7 @@ pub fn tb_size_cb(lisp: &mut Lisp, f: Value, width: u32, height: u32) -> LispRes
     if xg_update_tool_bar_sizes(lisp, f) {
         lisp.adjust_frame_size(f, -1, -1, 2, sym::TOOL_BAR_LINES)?;
     }
+    lisp.frame_mut(f).flags.tool_bar_resized = true;
     Ok(())
 }
 
@@ -345,7 +346,9 @@ pub fn update_frame_tool_bar(lisp: &mut Lisp, f: Value) -> LispResult<()> {
     if n != 0 && xg_update_tool_bar_sizes(lisp, f) {
         lisp.adjust_frame_size(f, -1, -1, 2, sym::TOOL_BAR_LINES)?;
     }
-    lisp.frame_mut(f).flags.tool_bar_resized = true;
+    if n == 0 || with_output(lisp, f, |o| o.toolbar_req != (0, 0)) {
+        lisp.frame_mut(f).flags.tool_bar_resized = true;
+    }
     Ok(())
 }
 

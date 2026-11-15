@@ -812,6 +812,7 @@ fn tool_bar_strip<'a>(
     images: &'a [Option<Handle>],
     vertical: bool,
 ) -> Element<'a, Message> {
+    let extent = tool_bar_extent(bar, vertical);
     let items = bar
         .items
         .iter()
@@ -819,9 +820,13 @@ fn tool_bar_strip<'a>(
         .map(|(item, handle)| match item {
             ToolItem::Separator => {
                 if vertical {
-                    rule::horizontal(1).into()
+                    container(rule::horizontal(1))
+                        .width(Length::Fixed(extent))
+                        .into()
                 } else {
-                    rule::vertical(1).into()
+                    container(rule::vertical(1))
+                        .height(Length::Fixed(extent))
+                        .into()
                 }
             }
             ToolItem::Button {
@@ -847,6 +852,36 @@ fn tool_bar_strip<'a>(
             .width(Length::Fill)
             .into()
     }
+}
+
+fn tool_bar_extent(bar: &ToolBar, vertical: bool) -> f32 {
+    let label_line = TOOL_BAR_LABEL_SIZE * 1.3;
+    let padding = 2.0 * f32::from(TOOL_BAR_BUTTON_PADDING);
+    bar.items
+        .iter()
+        .filter_map(|item| match item {
+            ToolItem::Button { image, label, .. } => {
+                let (width, height) = image.as_ref().map_or((0.0, 0.0), |image| {
+                    (
+                        image.width as f32 + 2.0 * bar.hmargin as f32,
+                        image.height as f32 + 2.0 * bar.vmargin as f32,
+                    )
+                });
+                let label = if label.is_some() { label_line } else { 0.0 };
+                Some(
+                    padding
+                        + if vertical {
+                            width
+                        } else if bar.horiz {
+                            height.max(label)
+                        } else {
+                            height + label
+                        },
+                )
+            }
+            ToolItem::Separator => None,
+        })
+        .fold(0.0, f32::max)
 }
 
 fn tool_bar_button<'a>(

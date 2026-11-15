@@ -494,3 +494,40 @@ fn tool_bar_position_moves_the_tool_bar_to_a_side() {
         );
     });
 }
+
+#[test]
+fn the_first_tool_bar_size_grows_the_window_even_where_implied_resizes_are_inhibited() {
+    on_big_stack(|| {
+        let (mut lisp, f, tx, mut commands) = shown_frame_with_commands();
+        eval(
+            &mut lisp,
+            "(progn (frame-after-make-frame f t) (setq frame-inhibit-implied-resize '(tool-bar-lines)))",
+        );
+        let id = lisp.frame(f).id as u64;
+        let g = lisp.frame(f).geometry.clone();
+        let (width, height) = (g.pixel_width as u32, g.pixel_height as u32);
+        last_window_size(&mut commands, id);
+        assert!(!lisp.frame(f).flags.tool_bar_resized);
+        tx.send(Notice::ToolBarSize {
+            frame: id,
+            width,
+            height: 30,
+        })
+        .unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(
+            last_window_size(&mut commands, id),
+            Some((width, height + 30))
+        );
+        assert!(lisp.frame(f).flags.tool_bar_resized);
+        tx.send(Notice::ToolBarSize {
+            frame: id,
+            width,
+            height: 40,
+        })
+        .unwrap();
+        lisp.gobble_input().unwrap();
+        assert_eq!(lisp.frame(f).geometry.toolbar_top_height, 40);
+        assert_eq!(last_window_size(&mut commands, id), None);
+    });
+}
