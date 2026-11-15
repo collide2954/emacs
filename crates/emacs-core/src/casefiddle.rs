@@ -143,6 +143,6 @@ fn f_capitalize(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.casify_object(CaseOp::Capitalize, args[0])
 }
 
-fn f_upcase_initials(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_upcase_initials(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     lisp.casify_object(CaseOp::UpInitials, args[0])
 }

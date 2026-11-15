@@ -16,6 +16,7 @@ pub mod keyseq;
 pub mod menu;
 pub mod position;
 pub mod reader;
+pub mod tool_bar;
 
 pub const UP_MODIFIER: i64 = 1;
 pub const DOWN_MODIFIER: i64 = 2;

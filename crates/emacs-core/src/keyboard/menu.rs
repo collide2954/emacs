@@ -19,6 +19,9 @@ pub struct MenuState {
     pub menu_bar_items_index: usize,
     pub menu_bar_one_keymap_changed_items: Value,
     pub item_properties: Value,
+    pub tool_bar_items_vector: Value,
+    pub tool_bar_item_properties: Value,
+    pub ntool_bar_items: usize,
 }
 
 impl Default for MenuState {
@@ -28,6 +31,9 @@ impl Default for MenuState {
             menu_bar_items_index: 0,
             menu_bar_one_keymap_changed_items: Value::NIL,
             item_properties: Value::NIL,
+            tool_bar_items_vector: Value::NIL,
+            tool_bar_item_properties: Value::NIL,
+            ntool_bar_items: 0,
         }
     }
 }
@@ -38,8 +44,35 @@ impl MenuState {
             self.menu_bar_items_vector,
             self.menu_bar_one_keymap_changed_items,
             self.item_properties,
+            self.tool_bar_items_vector,
+            self.tool_bar_item_properties,
         ]);
     }
+}
+
+const SEPARATOR_NAMES: [&[u8]; 14] = [
+    b"space",
+    b"no-line",
+    b"single-line",
+    b"double-line",
+    b"single-dashed-line",
+    b"double-dashed-line",
+    b"shadow-etched-in",
+    b"shadow-etched-out",
+    b"shadow-etched-in-dash",
+    b"shadow-etched-out-dash",
+    b"shadow-double-etched-in",
+    b"shadow-double-etched-out",
+    b"shadow-double-etched-in-dash",
+    b"shadow-double-etched-out-dash",
+];
+
+pub fn menu_separator_name_p(label: &[u8]) -> bool {
+    let label = label.split(|&c| c == 0).next().unwrap_or(&[]);
+    if label.len() >= 4 && label.starts_with(b"--") && label[2] != b'-' {
+        return SEPARATOR_NAMES.contains(&&label[2..]);
+    }
+    label.iter().all(|&c| c == b'-')
 }
 
 impl Lisp {
