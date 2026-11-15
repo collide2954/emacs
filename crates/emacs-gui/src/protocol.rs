@@ -129,4 +129,13 @@ pub enum Notice {
         y: i64,
         timestamp: u64,
     },
+    ToolBarHelp {
+        frame: u64,
+        index: Option<usize>,
+    },
+    ToolBarSize {
+        frame: u64,
+        width: u32,
+        height: u32,
+    },
 }

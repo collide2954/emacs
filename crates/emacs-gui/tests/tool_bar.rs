@@ -6,10 +6,12 @@ use emacs_core::dispextern::{
     TOOL_BAR_ITEM_SELECTED_P, TOOL_BAR_ITEM_TYPE,
 };
 use emacs_core::emacs::Startup;
+use emacs_core::keyboard::CTRL_MODIFIER;
 use emacs_core::lisp::Lisp;
+use emacs_core::termhooks::{EventKind, InputEvent};
 use emacs_core::value::Value;
 use emacs_gui::display::Display;
-use emacs_gui::protocol::{ToolBar, ToolBarImage, ToolBarPosition, ToolItem};
+use emacs_gui::protocol::{Notice, ToolBar, ToolBarImage, ToolBarPosition, ToolItem};
 use iced::futures::channel::mpsc as fmpsc;
 
 fn on_big_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
@@ -331,5 +333,51 @@ fn implied_resizes_are_inhibited_only_once_the_tool_bar_was_resized() {
             "(modify-frame-parameters f '((internal-border-width . 20)))",
         );
         assert_eq!(surface_width(), before);
+    });
+}
+
+#[test]
+fn tool_bar_notices_become_tool_bar_and_help_events() {
+    on_big_stack(|| {
+        let (tx, notices) = mpsc::channel();
+        let mut lisp = Lisp::boot(Startup::program(false));
+        emacs_gui::install(&mut lisp, Display::new(fmpsc::unbounded().0, notices));
+        lisp.init_display();
+        eval(&mut lisp, BAR);
+        let f = gui_frame(&mut lisp);
+        lisp.redisplay().unwrap();
+        let id = lisp.frame(f).id as u64;
+        tx.send(Notice::Input(InputEvent {
+            kind: EventKind::ToolBar,
+            code: 2,
+            modifiers: CTRL_MODIFIER,
+            frame: id,
+            ..InputEvent::default()
+        }))
+        .unwrap();
+        tx.send(Notice::ToolBarHelp {
+            frame: id,
+            index: Some(0),
+        })
+        .unwrap();
+        tx.send(Notice::ToolBarHelp {
+            frame: id,
+            index: None,
+        })
+        .unwrap();
+        let frame = lisp.prin1_to_string(f);
+        let mut events = Vec::new();
+        for _ in 0..3 {
+            let (event, _, _, _) = lisp.kbd_buffer_get_event(None, None).unwrap();
+            events.push(lisp.prin1_to_string(event));
+        }
+        assert_eq!(
+            events,
+            [
+                format!("(C-off ({frame} tool-bar))"),
+                format!("(help-echo {frame} \"Red\" nil nil 0)"),
+                format!("(help-echo {frame} nil nil nil 0)"),
+            ]
+        );
     });
 }

@@ -990,6 +990,18 @@ impl Lisp {
         self.kbd_buffer_store_buffered_event(event, None)
     }
 
+    pub fn kbd_buffer_store_help_event(&mut self, frame: Value, help: Value) -> LispResult<()> {
+        self.kbd_buffer_store_event(KbdEvent {
+            kind: EventKind::Help,
+            frame_or_window: frame,
+            arg: Value::NIL,
+            x: Value::NIL,
+            y: help,
+            timestamp: 0,
+            ..KbdEvent::default()
+        })
+    }
+
     pub fn gen_help_event(
         &mut self,
         help: Value,

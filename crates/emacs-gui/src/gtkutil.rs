@@ -1,13 +1,15 @@
 use emacs_core::dispextern::{
     TOOL_BAR_IMAGE_DISABLED_DESELECTED, TOOL_BAR_IMAGE_DISABLED_SELECTED,
-    TOOL_BAR_IMAGE_ENABLED_DESELECTED, TOOL_BAR_IMAGE_ENABLED_SELECTED, TOOL_BAR_ITEM_ENABLED_P,
-    TOOL_BAR_ITEM_IMAGES, TOOL_BAR_ITEM_LABEL, TOOL_BAR_ITEM_NSLOTS, TOOL_BAR_ITEM_SELECTED_P,
-    TOOL_BAR_ITEM_TYPE, TOOL_BAR_ITEM_VERT_ONLY,
+    TOOL_BAR_IMAGE_ENABLED_DESELECTED, TOOL_BAR_IMAGE_ENABLED_SELECTED, TOOL_BAR_ITEM_CAPTION,
+    TOOL_BAR_ITEM_ENABLED_P, TOOL_BAR_ITEM_HELP, TOOL_BAR_ITEM_IMAGES, TOOL_BAR_ITEM_KEY,
+    TOOL_BAR_ITEM_LABEL, TOOL_BAR_ITEM_NSLOTS, TOOL_BAR_ITEM_SELECTED_P, TOOL_BAR_ITEM_TYPE,
+    TOOL_BAR_ITEM_VERT_ONLY,
 };
 use emacs_core::error::LispResult;
 use emacs_core::image::{CrData, CrFilter};
 use emacs_core::lisp::Lisp;
 use emacs_core::symbols as sym;
+use emacs_core::termhooks::{EventKind, KbdEvent};
 use emacs_core::value::Value;
 
 use crate::pgtkterm::{frame_key, with_output};
@@ -29,6 +31,56 @@ impl TbInfo {
     pub fn trace(&self, roots: &mut Vec<Value>) {
         roots.extend_from_slice(&[self.last_tool_bar, self.style]);
     }
+}
+
+fn tool_bar_prop(lisp: &Lisp, f: Value, index: usize, slot: usize) -> Option<Value> {
+    let items = lisp.frame(f).tool_bar_items;
+    if lisp.frame(f).n_tool_bar_items == 0 || items.is_nil() {
+        return None;
+    }
+    lisp.vector_items(items)
+        .get(index * TOOL_BAR_ITEM_NSLOTS + slot)
+        .copied()
+}
+
+pub fn xg_tool_bar_callback(
+    lisp: &mut Lisp,
+    f: Value,
+    index: usize,
+    modifiers: i64,
+) -> LispResult<()> {
+    let Some(key) = tool_bar_prop(lisp, f, index, TOOL_BAR_ITEM_KEY) else {
+        return Ok(());
+    };
+    lisp.kbd_buffer_store_event(KbdEvent {
+        kind: EventKind::ToolBar,
+        frame_or_window: f,
+        arg: key,
+        modifiers,
+        ..KbdEvent::default()
+    })
+}
+
+pub fn xg_tool_bar_help_callback(
+    lisp: &mut Lisp,
+    f: Value,
+    index: Option<usize>,
+) -> LispResult<()> {
+    if lisp.frame(f).n_tool_bar_items == 0 || lisp.frame(f).tool_bar_items.is_nil() {
+        return Ok(());
+    }
+    let help = match index {
+        Some(index) => {
+            let help = tool_bar_prop(lisp, f, index, TOOL_BAR_ITEM_HELP).unwrap_or(Value::NIL);
+            if help.is_nil() {
+                tool_bar_prop(lisp, f, index, TOOL_BAR_ITEM_CAPTION).unwrap_or(Value::NIL)
+            } else {
+                help
+            }
+        }
+        None => Value::NIL,
+    };
+    lisp.kbd_buffer_store_help_event(f, help)
 }
 
 fn ranged_margin(value: Value) -> Option<i64> {

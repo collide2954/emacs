@@ -860,8 +860,24 @@ fn pgtk_handle_notice(lisp: &mut Lisp, notice: Notice) -> LispResult<()> {
             EventKind::Wheel | EventKind::HorizWheel => scroll_event(lisp, input),
             EventKind::FocusIn => focus_event(lisp, input, true)?,
             EventKind::FocusOut => focus_event(lisp, input, false)?,
+            EventKind::ToolBar => {
+                if let Some(f) = pgtk_any_window_to_frame(lisp, input.frame) {
+                    crate::gtkutil::xg_tool_bar_callback(
+                        lisp,
+                        f,
+                        input.code as usize,
+                        input.modifiers,
+                    )?;
+                }
+            }
             _ => {}
         },
+        Notice::ToolBarHelp { frame, index } => {
+            if let Some(f) = pgtk_any_window_to_frame(lisp, frame) {
+                crate::gtkutil::xg_tool_bar_help_callback(lisp, f, index)?;
+            }
+        }
+        Notice::ToolBarSize { .. } => {}
         Notice::Map { frame } => map_event(lisp, frame)?,
         Notice::Leave { frame } => leave_notify_event(lisp, frame)?,
         Notice::Realize { frame, window } => {
