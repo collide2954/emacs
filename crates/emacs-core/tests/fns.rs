@@ -876,7 +876,7 @@ fn strings() {
         ("(upcase \"abc\")", "\"ABC\""),
         ("(upcase ?a)", "65"),
         ("(capitalize \"hello world\")", "\"Hello World\""),
-        ("(downcase \"ÀB\")", "\"àb\""),
+        ("(downcase \"ÀB\")", "\"Àb\""),
         ("(string ?a ?b)", "\"ab\""),
         ("(string-width \"日本\")", "2"),
         (
@@ -922,6 +922,50 @@ fn char_tables() {
         (
             "(let ((ct (make-char-table 'test))) (set-char-table-range ct '(#x10000 . #x10010) 'astral) (aref ct #x10005))",
             "astral",
+        ),
+    ]);
+}
+
+#[test]
+fn casing_objects() {
+    check(&[
+        ("(upcase \"a-b c\")", "\"A-B C\""),
+        ("(capitalize \"hello wORLD\")", "\"Hello World\""),
+        ("(upcase-initials \"hello wORLD\")", "\"Hello WORLD\""),
+        ("(upcase ?\\M-a)", "134217793"),
+        ("(downcase ?A)", "97"),
+        ("(upcase ?ß)", "223"),
+        (
+            "(upcase -1)",
+            "error: (wrong-type-argument char-or-string-p -1)",
+        ),
+        (
+            "(upcase 'x)",
+            "error: (wrong-type-argument char-or-string-p x)",
+        ),
+        ("(multibyte-string-p (upcase \"abc\"))", "nil"),
+        ("(upcase \"\")", "\"\""),
+        ("(capitalize \"foo_bar\")", "\"Foo_Bar\""),
+        (
+            "(let ((case-symbols-as-words t)) (capitalize \"foo_bar\"))",
+            "\"Foo_bar\"",
+        ),
+        ("(local-variable-if-set-p 'case-symbols-as-words)", "t"),
+        (
+            "(let* ((tb (make-char-table 'char-code-property-table)) (char-code-property-alist (list (cons 'special-uppercase tb)))) (aset tb ?ß \"SS\") (list (upcase \"ß\") (upcase ?ß) (upcase \"aßb\") (capitalize \"ßa\")))",
+            "(\"SS\" 223 \"ASSB\" \"ßa\")",
+        ),
+        (
+            "(let* ((tb (make-char-table 'char-code-property-table)) (char-code-property-alist (list (cons 'special-uppercase tb)))) (aset tb ?ß \"SSSSSSS\") (upcase \"ß\"))",
+            "\"ß\"",
+        ),
+        (
+            "(let* ((tt (make-char-table 'char-code-property-table)) (char-code-property-alist (list (cons 'titlecase tt)))) (aset tt ?a ?Z) (list (capitalize \"ab\") (upcase-initials \"ab b\") (upcase \"ab\") (capitalize ?a)))",
+            "(\"Zb\" \"Zb B\" \"AB\" 90)",
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"cf\")) (let ((down (make-char-table 'case-table))) (aset down ?A ?a) (aset down ?B ?b) (aset down ?À ?à) (aset down ?Σ ?σ) (aset down ?Α ?α) (set-case-table down)) (list (downcase \"ÀB\") (upcase \"àb\") (upcase ?à) (downcase \"ΑΣ\") (downcase \"ΑΣΑ\") (downcase \"Σ\") (downcase \"ΑΣ b\")))",
+            "(\"àb\" \"ÀB\" 192 \"ας\" \"ασα\" \"σ\" \"ας b\")",
         ),
     ]);
 }

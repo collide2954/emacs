@@ -226,7 +226,7 @@ impl Lisp {
         self.adjust_overlays_for_delete(buffer, from, from + old_chars);
     }
 
-    fn refresh_marker_bytes(&mut self, buffer: Value) {
+    pub(crate) fn refresh_marker_bytes(&mut self, buffer: Value) {
         let markers = self.buffer(buffer).text.markers.clone();
         for m in markers {
             let pos = self.marker(m).charpos;

@@ -146,10 +146,78 @@ impl Lisp {
         self.set_undo_list(list);
     }
 
-    pub fn modify_text(&mut self) {
+    pub fn bump_chars_modiff(&mut self) {
         let t = &mut self.cur_mut().text;
         t.modiff += 1;
         t.chars_modiff = t.modiff;
+    }
+
+    pub fn modify_text(&mut self, start: usize, end: usize) -> LispResult<()> {
+        self.prepare_to_modify_buffer(start, end)?;
+        self.cur_mut()
+            .text
+            .compute_unchanged(start as i64 - 1, end as i64);
+        if self.cur().text.modiff <= self.cur().text.save_modiff {
+            self.record_first_change();
+        }
+        let t = &mut self.cur_mut().text;
+        t.modiff_incr(end - start);
+        t.chars_modiff = t.modiff;
+        let buffer = self.current_buffer;
+        self.buffer_local_set(buffer, sym::POINT_BEFORE_SCROLL, Value::NIL);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_range_2(
+        &mut self,
+        from: usize,
+        from_byte: usize,
+        to: usize,
+        to_byte: usize,
+        ins: &[u8],
+        inschars: usize,
+        markers: bool,
+    ) {
+        let nchars_del = to - from;
+        let nbytes_del = to_byte - from_byte;
+        let insbytes = ins.len();
+        if nbytes_del == 0 && insbytes == 0 {
+            return;
+        }
+        let buffer = self.current_buffer;
+        {
+            let b = self.buffer_mut(buffer);
+            b.text.move_gap_for_delete(from, from_byte, to, to_byte);
+            b.text.delete_bytes(from_byte, to_byte, nchars_del);
+            b.zv -= nchars_del;
+            b.zv_byte -= nbytes_del;
+            b.text.insert_bytes(from_byte, ins, inschars);
+            b.zv += inschars;
+            b.zv_byte += insbytes;
+        }
+        if !(nchars_del == 1 && inschars == 1 && nbytes_del == insbytes) {
+            if markers {
+                self.adjust_markers_for_replace(buffer, from, nchars_del, inschars);
+            } else {
+                self.refresh_marker_bytes(buffer);
+            }
+        }
+        self.offset_intervals(buffer, from, inschars as i64 - nchars_del as i64);
+        {
+            let b = self.buffer_mut(buffer);
+            if from < b.pt && (nchars_del != inschars || nbytes_del != insbytes) {
+                if b.pt < to {
+                    b.pt = from;
+                    b.pt_byte = from_byte;
+                } else {
+                    b.pt = b.pt + inschars - nchars_del;
+                    b.pt_byte = b.pt_byte + insbytes - nbytes_del;
+                }
+            }
+            b.text.modiff_incr(nchars_del + inschars);
+            b.text.chars_modiff = b.text.modiff;
+        }
     }
 
     pub fn prepare_to_modify_buffer(&mut self, start: usize, end: usize) -> LispResult<()> {
@@ -334,7 +402,7 @@ impl Lisp {
         };
         self.cur_mut().text.move_gap_both(pt, pt_byte);
         self.record_insert(pt, nchars);
-        self.modify_text();
+        self.bump_chars_modiff();
         {
             let b = self.buffer_mut(buffer);
             b.text.insert_bytes(pt_byte, bytes, nchars);
@@ -405,7 +473,7 @@ impl Lisp {
         let deleted = self.buffer_substring_value(from, to, true);
         self.stack.push(deleted);
         self.record_delete(from, deleted, true);
-        self.modify_text();
+        self.bump_chars_modiff();
         self.adjust_markers_for_delete(buffer, from, to);
         self.adjust_overlays_for_delete(buffer, from, to);
         self.props_adjust_for_delete(buffer, from, to);
@@ -480,7 +548,7 @@ impl Lisp {
         let deleted = self.buffer_substring_value(from, to, true);
         self.stack.push(deleted);
         self.record_delete(from, deleted, true);
-        self.modify_text();
+        self.bump_chars_modiff();
         self.adjust_markers_for_delete(buffer, from, to);
         self.adjust_overlays_for_delete(buffer, from, to);
         self.props_adjust_for_delete(buffer, from, to);
@@ -634,7 +702,7 @@ impl Lisp {
             b.pt_byte = b.text.char_to_byte(b.pt);
             b.begv_byte = b.text.char_to_byte(b.begv);
         }
-        self.modify_text();
+        self.bump_chars_modiff();
         if adjust_match_data {
             self.update_search_regs(from, to, from + inschars);
         }

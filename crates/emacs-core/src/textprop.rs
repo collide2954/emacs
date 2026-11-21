@@ -754,6 +754,74 @@ impl Lisp {
         self.list(&items)
     }
 
+    pub fn offset_intervals(&mut self, buffer: Value, start: usize, length: i64) {
+        if length == 0 || self.buffer(buffer).text.props.is_empty() {
+            return;
+        }
+        if length < 0 {
+            self.props_adjust_for_delete(buffer, start, start + length.unsigned_abs() as usize);
+            return;
+        }
+        let length = length as usize;
+        let z = self.buffer(buffer).text.chars + 1 - length;
+        let eobp = start >= z;
+        let runs = &self.buffer(buffer).text.props;
+        let left = runs
+            .iter()
+            .find(|r| r.start < start && start <= r.end)
+            .map_or(Value::NIL, |r| r.plist);
+        let containing = if eobp {
+            None
+        } else {
+            runs.iter()
+                .find(|r| r.start < start && start < r.end)
+                .map(|r| r.plist)
+        };
+        let right = if eobp {
+            Value::NIL
+        } else {
+            runs.iter()
+                .find(|r| r.start <= start && start < r.end)
+                .map_or(Value::NIL, |r| r.plist)
+        };
+        let inserted = match containing {
+            Some(plist) if !self.insertion_splits_interval(plist) => plist,
+            Some(plist) => self.sticky_plist(plist, plist),
+            None if start <= 1 => self.sticky_plist(Value::NIL, right),
+            None => self.sticky_plist(left, right),
+        };
+        let props = [PropRun {
+            start: 0,
+            end: length,
+            plist: inserted,
+        }];
+        self.props_adjust_for_insert(buffer, start, length, &props, false);
+    }
+
+    fn insertion_splits_interval(&self, plist: Value) -> bool {
+        let rear = self.plist_get_eq(plist, sym::REAR_NONSTICKY);
+        if !rear.is_cons() && !rear.is_nil() {
+            return true;
+        }
+        let front = self.plist_get_eq(plist, sym::FRONT_STICKY);
+        if !front.is_cons() && !front.is_nil() {
+            return false;
+        }
+        let default_nonsticky = self.find_symbol_value(sym::TEXT_PROPERTY_DEFAULT_NONSTICKY);
+        for (prop, _) in self.plist_pairs(plist) {
+            if front.is_cons() && !self.memq(prop, front).is_nil() {
+                continue;
+            }
+            if rear.is_cons() && !self.memq(prop, rear).is_nil() {
+                return true;
+            }
+            if self.assq(prop, default_nonsticky).is_cons() {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn props_adjust_for_delete(&mut self, buffer: Value, from: usize, to: usize) {
         let n = to - from;
         let runs = std::mem::take(&mut self.buffer_mut(buffer).text.props);

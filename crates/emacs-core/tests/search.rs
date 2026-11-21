@@ -191,3 +191,25 @@ fn replace_match_keeps_markers_after_the_match_after_it() {
         "(\"foo quux baz\" 9 5 9)",
     )]);
 }
+
+#[test]
+fn replace_match_converts_case_like_the_match() {
+    common::check(&[
+        (
+            "(progn (set-buffer (get-buffer-create \"rc\")) (insert \"FOO bar\") (goto-char 1) (re-search-forward \"FOO\") (replace-match \"baz\") (list (buffer-string) (point)))",
+            "(\"BAZ bar\" 4)",
+        ),
+        (
+            "(progn (erase-buffer) (insert \"Foo bar\") (goto-char 1) (re-search-forward \"Foo\") (replace-match \"baz qux\") (buffer-string))",
+            "\"Baz Qux bar\"",
+        ),
+        (
+            "(progn (string-match \"FOO\" \"FOO\") (replace-match \"baz\" nil nil \"FOO\"))",
+            "\"BAZ\"",
+        ),
+        (
+            "(progn (string-match \"Foo\" \"Foo\") (replace-match \"baz qux\" nil nil \"Foo\"))",
+            "\"Baz Qux\"",
+        ),
+    ]);
+}

@@ -550,3 +550,78 @@ fn replace_region_contents_keeps_what_did_not_change() {
         ),
     ]);
 }
+
+#[test]
+fn casing_regions_and_words() {
+    check(&[
+        (
+            "(progn (set-buffer (get-buffer-create \"cr\")) (insert \"hello world foo\") (list (upcase-region 1 6) (buffer-string)))",
+            "(nil \"HELLO world foo\")",
+        ),
+        (
+            "(progn (downcase-region 12 1) (buffer-string))",
+            "\"hello world foo\"",
+        ),
+        (
+            "(progn (erase-buffer) (insert \"hELLO wORLD\") (capitalize-region 1 (point-max)) (buffer-string))",
+            "\"Hello World\"",
+        ),
+        (
+            "(progn (erase-buffer) (insert \"hello wORLD\") (upcase-initials-region 1 (point-max)) (buffer-string))",
+            "\"Hello WORLD\"",
+        ),
+        (
+            "(progn (set-buffer-modified-p nil) (list (upcase-region 3 3) (buffer-modified-p)))",
+            "(nil nil)",
+        ),
+        (
+            "(progn (erase-buffer) (insert \"hello\") (setq buffer-undo-list nil) (upcase-region 1 6) buffer-undo-list)",
+            "((1 . 6) (\"hello\" . -1))",
+        ),
+        (
+            "(progn (erase-buffer) (insert \"hello World\") (setq ac nil) (let ((before-change-functions (list (function (lambda (b e) (setq ac (cons (list 'b b e) ac)))))) (after-change-functions (list (function (lambda (b e l) (setq ac (cons (list 'a b e l) ac))))))) (upcase-region 1 12) (downcase-region 1 12) (upcase-region 6 12)) (nreverse ac))",
+            "((b 1 12) (a 1 12 11) (b 1 12) (a 1 12 11) (b 6 12) (a 7 12 5))",
+        ),
+        (
+            "(let* ((tb (make-char-table 'char-code-property-table)) (char-code-property-alist (list (cons 'special-uppercase tb)))) (aset tb ?ß \"SS\") (erase-buffer) (insert \"aßb\") (setq m (copy-marker 3)) (upcase-region 1 4) (list (buffer-string) (point) (marker-position m)))",
+            "(\"ASSB\" 5 3)",
+        ),
+        (
+            "(progn (erase-buffer) (insert \"foo bar baz\") (goto-char 1) (upcase-word 2) (list (buffer-string) (point)))",
+            "(\"FOO BAR baz\" 8)",
+        ),
+        (
+            "(progn (capitalize-word -1) (list (buffer-string) (point)))",
+            "(\"FOO Bar baz\" 8)",
+        ),
+        (
+            "(progn (goto-char (point-max)) (upcase-word 1) (list (buffer-string) (point)))",
+            "(\"FOO Bar baz\" 12)",
+        ),
+        (
+            "(progn (goto-char 5) (downcase-word 1) (list (buffer-string) (point)))",
+            "(\"FOO bar baz\" 8)",
+        ),
+        ("(upcase-word 'x)", "error: (wrong-type-argument fixnump x)"),
+        (
+            "(progn (erase-buffer) (insert \"foo bar\") (let ((region-extract-function (function (lambda (m) (setq how m) (list (cons 1 2) (cons 5 6)))))) (upcase-region 1 1 t)) (list (buffer-string) how))",
+            "(\"Foo Bar\" bounds)",
+        ),
+        (
+            "(let ((region-extract-function (function (lambda (m) (list 3))))) (upcase-region 1 1 t))",
+            "error: (wrong-type-argument consp 3)",
+        ),
+        (
+            "(progn (erase-buffer) (insert \"foo\") (list (condition-case e (let ((region-extract-function (function (lambda (m) (cons (cons 1 2) 5))))) (upcase-region 1 1 t)) (error e)) (buffer-string)))",
+            "((wrong-type-argument listp 5) \"Foo\")",
+        ),
+        (
+            "(let ((buffer-read-only t)) (condition-case e (upcase-region 1 3) (buffer-read-only (car e))))",
+            "buffer-read-only",
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"ub\")) (set-buffer-multibyte nil) (insert \"abc\") (upcase-region 1 4) (list (buffer-string) (multibyte-string-p (buffer-string))))",
+            "(\"ABC\" nil)",
+        ),
+    ]);
+}

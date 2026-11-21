@@ -212,6 +212,16 @@ impl BufferText {
         self.gpt
     }
 
+    pub fn modiff_incr(&mut self, len: usize) -> i64 {
+        let a0 = self.modiff;
+        self.modiff += if len == 0 {
+            1
+        } else {
+            i64::from(usize::BITS - len.leading_zeros())
+        };
+        a0
+    }
+
     pub fn compute_unchanged(&mut self, start: i64, end: i64) {
         let z = (self.chars + 1) as i64;
         if self.unchanged_modified == self.modiff

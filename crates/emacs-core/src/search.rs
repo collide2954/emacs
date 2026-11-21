@@ -1163,11 +1163,9 @@ impl Lisp {
                     self.stack.push(newtext);
                 }
                 if case_action == CaseAction::AllCaps {
-                    let f = self.intern("upcase");
-                    newtext = self.funcall(f, &[newtext])?;
+                    newtext = crate::casefiddle::f_upcase(self, &[newtext])?;
                 } else if case_action == CaseAction::CapInitial {
-                    let f = self.intern("upcase-initials");
-                    newtext = self.funcall(f, &[newtext])?;
+                    newtext = crate::casefiddle::f_upcase_initials(self, &[newtext])?;
                 }
                 self.stack.push(newtext);
                 self.concat_to_string(&[before, newtext, after])
@@ -1262,12 +1260,16 @@ impl Lisp {
         r?;
         if case_action == CaseAction::AllCaps {
             let start = Value::fixnum(self.search_regs.start[sub] as i64);
-            let f = self.intern("upcase-region");
-            self.funcall(f, &[start, Value::fixnum(newpoint as i64), Value::NIL])?;
+            crate::casefiddle::f_upcase_region(
+                self,
+                &[start, Value::fixnum(newpoint as i64), Value::NIL],
+            )?;
         } else if case_action == CaseAction::CapInitial {
             let start = Value::fixnum(self.search_regs.start[sub] as i64);
-            let f = self.intern("upcase-initials-region");
-            self.funcall(f, &[start, Value::fixnum(newpoint as i64), Value::NIL])?;
+            crate::casefiddle::f_upcase_initials_region(
+                self,
+                &[start, Value::fixnum(newpoint as i64), Value::NIL],
+            )?;
         }
         let (begv, zv) = (self.cur().begv as i64, self.cur().zv as i64);
         let restore = (opoint + if opoint <= 0 { zv } else { 0 }).clamp(begv, zv);
