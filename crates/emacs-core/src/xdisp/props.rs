@@ -231,7 +231,7 @@ impl Lisp {
         bufpos: i64,
         display_replaced: i32,
         _frame_window_p: bool,
-        enable_eval_p: bool,
+        mut enable_eval_p: bool,
     ) -> LispResult<i32> {
         let mut form = sym::T;
         if spec.is_cons() && self.xcar(spec) == sym::WHEN {
@@ -241,6 +241,9 @@ impl Lisp {
             }
             form = self.xcar(spec);
             spec = self.xcdr(spec);
+        }
+        if enable_eval_p && self.cur().text.disable_display_forms {
+            enable_eval_p = false;
         }
         if !form.is_nil() && form != sym::T && !enable_eval_p {
             form = Value::NIL;

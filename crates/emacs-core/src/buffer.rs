@@ -30,6 +30,7 @@ pub struct BufferText {
     pub overlay_modiff: i64,
     pub autosave_modiff: i64,
     pub redisplay: bool,
+    pub disable_display_forms: bool,
     cache: Cell<(usize, usize)>,
 }
 
@@ -54,6 +55,7 @@ impl Default for BufferText {
             overlay_modiff: 1,
             autosave_modiff: 1,
             redisplay: false,
+            disable_display_forms: false,
             cache: Cell::new((1, 1)),
         }
     }
@@ -484,6 +486,12 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("barf-if-buffer-read-only", 0, 1, f_barf_if_buffer_read_only),
     Subr::fixed("erase-buffer", 0, 0, f_erase_buffer).interactive("*"),
     Subr::fixed("set-buffer-multibyte", 1, 1, f_set_buffer_multibyte),
+    Subr::fixed(
+        "set-buffer--disable-display-forms",
+        0,
+        0,
+        f_set_buffer_disable_display_forms,
+    ),
     Subr::fixed("kill-all-local-variables", 0, 1, f_kill_all_local_variables),
     Subr::fixed(
         "internal--set-buffer-modified-tick",
@@ -1869,6 +1877,11 @@ pub fn f_erase_buffer(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     lisp.widen();
     let (beg, end) = (1, lisp.cur().z());
     lisp.del_range(beg, end)?;
+    Ok(Value::NIL)
+}
+
+fn f_set_buffer_disable_display_forms(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+    lisp.cur_mut().text.disable_display_forms = true;
     Ok(Value::NIL)
 }
 

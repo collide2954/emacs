@@ -392,3 +392,25 @@ fn buffer_text_pixel_size_measures_other_buffers() {
         );
     });
 }
+
+#[test]
+fn display_forms_stay_unevaluated_once_a_buffer_disables_them() {
+    on_big_stack(|| {
+        let (mut lisp, _) = frame();
+        show(
+            &mut lisp,
+            "(propertize \"ab\" 'display '(when (setq ev (1+ ev)) . \"XYZ\"))",
+        );
+        for (source, expected) in [
+            ("(progn (setq ev 0) (window-text-pixel-size) (> ev 0))", "t"),
+            ("(set-buffer--disable-display-forms)", "nil"),
+            ("(progn (setq ev 0) (window-text-pixel-size) ev)", "0"),
+            (
+                "(progn (set-buffer (get-buffer-create \"fresh\")) (insert (propertize \"ab\" 'display '(when (setq ev (1+ ev)) . \"XYZ\"))) (set-window-buffer nil (current-buffer)) (setq ev 0) (window-text-pixel-size) (> ev 0))",
+                "t",
+            ),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+    });
+}

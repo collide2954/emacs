@@ -58,8 +58,8 @@ pub fn row_hash(row: &GlyphRow) -> u32 {
 fn swap_glyph_pointers(a: &mut GlyphRow, b: &mut GlyphRow) {
     std::mem::swap(&mut a.glyphs, &mut b.glyphs);
     std::mem::swap(&mut a.area, &mut b.area);
-    std::mem::swap(&mut a.used, &mut b.used);
-    std::mem::swap(&mut a.hash, &mut b.hash);
+    a.used[..LAST_AREA].copy_from_slice(&b.used[..LAST_AREA]);
+    a.hash = b.hash;
 }
 
 fn copy_row_except_pointers(to: &mut GlyphRow, from: &mut GlyphRow) {

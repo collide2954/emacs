@@ -7,13 +7,11 @@ fn obarray_make_size_limit() {
     check(&[
         ("(obarrayp (obarray-make 0))", "t"),
         ("(obarrayp (obarray-make (ash 1 30)))", "t"),
+        ("(obarrayp (obarray-make (1+ (ash 1 30))))", "t"),
+        ("(obarrayp (obarray-make (ash 1 56)))", "t"),
         (
-            "(obarray-make (1+ (ash 1 30)))",
-            "error: (args-out-of-range 1073741825)",
-        ),
-        (
-            "(obarray-make (ash 1 31))",
-            "error: (args-out-of-range 2147483648)",
+            "(obarray-make (1+ (ash 1 56)))",
+            "error: (args-out-of-range 72057594037927937)",
         ),
         (
             "(obarray-make -1)",

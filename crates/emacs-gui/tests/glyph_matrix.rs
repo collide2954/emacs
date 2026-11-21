@@ -53,6 +53,27 @@ fn gui_frame() -> (Lisp, Value) {
 }
 
 #[test]
+fn assigning_a_row_copies_used_and_hash_without_swapping_them() {
+    use emacs_core::dispextern::GlyphRow;
+    use emacs_core::dispnew::matrix::assign_row;
+    let mut to = GlyphRow {
+        used: [1, 2, 3, 8],
+        hash: 7,
+        ..GlyphRow::default()
+    };
+    let mut from = GlyphRow {
+        used: [4, 5, 6, 0],
+        hash: 9,
+        ..GlyphRow::default()
+    };
+    assign_row(&mut to, &mut from);
+    assert_eq!(
+        (to.used, to.hash, from.used, from.hash),
+        ([4, 5, 6, 8], 9, [4, 5, 6, 0], 9)
+    );
+}
+
+#[test]
 fn producing_glyphs_into_a_desired_row() {
     use emacs_core::dispextern::{GlyphType, GlyphU, It, TextPos};
     on_big_stack(|| {

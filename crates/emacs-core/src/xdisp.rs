@@ -1792,7 +1792,7 @@ impl Lisp {
     fn handle_single_display_spec_without_iterator(
         &mut self,
         mut spec: Value,
-        ctx: DisplaySpecContext,
+        mut ctx: DisplaySpecContext,
         display_replaced: i32,
     ) -> LispResult<i32> {
         let mut form = sym::T;
@@ -1803,6 +1803,9 @@ impl Lisp {
             }
             form = self.xcar(spec);
             spec = self.xcdr(spec);
+        }
+        if ctx.enable_eval && self.cur().text.disable_display_forms {
+            ctx.enable_eval = false;
         }
         if !form.is_nil() && form != sym::T && !ctx.enable_eval {
             form = Value::NIL;
