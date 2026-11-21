@@ -1123,7 +1123,7 @@ fn f_minibuffer_contents_no_properties(lisp: &mut Lisp, _args: &[Value]) -> Lisp
     Ok(lisp.buffer_substring_value(prompt_end, zv, false))
 }
 
-fn f_read_from_minibuffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+pub(crate) fn f_read_from_minibuffer(lisp: &mut Lisp, args: &[Value]) -> LispResult {
     let (prompt, initial_contents, keymap, read, hist, default_value, inherit_input_method) = (
         args[0], args[1], args[2], args[3], args[4], args[5], args[6],
     );

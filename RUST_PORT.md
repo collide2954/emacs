@@ -102,7 +102,7 @@ Ported but not yet complete (C kept):
 
 | C file | Rust | Missing |
 | --- | --- | --- |
-| `alloc.c`, `data.c`, `eval.c`, `fns.c`, `floatfns.c` | same names | assorted primitives |
+| `alloc.c`, `data.c`, `eval.c`, `fns.c`, `floatfns.c` | same names | assorted primitives; `yes-or-no-p` follows C except that its dialog branch calls `x-popup-dialog` by name, which stays void until popup dialogs are ported |
 | `chartab.c` | `chartab.rs` | `map_char_table`'s C-callback form: Rust callers use `map_char_table_collect`, which gathers the ranges first; `char_table_ref` callers that only borrow `Lisp` decode a compressed uniprop block without replacing it |
 | `atimer.c` | `atimer.rs` | `debug-timer-check` (checking builds only) and the timerfd and POSIX-timer paths: on every platform a thread stands in for `SIGALRM`, as `w32proc.c`'s `setitimer` emulation does on Windows, and sets `pending_signals`, which `maybe_quit` acts on; sleeps in `wait_reading_process_output` do not yet wake for a ripe timer |
 | `print.c` | `print.rs` | assorted primitives (`print_error_message` and `error-message-string` are ported); the printer builds its output as characters before writing it to the destination, but applies `print_prepare`'s and `print_string`'s destination rules: raw bytes become octal escapes in multibyte buffers and in `prin1-to-string` (which `.elc` docstring positions depend on) and reach a function as Latin-1 characters |

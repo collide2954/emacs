@@ -90,6 +90,7 @@ pub const SUBRS: &[Subr] = &[
     Subr::fixed("featurep", 1, 2, f_featurep),
     Subr::fixed("provide", 1, 2, f_provide),
     Subr::fixed("require", 1, 3, f_require),
+    Subr::fixed("yes-or-no-p", 1, 1, f_yes_or_no_p),
     Subr::fixed("load-average", 0, 1, f_load_average),
     Subr::fixed("locale-info", 1, 1, f_locale_info),
     Subr::fixed("base64-encode-region", 2, 3, f_base64_encode_region).interactive("r"),
@@ -143,6 +144,7 @@ pub fn init_vars(lisp: &mut Lisp) {
     lisp.defvar(sym::YES_OR_NO_PROMPT, Value::NIL);
     let prompt = lisp.string("(yes or no) ");
     lisp.set_plain_value(sym::YES_OR_NO_PROMPT, prompt);
+    lisp.set_plain_value(sym::YES_OR_NO_P_HISTORY, Value::NIL);
     lisp.defvar(sym::OVERRIDING_PLIST_ENVIRONMENT, Value::NIL);
     lisp.defvar(sym::REQUIRE_NESTING_LIST, Value::NIL);
 }
@@ -3395,6 +3397,83 @@ fn f_require(lisp: &mut Lisp, args: &[Value]) -> LispResult {
         ));
     }
     Ok(feature)
+}
+
+fn f_yes_or_no_p(lisp: &mut Lisp, args: &[Value]) -> LispResult {
+    let prompt = args[0];
+    lisp.check_string(prompt)?;
+    let last_input_event = lisp.plain_value(sym::LAST_INPUT_EVENT);
+    let last_nonmenu_event = lisp.plain_value(sym::LAST_NONMENU_EVENT);
+    if !last_input_event.is_nil()
+        && (last_nonmenu_event.is_cons()
+            || (last_nonmenu_event.is_nil() && last_input_event.is_cons())
+            || {
+                let val = lisp.find_symbol_value(sym::FROM__TTY_MENU_P);
+                !val.is_nil() && val != sym::UNBOUND
+            })
+        && lisp.var_true(sym::USE_DIALOG_BOX)
+    {
+        lisp.redisplay_preserve_echo_area(4)?;
+        let yes = lisp.string("Yes");
+        let yes = lisp.cons(yes, sym::T);
+        let no = lisp.string("No");
+        let no = lisp.cons(no, Value::NIL);
+        let pane = lisp.list(&[yes, no]);
+        let menu = lisp.cons(prompt, pane);
+        return lisp.funcall(sym::X_POPUP_DIALOG, &[sym::T, menu, Value::NIL]);
+    }
+    if lisp.var_true(sym::USE_SHORT_ANSWERS) {
+        return lisp.funcall(sym::Y_OR_N_P, &[prompt]);
+    }
+    let promptlen = lisp.string_chars(prompt);
+    let prompt_ends_in_nonspace = 0 < promptlen && {
+        let last = Value::fixnum(promptlen as i64 - 1);
+        let c = crate::data::f_aref(lisp, &[prompt, last])?;
+        !lisp.blankp(c.as_fixnum().unwrap_or(0) as u32)
+    };
+    let space = if prompt_ends_in_nonspace {
+        lisp.unibyte_string(b" ")
+    } else {
+        lisp.unibyte_string(b"")
+    };
+    let yes_or_no_prompt = lisp.plain_value(sym::YES_OR_NO_PROMPT);
+    let prompt = f_concat(lisp, &[prompt, space, yes_or_no_prompt])?;
+    let base = lisp.stack.len();
+    lisp.stack.push(prompt);
+    let count = lisp.specpdl_index();
+    let r = (|| -> LispResult {
+        lisp.specbind(sym::ENABLE_RECURSIVE_MINIBUFFERS, sym::T)?;
+        let real_this_command = lisp.plain_value(sym::REAL_THIS_COMMAND);
+        lisp.specbind(sym::REAL_THIS_COMMAND, real_this_command)?;
+        loop {
+            let ans = crate::minibuf::f_read_from_minibuffer(
+                lisp,
+                &[
+                    prompt,
+                    Value::NIL,
+                    Value::NIL,
+                    Value::NIL,
+                    sym::YES_OR_NO_P_HISTORY,
+                    Value::NIL,
+                    Value::NIL,
+                ],
+            )?;
+            let ans = crate::casefiddle::f_downcase(lisp, &[ans])?;
+            if lisp.string_chars(ans) == 3 && lisp.string_bytes(ans) == b"yes" {
+                return Ok(sym::T);
+            }
+            if lisp.string_chars(ans) == 2 && lisp.string_bytes(ans) == b"no" {
+                return Ok(Value::NIL);
+            }
+            crate::dispnew::f_ding(lisp, &[Value::NIL])?;
+            crate::keyboard::f_discard_input(lisp, &[])?;
+            lisp.message1("Please answer yes or no.")?;
+            crate::dispnew::f_sleep_for(lisp, &[Value::fixnum(2), Value::NIL])?;
+        }
+    })();
+    let r = lisp.unbind_to_value(count, r);
+    lisp.stack.truncate(base);
+    r
 }
 
 fn f_load_average(lisp: &mut Lisp, _args: &[Value]) -> LispResult {

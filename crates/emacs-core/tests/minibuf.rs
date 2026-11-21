@@ -1,7 +1,33 @@
 mod common;
 
+use std::cell::RefCell;
+use std::io::Write;
+use std::rc::Rc;
+
 use common::{check, eval, on_big_stack};
 use emacs_core::lisp::Lisp;
+
+#[derive(Clone, Default)]
+struct Capture(Rc<RefCell<Vec<u8>>>);
+
+impl Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Capture {
+    fn take(&self) -> String {
+        let text = String::from_utf8_lossy(&self.0.borrow()).into_owned();
+        self.0.borrow_mut().clear();
+        text
+    }
+}
 
 #[test]
 fn minibuffer_state() {
@@ -60,6 +86,60 @@ fn batch_reading() {
             ),
         ] {
             assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+        }
+    });
+}
+
+#[test]
+fn yes_or_no_p_in_batch() {
+    on_big_stack(|| {
+        let mut lisp = Lisp::new();
+        let out = Capture::default();
+        lisp.stdin = Box::new(std::io::Cursor::new(
+            b"Yes\nno\nyes\n\nyes\nNO\nyes\n".to_vec(),
+        ));
+        lisp.stdout = Box::new(out.clone());
+        let dialog = "(progn (fset 'x-popup-dialog (function (lambda (pos menu &optional header) (list pos menu header)))) (let ((last-input-event '(mouse-1)) (last-nonmenu-event '(mouse-1))) (yes-or-no-p \"Q\")))";
+        let tty_menu = "(progn (setq from--tty-menu-p t) (prog1 (let ((last-input-event 97) (last-nonmenu-event 97)) (yes-or-no-p \"Q\")) (makunbound 'from--tty-menu-p)))";
+        for (source, expected, prompt) in [
+            (
+                "(list (boundp 'yes-or-no-p-history) yes-or-no-p-history)",
+                "(t nil)",
+                "",
+            ),
+            ("(yes-or-no-p \"Really?\")", "t", "Really? (yes or no) "),
+            ("(yes-or-no-p \"Sure \")", "nil", "Sure  (yes or no) "),
+            (
+                "(let ((unicode-category-table (make-char-table nil))) (aset unicode-category-table 32 23) (yes-or-no-p \"Sure \"))",
+                "t",
+                "Sure (yes or no) ",
+            ),
+            ("(yes-or-no-p \"\")", "t", "(yes or no) (yes or no) "),
+            (
+                "(let ((yes-or-no-prompt \"[y/n] \")) (yes-or-no-p \"Q:\"))",
+                "nil",
+                "Q: [y/n] ",
+            ),
+            (
+                "(let ((use-short-answers t)) (fset 'y-or-n-p (function (lambda (p) (list 'short p)))) (yes-or-no-p \"Q? \"))",
+                "(short \"Q? \")",
+                "",
+            ),
+            (
+                "(yes-or-no-p 'x)",
+                "error: (wrong-type-argument stringp x)",
+                "",
+            ),
+            (dialog, "(t (\"Q\" (\"Yes\" . t) (\"No\")) nil)", ""),
+            (tty_menu, "(t (\"Q\" (\"Yes\" . t) (\"No\")) nil)", ""),
+            (
+                "(let ((last-input-event '(mouse-1)) (last-nonmenu-event '(mouse-1)) (use-dialog-box nil)) (yes-or-no-p \"W\"))",
+                "t",
+                "W (yes or no) ",
+            ),
+        ] {
+            assert_eq!(eval(&mut lisp, source), expected, "evaluating {source}");
+            assert_eq!(out.take(), prompt, "prompt of {source}");
         }
     });
 }

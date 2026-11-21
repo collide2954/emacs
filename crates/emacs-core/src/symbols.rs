@@ -810,6 +810,7 @@ symbols! {
     FROM__TTY_MENU_P "from--tty-menu-p"
     YES_OR_NO_P "yes-or-no-p"
     Y_OR_N_P "y-or-n-p"
+    X_POPUP_DIALOG "x-popup-dialog"
     K_KEY ":key"
     K_LESSP ":lessp"
     K_IN_PLACE ":in-place"
@@ -2216,4 +2217,4 @@ symbols! {
     STANDARD_CATEGORY_TABLE_INTERNAL "standard-category-table-internal"
 }
 
-pub const FIRST_INTERNAL: usize = 2195;
+pub const FIRST_INTERNAL: usize = AUTOLOAD_QUEUE.index() as usize;

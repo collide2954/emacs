@@ -514,7 +514,11 @@ impl Lisp {
             if !self.memq(handler, inhibited).is_nil() {
                 continue;
             }
-            let ops = self.get(handler, sym::OPERATIONS);
+            let ops = if handler.is_symbol() {
+                self.get(handler, sym::OPERATIONS)
+            } else {
+                Value::NIL
+            };
             if !ops.is_nil() && !self.memq(operation, ops).is_nil() || ops.is_nil() {
                 let m = match self.funcall(sym::STRING_MATCH, &[regexp, filename]) {
                     Ok(m) => m,

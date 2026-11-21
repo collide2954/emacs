@@ -1,7 +1,15 @@
 mod common;
 
-use common::{eval, on_big_stack};
+use common::{check, eval, on_big_stack};
 use emacs_core::lisp::Lisp;
+
+#[test]
+fn non_symbol_handlers_have_no_operations() {
+    check(&[(
+        "(progn (mapatoms (function (lambda (s) (put s 'operations '(no-such-op))))) (let ((file-name-handler-alist (list (cons \"\\\\.bad\\\\'\" (function (lambda (op &rest args) 'notastring)))))) (functionp (find-file-name-handler \"/x/a.bad\" 'expand-file-name))))",
+        "t",
+    )]);
+}
 
 #[test]
 fn write_region_handlers() {

@@ -175,7 +175,7 @@ impl Lisp {
     }
 }
 
-fn f_discard_input(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
+pub(crate) fn f_discard_input(lisp: &mut Lisp, _args: &[Value]) -> LispResult {
     if !lisp.kvar(Kvar::DefiningKbdMacro).is_nil() {
         crate::macros::f_cancel_kbd_macro_events(lisp, &[])?;
         lisp.end_kbd_macro();
